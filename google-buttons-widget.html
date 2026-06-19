@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Google · Quick Access</title>
+<style>
+  :root {
+    --label: #9b9a97;
+    --gray-bg: #2f2f2f;     --gray-bg-h: #3a3a3a;     --gray-text: #e6e6e4;  --gray-glow: rgba(180,180,180,.25);
+    --blue-bg: #1f3b54;     --blue-bg-h: #264a6b;     --blue-text: #cfe2f3;  --blue-glow: rgba(66,133,244,.35);
+    --green-bg: #1c3829;    --green-bg-h: #234734;    --green-text: #cdebd6; --green-glow: rgba(15,157,88,.35);
+    --orange-bg: #5c3a1e;   --orange-bg-h: #6e4624;   --orange-text: #f4d8bf;--orange-glow: rgba(244,180,0,.35);
+    --border: rgba(255,255,255,.06);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; background: transparent; color: #e6e6e4;
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+  }
+  .wrap { padding: 14px 4px; max-width: 1400px; margin: 0 auto; }
+  .label {
+    font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--label); margin: 0 0 12px 4px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .label::before { content: ""; width: 14px; height: 1px; background: var(--label); opacity: .5; }
+  .grid {
+    display: grid; gap: 12px;
+    grid-template-columns: repeat(var(--cols, 4), 1fr);
+  }
+
+  /* Card */
+  .btn {
+    position: relative; display: flex; align-items: center; gap: 12px;
+    padding: 16px 18px; border-radius: 10px; text-decoration: none;
+    border: 1px solid var(--border); overflow: hidden; cursor: pointer;
+    transition: transform 180ms cubic-bezier(.2,.7,.3,1), background-color 180ms ease, box-shadow 220ms ease;
+    -webkit-tap-highlight-color: transparent;
+    min-height: 58px;
+  }
+  .btn::before {
+    content: ""; position: absolute; inset: 0; border-radius: inherit;
+    background: linear-gradient(180deg, rgba(255,255,255,.04) 0%, rgba(255,255,255,0) 40%);
+    pointer-events: none;
+  }
+  .btn::after {
+    content: ""; position: absolute; top: 0; left: -60%; width: 50%; height: 100%;
+    background: linear-gradient(120deg, transparent 0%, rgba(255,255,255,.06) 50%, transparent 100%);
+    transform: skewX(-20deg); transition: left 600ms ease; pointer-events: none;
+  }
+  .btn:hover::after { left: 130%; }
+  .btn:hover { transform: translateY(-2px); }
+  .btn:active { transform: translateY(0); transition-duration: 80ms; }
+  .btn:focus-visible { outline: 2px solid rgba(255,255,255,.5); outline-offset: 2px; }
+
+  .icon {
+    flex: 0 0 auto; width: 26px; height: 26px; display: grid; place-items: center;
+    border-radius: 7px; background: rgba(255,255,255,.06);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.04);
+  }
+  .icon svg { width: 16px; height: 16px; display: block; }
+  .meta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+  .title { font-size: 14px; font-weight: 600; letter-spacing: -.005em; line-height: 1.1;
+           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sub { margin-top: 3px; font-size: 11px; font-weight: 400; opacity: .55;
+         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .arrow {
+    margin-left: auto; opacity: 0; transform: translateX(-4px);
+    transition: opacity 180ms ease, transform 180ms ease; font-size: 14px; line-height: 1;
+  }
+  .btn:hover .arrow { opacity: .8; transform: translateX(0); }
+
+  /* Edit pencil */
+  .edit {
+    position: absolute; top: 6px; right: 6px;
+    width: 22px; height: 22px; border-radius: 6px;
+    display: grid; place-items: center;
+    background: rgba(0,0,0,.25); border: 1px solid rgba(255,255,255,.08);
+    color: rgba(255,255,255,.7); cursor: pointer;
+    opacity: 0; transform: translateY(-2px);
+    transition: opacity 160ms ease, transform 160ms ease, background 160ms ease;
+    z-index: 2;
+  }
+  .edit:hover { background: rgba(0,0,0,.45); color: #fff; }
+  .btn:hover .edit { opacity: 1; transform: translateY(0); }
+  .edit svg { width: 11px; height: 11px; }
+
+  /* Color variants */
+  .btn.gray   { background: var(--gray-bg);   color: var(--gray-text); }
+  .btn.blue   { background: var(--blue-bg);   color: var(--blue-text); }
+  .btn.green  { background: var(--green-bg);  color: var(--green-text); }
+  .btn.orange { background: var(--orange-bg); color: var(--orange-text); }
+  .btn.gray:hover   { background: var(--gray-bg-h);   box-shadow: 0 8px 24px -10px var(--gray-glow); }
+  .btn.blue:hover   { background: var(--blue-bg-h);   box-shadow: 0 8px 24px -10px var(--blue-glow); }
+  .btn.green:hover  { background: var(--green-bg-h);  box-shadow: 0 8px 24px -10px var(--green-glow); }
+  .btn.orange:hover { background: var(--orange-bg-h); box-shadow: 0 8px 24px -10px var(--orange-glow); }
+
+  /* Responsive — ALWAYS keep all visible buttons in one row */
+  /* Compact on narrow viewports: hide subtitle, shrink paddings/fonts */
+  @media (max-width: 720px) {
+    .wrap { padding: 10px 2px; }
+    .btn { padding: 12px 12px; gap: 9px; min-height: 50px; border-radius: 9px; }
+    .title { font-size: 13px; }
+    .sub { display: none; }
+    .arrow { display: none; }
+    .icon { width: 22px; height: 22px; }
+    .icon svg { width: 14px; height: 14px; }
+    .grid { gap: 8px; }
+    .label { font-size: 11px; margin-bottom: 8px; }
+    .edit { opacity: .6; } /* always visible-ish on touch */
+  }
+  @media (max-width: 460px) {
+    .btn { padding: 10px 9px; gap: 7px; min-height: 46px; }
+    .title { font-size: 12px; }
+    .icon { width: 20px; height: 20px; }
+    .icon svg { width: 13px; height: 13px; }
+    .grid { gap: 6px; }
+  }
+  /* Single-button modes look cleaner with more padding */
+  .grid.single .btn { padding: 18px 20px; min-height: 64px; }
+  .grid.single .sub { display: block; }
+
+  /* Modal */
+  .modal-back {
+    position: fixed; inset: 0; background: rgba(0,0,0,.6); backdrop-filter: blur(4px);
+    display: none; align-items: center; justify-content: center; z-index: 100;
+    padding: 16px;
+  }
+  .modal-back.open { display: flex; }
+  .modal {
+    width: 100%; max-width: 460px; background: #1f1f1f; border: 1px solid rgba(255,255,255,.08);
+    border-radius: 12px; padding: 22px; color: #e6e6e4;
+    box-shadow: 0 20px 60px rgba(0,0,0,.5);
+  }
+  .modal h3 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+  .modal .hint { margin: 0 0 16px; font-size: 12px; color: #9b9a97; }
+  .modal label { display: block; font-size: 11px; text-transform: uppercase;
+                 letter-spacing: .06em; color: #9b9a97; margin: 12px 0 6px; }
+  .modal input {
+    width: 100%; padding: 10px 12px; background: #2a2a2a; border: 1px solid rgba(255,255,255,.08);
+    border-radius: 8px; color: #e6e6e4; font-size: 13px; font-family: inherit;
+    outline: none; transition: border-color 120ms ease;
+  }
+  .modal input:focus { border-color: rgba(120,170,220,.5); }
+  .modal-actions { display: flex; gap: 8px; margin-top: 18px; }
+  .modal-actions button {
+    flex: 1; padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(255,255,255,.08);
+    background: #2a2a2a; color: #e6e6e4; font-size: 13px; font-weight: 500; cursor: pointer;
+    font-family: inherit; transition: background 120ms ease;
+  }
+  .modal-actions button:hover { background: #333; }
+  .modal-actions .primary { background: #2b6cb0; border-color: #2b6cb0; }
+  .modal-actions .primary:hover { background: #3479c4; }
+  .copy-box {
+    margin-top: 14px; padding: 10px 12px; background: #161616;
+    border: 1px solid rgba(255,255,255,.06); border-radius: 8px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px;
+    color: #9bd0a4; word-break: break-all; display: none;
+  }
+  .copy-box.show { display: block; }
+  .copy-box .ok { color: #6ee787; display: block; margin-bottom: 4px; font-weight: 600; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="label" id="labelText">Google</div>
+    <div class="grid" id="grid"></div>
+  </div>
+
+  <div class="modal-back" id="modalBack">
+    <div class="modal" role="dialog" aria-modal="true">
+      <h3>Изменить кнопку</h3>
+      <p class="hint">Сохранение создаст новый embed-URL — вставьте его в Notion вместо текущего.</p>
+      <label for="iLabel">Название</label>
+      <input id="iLabel" type="text" placeholder="Например: Отчёт по продажам" />
+      <label for="iSub">Подпись (опционально)</label>
+      <input id="iSub" type="text" placeholder="Например: Google Sheets" />
+      <label for="iUrl">Ссылка</label>
+      <input id="iUrl" type="url" placeholder="https://..." />
+      <div class="modal-actions">
+        <button id="btnCancel">Отмена</button>
+        <button id="btnSave" class="primary">Сохранить и скопировать URL</button>
+      </div>
+      <div class="copy-box" id="copyBox">
+        <span class="ok">✓ Embed URL скопирован в буфер</span>
+        <span id="copyUrl"></span>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function() {
+  const DEFAULTS = {
+    drive: {
+      label: "Google Диск", sub: "drive.google.com",
+      url: "https://drive.google.com/drive/my-drive?hl=ru",
+      cls: "gray",
+      icon: `<svg viewBox="0 0 87.3 78" xmlns="http://www.w3.org/2000/svg">
+        <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
+        <path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0 -1.2 4.5h27.5z" fill="#00ac47"/>
+        <path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/>
+        <path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/>
+        <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/>
+        <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/>
+      </svg>`
+    },
+    docs: {
+      label: "Docs", sub: "создать документ",
+      url: "https://docs.new",
+      cls: "blue",
+      icon: `<svg viewBox="0 0 47 65" xmlns="http://www.w3.org/2000/svg">
+        <path d="M29.375 0H4.40625C1.97266 0 0 1.97266 0 4.40625V60.5938C0 63.0273 1.97266 65 4.40625 65H42.5938C45.0273 65 47 63.0273 47 60.5938V17.625L36.7188 10.2812L29.375 0Z" fill="#4285F4"/>
+        <path d="M12.0312 47.4062H34.9688V44.4688H12.0312V47.4062ZM12.0312 35.6562V38.5938H34.9688V35.6562H12.0312ZM12.0312 26.8438V29.7812H26.1562V26.8438H12.0312ZM12.0312 18.0312V20.9688H34.9688V18.0312H12.0312Z" fill="#F1F1F1"/>
+        <path d="M29.375 0V13.2188C29.375 15.6523 31.3477 17.625 33.7812 17.625H47L29.375 0Z" fill="#A1C2FA"/>
+      </svg>`
+    },
+    sheets: {
+      label: "Sheets", sub: "создать таблицу",
+      url: "https://sheets.new",
+      cls: "green",
+      icon: `<svg viewBox="0 0 47 65" xmlns="http://www.w3.org/2000/svg">
+        <path d="M29.375 0H4.40625C1.97266 0 0 1.97266 0 4.40625V60.5938C0 63.0273 1.97266 65 4.40625 65H42.5938C45.0273 65 47 63.0273 47 60.5938V17.625L36.7188 10.2812L29.375 0Z" fill="#0F9D58"/>
+        <path d="M11.75 31.7188V49.7812H35.25V31.7188H11.75ZM22.0312 47.4062H14.1875V43.0156H22.0312V47.4062ZM22.0312 41.0938H14.1875V36.7031H22.0312V41.0938ZM32.8125 47.4062H24.9688V43.0156H32.8125V47.4062ZM32.8125 41.0938H24.9688V36.7031H32.8125V41.0938ZM32.8125 34.7344H14.1875V32.5781H32.8125V34.7344Z" fill="#F1F1F1"/>
+        <path d="M29.375 0V13.2188C29.375 15.6523 31.3477 17.625 33.7812 17.625H47L29.375 0Z" fill="#87CEAC"/>
+      </svg>`
+    },
+    slides: {
+      label: "Slides", sub: "создать презентацию",
+      url: "https://slides.new",
+      cls: "orange",
+      icon: `<svg viewBox="0 0 47 65" xmlns="http://www.w3.org/2000/svg">
+        <path d="M29.375 0H4.40625C1.97266 0 0 1.97266 0 4.40625V60.5938C0 63.0273 1.97266 65 4.40625 65H42.5938C45.0273 65 47 63.0273 47 60.5938V17.625L36.7188 10.2812L29.375 0Z" fill="#F4B400"/>
+        <path d="M13.2188 26.8438V46.3281H33.7812V26.8438H13.2188ZM30.8438 43.3906H16.1562V29.7812H30.8438V43.3906Z" fill="#F1F1F1"/>
+        <path d="M29.375 0V13.2188C29.375 15.6523 31.3477 17.625 33.7812 17.625H47L29.375 0Z" fill="#FADA80"/>
+      </svg>`
+    }
+  };
+
+  const params = new URLSearchParams(window.location.search);
+  const type = (params.get('type') || 'all').toLowerCase();
+  const visible = (type === 'all') ? ['drive','docs','sheets','slides'] : [type];
+
+  // Build config: per-service overrides via "drive_url=..." OR generic "url=..." (single mode)
+  const config = {};
+  for (const key of ['drive','docs','sheets','slides']) {
+    const d = DEFAULTS[key];
+    if (!d) continue;
+    let url, label, sub;
+    if (type === 'all') {
+      url   = params.get(key + '_url')   || d.url;
+      label = params.get(key + '_label') || d.label;
+      sub   = params.get(key + '_sub')   || d.sub;
+    } else {
+      // single mode — accept both "url" and "drive_url" forms
+      url   = params.get('url')   || params.get(key + '_url')   || d.url;
+      label = params.get('label') || params.get(key + '_label') || d.label;
+      sub   = params.get('sub')   || params.get(key + '_sub')   || d.sub;
+    }
+    config[key] = { ...d, url, label, sub };
+  }
+
+  // Optional: hide section header
+  if (params.get('header') === '0') {
+    document.getElementById('labelText').style.display = 'none';
+  }
+  // Optional: custom header text
+  const headerText = params.get('header_text');
+  if (headerText) document.getElementById('labelText').textContent = headerText;
+
+  // Render
+  const grid = document.getElementById('grid');
+  grid.style.setProperty('--cols', visible.length);
+  if (visible.length === 1) grid.classList.add('single');
+
+  for (const key of visible) {
+    const c = config[key];
+    if (!c) continue;
+    const a = document.createElement('a');
+    a.className = 'btn ' + c.cls;
+    a.href = c.url;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.setAttribute('aria-label', c.label);
+    a.dataset.key = key;
+    a.innerHTML = `
+      <span class="icon" aria-hidden="true">${c.icon}</span>
+      <span class="meta">
+        <span class="title"></span>
+        <span class="sub"></span>
+      </span>
+      <span class="arrow" aria-hidden="true">↗</span>
+      <button class="edit" aria-label="Изменить" title="Изменить ссылку">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+        </svg>
+      </button>`;
+    a.querySelector('.title').textContent = c.label;
+    a.querySelector('.sub').textContent = c.sub;
+    grid.appendChild(a);
+  }
+
+  // Edit modal logic
+  const modal = document.getElementById('modalBack');
+  const iLabel = document.getElementById('iLabel');
+  const iSub = document.getElementById('iSub');
+  const iUrl = document.getElementById('iUrl');
+  const btnSave = document.getElementById('btnSave');
+  const btnCancel = document.getElementById('btnCancel');
+  const copyBox = document.getElementById('copyBox');
+  const copyUrl = document.getElementById('copyUrl');
+  let editingKey = null;
+
+  grid.addEventListener('click', (e) => {
+    const editBtn = e.target.closest('.edit');
+    if (!editBtn) return;
+    e.preventDefault(); e.stopPropagation();
+    const card = editBtn.closest('.btn');
+    editingKey = card.dataset.key;
+    const c = config[editingKey];
+    iLabel.value = c.label;
+    iSub.value = c.sub || '';
+    iUrl.value = c.url;
+    copyBox.classList.remove('show');
+    modal.classList.add('open');
+    setTimeout(() => iUrl.focus(), 50);
+  });
+
+  btnCancel.addEventListener('click', () => modal.classList.remove('open'));
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('open'); });
+
+  btnSave.addEventListener('click', () => {
+    if (!editingKey) return;
+    const newLabel = iLabel.value.trim() || config[editingKey].label;
+    const newSub = iSub.value.trim();
+    const newUrl = iUrl.value.trim() || config[editingKey].url;
+    config[editingKey] = { ...config[editingKey], label: newLabel, sub: newSub, url: newUrl };
+
+    // Update card visually
+    const card = grid.querySelector(`.btn[data-key="${editingKey}"]`);
+    if (card) {
+      card.href = newUrl;
+      card.querySelector('.title').textContent = newLabel;
+      card.querySelector('.sub').textContent = newSub;
+      card.setAttribute('aria-label', newLabel);
+    }
+
+    // Build new embed URL
+    const p = new URLSearchParams();
+    p.set('type', type);
+    if (type === 'all') {
+      // include only changed values
+      for (const k of ['drive','docs','sheets','slides']) {
+        const def = DEFAULTS[k], cur = config[k];
+        if (cur.url   !== def.url)   p.set(k + '_url',   cur.url);
+        if (cur.label !== def.label) p.set(k + '_label', cur.label);
+        if (cur.sub   !== def.sub)   p.set(k + '_sub',   cur.sub);
+      }
+    } else {
+      const def = DEFAULTS[editingKey], cur = config[editingKey];
+      if (cur.url   !== def.url)   p.set('url',   cur.url);
+      if (cur.label !== def.label) p.set('label', cur.label);
+      if (cur.sub   !== def.sub)   p.set('sub',   cur.sub);
+    }
+    if (params.get('header') === '0') p.set('header', '0');
+    if (headerText) p.set('header_text', headerText);
+
+    const base = window.location.origin + window.location.pathname;
+    const newEmbedUrl = base + '?' + p.toString();
+
+    copyUrl.textContent = newEmbedUrl;
+    copyBox.classList.add('show');
+
+    // Copy to clipboard
+    try {
+      navigator.clipboard.writeText(newEmbedUrl);
+    } catch (err) {
+      // fallback for older browsers
+      const t = document.createElement('textarea');
+      t.value = newEmbedUrl; document.body.appendChild(t); t.select();
+      try { document.execCommand('copy'); } catch (e) {}
+      document.body.removeChild(t);
+    }
+  });
+
+  // ESC closes modal
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') modal.classList.remove('open');
+  });
+})();
+</script>
+</body>
+</html>
