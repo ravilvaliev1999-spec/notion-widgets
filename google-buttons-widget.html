@@ -20,11 +20,12 @@
     font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
   }
-  .wrap { padding: 14px 4px; max-width: 1400px; margin: 0 auto; }
+  .wrap { padding: 2px 4px; max-width: 1400px; margin: 0 auto; }
   .label {
     font-family: Georgia, "Lyon Text", "PT Serif", "Times New Roman", serif;
     font-size: 17px; font-weight: 700; letter-spacing: -0.005em;
     color: #e6e6e4; margin: 0 0 12px 4px;
+    display: none; /* hidden by default — show with ?header=1 or ?header_text=... */
   }
   .grid {
     display: grid; gap: 12px;
@@ -269,13 +270,13 @@
     config[key] = { ...d, url, label, sub };
   }
 
-  // Optional: hide section header
-  if (params.get('header') === '0') {
-    document.getElementById('labelText').style.display = 'none';
-  }
-  // Optional: custom header text
+  // Optional: show header with ?header=1 or custom text via ?header_text=
   const headerText = params.get('header_text');
-  if (headerText) document.getElementById('labelText').textContent = headerText;
+  if (params.get('header') === '1' || headerText) {
+    const lbl = document.getElementById('labelText');
+    lbl.style.display = 'flex';
+    if (headerText) lbl.textContent = headerText;
+  }
 
   // Render
   const grid = document.getElementById('grid');
@@ -371,7 +372,7 @@
       if (cur.label !== def.label) p.set('label', cur.label);
       if (cur.sub   !== def.sub)   p.set('sub',   cur.sub);
     }
-    if (params.get('header') === '0') p.set('header', '0');
+    if (params.get('header') === '1') p.set('header', '1');
     if (headerText) p.set('header_text', headerText);
 
     const base = window.location.origin + window.location.pathname;
