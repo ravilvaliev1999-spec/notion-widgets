@@ -15,7 +15,7 @@
   }
   * { box-sizing: border-box; }
   html, body {
-    margin: 0; padding: 0; background: transparent; color: #e6e6e4;
+    margin: 0; padding: 0; background: #191919; color: #e6e6e4;
     font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
     -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
   }
@@ -109,7 +109,7 @@
     .icon svg { width: 14px; height: 14px; }
     .grid { gap: 8px; }
     .label { font-size: 11px; margin-bottom: 8px; }
-    .edit { opacity: .6; } /* always visible-ish on touch */
+    .edit { opacity: .25; } /* slight visibility on touch devices */
   }
   @media (max-width: 460px) {
     .btn { padding: 10px 9px; gap: 7px; min-height: 46px; }
@@ -117,6 +117,7 @@
     .icon { width: 20px; height: 20px; }
     .icon svg { width: 13px; height: 13px; }
     .grid { gap: 6px; }
+    .edit { opacity: .25; }
   }
   /* Single-button modes look cleaner with more padding */
   .grid.single .btn { padding: 18px 20px; min-height: 64px; }
@@ -207,7 +208,7 @@
       </svg>`
     },
     docs: {
-      label: "Docs", sub: "создать документ",
+      label: "Docs", sub: "Создать документ",
       url: "https://docs.new",
       cls: "blue",
       icon: `<svg viewBox="0 0 47 65" xmlns="http://www.w3.org/2000/svg">
@@ -217,7 +218,7 @@
       </svg>`
     },
     sheets: {
-      label: "Sheets", sub: "создать таблицу",
+      label: "Sheets", sub: "Создать таблицу",
       url: "https://sheets.new",
       cls: "green",
       icon: `<svg viewBox="0 0 47 65" xmlns="http://www.w3.org/2000/svg">
@@ -227,7 +228,7 @@
       </svg>`
     },
     slides: {
-      label: "Slides", sub: "создать презентацию",
+      label: "Slides", sub: "Создать презентацию",
       url: "https://slides.new",
       cls: "orange",
       icon: `<svg viewBox="0 0 47 65" xmlns="http://www.w3.org/2000/svg">
