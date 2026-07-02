@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Notion Deep Recon</title>
+    <style>
+        body { font-family: -apple-system, sans-serif; padding: 20px; background: #191919; color: #fff; font-size: 14px; }
+        button { background: #e83636; color: white; border: none; padding: 12px 24px; border-radius: 6px; cursor: pointer; font-weight: bold; margin-bottom: 15px; }
+        button:disabled { background: #555; cursor: not-allowed; }
+        pre { background: #2d2d2d; padding: 15px; border-radius: 6px; border: 1px solid #444; overflow-x: auto; font-size: 12px; color: #a5d6ff; line-height: 1.4; }
+        #status { color: #ffeb3b; font-weight: bold; margin-bottom: 15px; }
+        .success { color: #4caf50 !important; }
+    </style>
+</head>
+<body>
+    <div id="status">🕵️ Активная разведка: перебор window, Electron API и бомбардировка parent... (Ожидание 30 сек)</div>
+    <button id="copyBtn" disabled>📋 Скопировать дамп разведки</button>
+    <pre id="output">Инициализация зондов...</pre>
+
+    <script>
+        const reconData = {
+            sandboxFeatures: {},
+            electronHooks: {},
+            unusualGlobals: [],
+            navigatorData: {},
+            storageWorkers: {},
+            postMessageReplies: []
+        };
+
+        // 1. Политики Sandbox и Permissions
+        try {
+            if (document.featurePolicy) reconData.sandboxFeatures.featurePolicy = document.featurePolicy.allowedFeatures();
+            if (document.permissionsPolicy) reconData.sandboxFeatures.permissionsPolicy = true; // API ограничено, фиксируем наличие
+        } catch(e) { reconData.sandboxFeatures.error = e.message; }
+
+        // 2. Точечный поиск объектов Electron и Notion
+        const targetKeys = ['__NOTION__', 'notion', 'desktop', 'electron', 'api', 'chrome', 'webkit', 'process', 'external'];
+        targetKeys.forEach(key => {
+            if (key in window) {
+                try {
+                    reconData.electronHooks[key] = typeof window[key] === 'object' ? Object.keys(window[key]) : typeof window[key];
+                } catch(e) {
+                    reconData.electronHooks[key] = "Access Denied";
+                }
+            }
+        });
+
+        // 3. Агрессивный перебор всех нестандартных свойств window
+        const iframeWindow = document.createElement('iframe');
+        iframeWindow.style.display = 'none';
+        document.body.appendChild(iframeWindow);
+        const standardKeys = Object.keys(iframeWindow.contentWindow);
+        reconData.unusualGlobals = Object.keys(window).filter(key => !standardKeys.includes(key));
+        document.body.removeChild(iframeWindow);
+
+        // 4. Сбор специфичных данных navigator
+        const navKeys = ['userAgent', 'platform', 'vendor', 'hardwareConcurrency', 'deviceMemory', 'userAgentData'];
+        navKeys.forEach(k => reconData.navigatorData[k] = navigator[k]);
+
+        // 5. Проверка доступности хранилищ и воркеров
+        reconData.storageWorkers = {
+            sharedWorker: 'SharedWorker' in window,
+            serviceWorker: 'serviceWorker' in navigator,
+            indexedDB: 'indexedDB' in window,
+            localStorageAccess: (() => { try { return !!window.localStorage; } catch(e) { return false; } })()
+        };
+
+        // 6. Перехват ответов на postMessage
+        window.addEventListener('message', (e) => {
+            reconData.postMessageReplies.push({
+                origin: e.origin,
+                data: e.data
+            });
+        });
+
+        // 7. Бомбардировка parent-окна различными запросами
+        const payloads = [
+            { hello: true, need: "pageId" },
+            { type: "NOTION_API_REQUEST", action: "getContext" },
+            { type: "GET_CURRENT_PAGE" },
+            "ping",
+            { request: "frame_info" }
+        ];
+        
+        payloads.forEach(p => {
+            try { window.parent.postMessage(p, "*"); } catch(e) {}
+        });
+
+        // Таймер на 30 секунд
+        let timeLeft = 30;
+        const timer = setInterval(() => {
+            timeLeft--;
+            document.getElementById('status').innerText = `🕵️ Активная разведка... Ожидание ответов (${timeLeft} сек)`;
+            if (timeLeft <= 0) {
+                clearInterval(timer);
+                finishRecon();
+            }
+        }, 1000);
+
+        function finishRecon() {
+            const statusEl = document.getElementById('status');
+            statusEl.innerText = "✅ Разведка завершена. Данные готовы к анализу.";
+            statusEl.classList.add('success');
+            
+            const outStr = JSON.stringify(reconData, null, 2);
+            document.getElementById('output').innerText = outStr;
+            
+            const btn = document.getElementById('copyBtn');
+            btn.disabled = false;
+            btn.onclick = () => {
+                navigator.clipboard.writeText(outStr);
+                btn.innerText = "✅ Скопировано!";
+                setTimeout(() => btn.innerText = "📋 Скопировать дамп разведки", 2000);
+            };
+        }
+    </script>
+</body>
+</html>
