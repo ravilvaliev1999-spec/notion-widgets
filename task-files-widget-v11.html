@@ -1,0 +1,865 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="robots" content="noindex, nofollow">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Файлы задачи</title>
+<style>
+  :root{
+    --bg:#191919;            /* системный фон тёмной темы Notion */
+    --panel:#202020;
+    --txt:rgba(255,255,255,.9);
+    --txt-dim:rgba(255,255,255,.45);
+    --border:rgba(255,255,255,.08);
+
+    /* точные цвета со скриншота */
+    --drive-bg:#2f2f2f; --drive-bd:#4a4a4a; --drive-tx:#e6e6e5; --drive-sub:#939392;
+    --docs-bg:#1f3b54;  --docs-bd:#3c546a;  --docs-tx:#d0e3f3;  --docs-sub:#8097ab;
+    --sheets-bg:#1c3829;--sheets-bd:#395245;--sheets-tx:#ceebd7;--sheets-sub:#7d9a88;
+    --slides-bg:#5c3a1e;--slides-bd:#71533b;--slides-tx:#f4d9c0;--slides-sub:#af9176;
+
+    --ease:cubic-bezier(.2,.8,.3,1);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:var(--bg)}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    color:var(--txt);font-size:14px;
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+    padding:4px;
+  }
+  body.dragover::after{
+    content:'Отпустите файл, чтобы добавить';
+    position:fixed;inset:4px;border:2px dashed rgba(255,255,255,.35);border-radius:14px;
+    display:flex;align-items:center;justify-content:center;font-size:14px;color:var(--txt);
+    background:rgba(25,25,25,.92);z-index:40;pointer-events:none;
+  }
+
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;align-items:start}
+  .col{display:flex;flex-direction:column;gap:9px;min-width:0}
+
+  /* ---- карточка ---- */
+  .card{
+    border-radius:12px;
+    display:flex;align-items:stretch;position:relative;
+    border:1px solid transparent;user-select:none;
+    transition:transform .18s var(--ease), box-shadow .18s var(--ease), filter .18s var(--ease);
+    will-change:transform;
+  }
+  /* Apple-подсветка: мягкий подъём + свечение */
+  @media(hover:hover){
+    .card:hover{
+      transform:translateY(-1.5px);
+      filter:brightness(1.12);
+      box-shadow:0 6px 18px rgba(0,0,0,.4);
+    }
+  }
+  .card:active{transform:scale(.985);filter:brightness(1.05);transition-duration:.08s}
+
+  .card .go{
+    flex:1;min-width:0;display:flex;align-items:center;gap:11px;
+    padding:13px 4px 13px 14px;text-decoration:none;color:inherit;cursor:pointer;
+    border-radius:12px 0 0 12px;-webkit-tap-highlight-color:transparent;
+  }
+  .card .go:focus-visible{outline:2px solid rgba(255,255,255,.4);outline-offset:-2px;border-radius:12px}
+  .card .ic{width:26px;height:26px;flex:none;display:flex;align-items:center;justify-content:center}
+  .card .meta{min-width:0;flex:1}
+  .card .name{display:block;font-weight:600;font-size:14px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .card .sub{display:block;font-size:11.5px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .card .cnt{font-size:11px;min-width:21px;height:21px;padding:0 6px;border-radius:11px;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;flex:none;color:inherit;opacity:.75}
+  .card .side{display:flex;align-items:center;padding:0 9px 0 4px;flex:none;gap:2px}
+
+  .iconbtn{
+    width:24px;height:24px;border:none;background:none;border-radius:7px;cursor:pointer;
+    color:inherit;opacity:.55;display:flex;align-items:center;justify-content:center;
+    text-decoration:none;font-size:12px;padding:0;-webkit-tap-highlight-color:transparent;
+    transition:background .15s,opacity .15s;
+  }
+  .iconbtn:hover{background:rgba(255,255,255,.14);opacity:1}
+  .iconbtn svg{transition:transform .18s var(--ease)}
+  .col.collapsed .chev svg{transform:rotate(-90deg)}
+  .col.collapsed .fcard{display:none}
+
+  .c-drive{background:var(--drive-bg);border-color:var(--drive-bd)}
+  .c-drive .name{color:var(--drive-tx)} .c-drive .sub{color:var(--drive-sub)}
+  .c-docs{background:var(--docs-bg);border-color:var(--docs-bd)}
+  .c-docs .name{color:var(--docs-tx)} .c-docs .sub{color:var(--docs-sub)}
+  .c-sheets{background:var(--sheets-bg);border-color:var(--sheets-bd)}
+  .c-sheets .name{color:var(--sheets-tx)} .c-sheets .sub{color:var(--sheets-sub)}
+  .c-slides{background:var(--slides-bg);border-color:var(--slides-bd)}
+  .c-slides .name{color:var(--slides-tx)} .c-slides .sub{color:var(--slides-sub)}
+
+  .fcard .del{opacity:0}
+  @media(hover:hover){ .fcard:hover .del{opacity:.55} }
+  @media(hover:none){ .fcard .del{opacity:.45} } /* на тач-устройствах видна всегда */
+  .fcard .del:hover{background:rgba(255,80,80,.28);opacity:1}
+
+  /* ---- круглая кнопка "+" по центру, стиль Apple ---- */
+  .plus-wrap{display:flex;justify-content:center;margin-top:12px;position:relative}
+  .plus{
+    width:36px;height:36px;border-radius:50%;border:none;cursor:pointer;
+    background:rgba(255,255,255,.08);color:rgba(255,255,255,.7);
+    font-size:19px;font-weight:300;line-height:1;
+    display:flex;align-items:center;justify-content:center;
+    transition:transform .2s var(--ease), background .2s, color .2s;
+    -webkit-tap-highlight-color:transparent;
+  }
+  .plus:hover{background:rgba(255,255,255,.15);color:#fff;transform:scale(1.08)}
+  .plus:active{transform:scale(.94)}
+  .plus.open{transform:rotate(45deg);background:rgba(255,255,255,.18);color:#fff}
+
+  /* ---- action sheet: полупрозрачный, с блюром, как в iOS ---- */
+  .sheet{
+    position:fixed;left:0;top:0;
+    transform:translateY(4px) scale(.97);transform-origin:center bottom;
+    min-width:216px;
+    background:rgba(38,38,40,.86);
+    -webkit-backdrop-filter:blur(22px) saturate(180%);
+    backdrop-filter:blur(22px) saturate(180%);
+    border:1px solid rgba(255,255,255,.1);
+    border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.55);
+    overflow:hidden;opacity:0;pointer-events:none;
+    transition:opacity .18s var(--ease), transform .18s var(--ease);z-index:30;
+  }
+  .sheet.show{opacity:1;pointer-events:auto;transform:translateY(0) scale(1)}
+  .sheet button{
+    display:flex;align-items:center;gap:11px;width:100%;
+    border:none;background:none;color:var(--txt);cursor:pointer;
+    font-family:inherit;font-size:13.5px;padding:12px 17px;text-align:left;
+    -webkit-tap-highlight-color:transparent;
+  }
+  .sheet button:hover{background:rgba(255,255,255,.07)}
+  .sheet .sep{height:1px;background:rgba(255,255,255,.09)}
+  .sheet .sicon{width:18px;text-align:center;opacity:.8}
+  .sheet .muted{color:var(--txt-dim)}
+  #fileInput{display:none}
+
+  /* ---- панели ---- */
+  .panel{margin-top:10px;padding:13px;border-radius:13px;background:var(--panel);border:1px solid var(--border);display:none}
+  .panel.show{display:block}
+  .panel .row{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;align-items:center}
+  .panel .row:last-child{margin-bottom:0}
+  .panel input[type=text]{flex:1;background:rgba(0,0,0,.3);border:1px solid var(--border);border-radius:8px;color:var(--txt);padding:8px 11px;font-size:13px;font-family:inherit;min-width:120px}
+  .panel input[type=text]:focus{outline:none;border-color:rgba(255,255,255,.28)}
+  .panel input::placeholder{color:rgba(255,255,255,.25)}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+  .chip{font-size:11.5px;padding:4px 11px;border-radius:20px;cursor:pointer;background:rgba(255,255,255,.06);color:var(--txt-dim);border:1px solid transparent;transition:all .15s;-webkit-tap-highlight-color:transparent}
+  .chip.on{background:rgba(255,255,255,.15);color:var(--txt);border-color:rgba(255,255,255,.2)}
+  .actions{display:flex;gap:8px;justify-content:flex-end}
+  .hint{font-size:11px;color:var(--txt-dim);margin-bottom:8px;word-break:break-word}
+  .btn{border:1px solid rgba(255,255,255,.14);background:none;border-radius:9px;color:var(--txt-dim);font-size:12.5px;padding:6px 13px;cursor:pointer;font-family:inherit;transition:all .15s;-webkit-tap-highlight-color:transparent}
+  .btn:hover{color:var(--txt);border-color:rgba(255,255,255,.3)}
+  .btn.solid{background:rgba(255,255,255,.1);border-color:transparent;color:var(--txt)}
+  .btn.solid:hover{background:rgba(255,255,255,.17)}
+  .btn.danger{color:#ff9c9c;border-color:rgba(255,120,120,.3)}
+  .btn.danger:hover{background:rgba(255,80,80,.15)}
+
+  .toast{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);background:rgba(38,38,40,.94);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);border:1px solid rgba(255,255,255,.1);color:var(--txt);padding:9px 17px;border-radius:11px;font-size:12.5px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:50;max-width:92%;text-align:center;box-shadow:0 8px 28px rgba(0,0,0,.4)}
+  .toast.show{opacity:1}
+
+  /* ---- адаптация под iPhone ---- */
+  @media(max-width:640px){
+    body{padding:2px}
+    .grid{grid-template-columns:repeat(2,1fr);gap:9px}
+    .card .go{padding:11px 2px 11px 12px;gap:9px}
+    .card .name{font-size:13.5px}
+    .card .cnt{display:none}          /* экономим место на узком экране */
+    .plus{width:40px;height:40px;font-size:21px} /* удобнее для пальца */
+    .sheet{min-width:236px}
+    .sheet button{padding:14px 18px;font-size:14px}
+  }
+  @media(max-width:359px){
+    .grid{grid-template-columns:1fr}
+  }
+  @media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div id="wrap">
+
+<div class="panel" id="bindScreen" style="margin-top:0">
+  <div class="hint" style="font-size:12.5px">Не удалось автоматически определить страницу задачи. Вставьте ссылку на эту задачу из Notion (Copy link) — виджет привяжет файлы только к ней.</div>
+  <div class="row">
+    <input id="bindInput" type="text" placeholder="https://www.notion.so/Задача-abc123…">
+    <button class="btn solid" id="bindBtn">Привязать</button>
+  </div>
+</div>
+
+<div id="app" style="display:none">
+  <div class="grid" id="grid">
+
+    <div class="col" data-col="drive">
+      <div class="card c-drive">
+        <a class="go" href="https://drive.google.com/drive/my-drive" target="_blank" rel="noopener" data-type="drive">
+          <span class="ic"><svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M8.5 3.5h7l-7 12H2l6.5-12z" fill="#8ab4f8"/><path d="M15.5 3.5 22 15h-7l-6.5-11.5h7z" fill="#fdd663"/><path d="M8.5 15.5H22L18.5 21h-13l3-5.5z" fill="#81c995"/></svg></span>
+          <span class="meta"><span class="name">Drive</span><span class="sub">Папка задачи</span></span>
+          <span class="cnt" data-cnt="drive">0</span>
+        </a>
+        <span class="side"><button class="iconbtn chev" data-chev="drive" title="Свернуть файлы" aria-label="Свернуть файлы Drive"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m6 9 6 6 6-6"/></svg></button></span>
+      </div>
+    </div>
+
+    <div class="col" data-col="docs">
+      <div class="card c-docs">
+        <a class="go" href="https://docs.google.com/document/create" target="_blank" rel="noopener" data-type="docs">
+          <span class="ic"><svg width="20" height="25" viewBox="0 0 20 24" fill="none"><path d="M2 1h11l5 5v16a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" fill="#4285f4"/><path d="M13 1v5h5l-5-5z" fill="#a8c7fa"/><path d="M5 11h10M5 14.5h10M5 18h7" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/></svg></span>
+          <span class="meta"><span class="name">Docs</span><span class="sub">Документы</span></span>
+          <span class="cnt" data-cnt="docs">0</span>
+        </a>
+        <span class="side"><button class="iconbtn chev" data-chev="docs" title="Свернуть файлы" aria-label="Свернуть файлы Docs"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m6 9 6 6 6-6"/></svg></button></span>
+      </div>
+    </div>
+
+    <div class="col" data-col="sheets">
+      <div class="card c-sheets">
+        <a class="go" href="https://docs.google.com/spreadsheet/create" target="_blank" rel="noopener" data-type="sheets">
+          <span class="ic"><svg width="20" height="25" viewBox="0 0 20 24" fill="none"><path d="M2 1h11l5 5v16a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" fill="#34a853"/><path d="M13 1v5h5l-5-5z" fill="#a5d6b7"/><path d="M5 11h10v8H5v-8zm0 2.7h10M5 16.3h10M10 11v8" stroke="#fff" stroke-width="1.3"/></svg></span>
+          <span class="meta"><span class="name">Sheets</span><span class="sub">Таблицы</span></span>
+          <span class="cnt" data-cnt="sheets">0</span>
+        </a>
+        <span class="side"><button class="iconbtn chev" data-chev="sheets" title="Свернуть файлы" aria-label="Свернуть файлы Sheets"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m6 9 6 6 6-6"/></svg></button></span>
+      </div>
+    </div>
+
+    <div class="col" data-col="slides">
+      <div class="card c-slides">
+        <a class="go" href="https://docs.google.com/presentation/create" target="_blank" rel="noopener" data-type="slides">
+          <span class="ic"><svg width="20" height="25" viewBox="0 0 20 24" fill="none"><path d="M2 1h11l5 5v16a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" fill="#fbbc04"/><path d="M13 1v5h5l-5-5z" fill="#fde293"/><rect x="5" y="11" width="10" height="7" rx="1" stroke="#fff" stroke-width="1.4" fill="none"/></svg></span>
+          <span class="meta"><span class="name">Slides</span><span class="sub">Презентации</span></span>
+          <span class="cnt" data-cnt="slides">0</span>
+        </a>
+        <span class="side"><button class="iconbtn chev" data-chev="slides" title="Свернуть файлы" aria-label="Свернуть файлы Slides"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m6 9 6 6 6-6"/></svg></button></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="plus-wrap">
+    <button class="plus" id="plusBtn" title="Добавить" aria-label="Добавить файл">＋</button>
+    <div class="sheet" id="sheet">
+      <button id="shLink"><span class="sicon">🔗</span>Добавить ссылку</button>
+      <div class="sep"></div>
+      <button id="shFile"><span class="sicon">📎</span>Файл с компьютера</button>
+      <div class="sep"></div>
+      <button id="shSettings" class="muted"><span class="sicon">⚙︎</span>Настройки</button>
+    </div>
+  </div>
+  <input type="file" id="fileInput" multiple>
+
+  <div class="panel" id="addForm">
+    <div class="hint" id="formHint">Вставьте ссылку — Google, Word, Excel, OneDrive. Тип определится автоматически.</div>
+    <div class="row"><input id="fUrl" type="text" placeholder="Ссылка на файл" inputmode="url"></div>
+    <div class="row"><input id="fName" type="text" placeholder="Название файла"></div>
+    <div class="chips" id="typeChips">
+      <span class="chip" data-t="docs">Google Docs</span>
+      <span class="chip" data-t="sheets">Google Sheets</span>
+      <span class="chip" data-t="slides">Google Slides</span>
+      <span class="chip" data-t="word">Word</span>
+      <span class="chip" data-t="excel">Excel</span>
+      <span class="chip" data-t="ppt">PowerPoint</span>
+      <span class="chip" data-t="drive">Drive / другое</span>
+    </div>
+    <div class="actions">
+      <button class="btn" id="cancelBtn">Отмена</button>
+      <button class="btn solid" id="saveBtn">Сохранить</button>
+    </div>
+  </div>
+
+  <div class="panel" id="settingsPanel">
+    <div class="hint">ID задачи: <span id="taskIdLabel">—</span></div>
+    <div class="hint">Связь с Apps Script: <span id="netStatus">проверяю…</span></div>
+    <div class="hint" style="margin-top:6px">Авто-добавление созданных Google-файлов (укажите URL веб-приложения Apps Script — код даст Claude):</div>
+    <div class="row">
+      <input id="gasUrl" type="text" placeholder="https://script.google.com/macros/s/…/exec" inputmode="url">
+      <button class="btn" id="gasSaveBtn">Сохранить</button>
+      <button class="btn" id="gasTestBtn">Проверить связь</button>
+    </div>
+    <div class="row" style="margin-top:4px">
+      <button class="btn" id="rebindBtn">Перепривязать</button>
+      <button class="btn danger" id="clearBtn">Очистить файлы задачи</button>
+      <span style="flex:1"></span>
+      <button class="btn" id="settingsCloseBtn">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+</div><!-- /wrap -->
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+  'use strict';
+
+  /* ============ storage ============ */
+  var mem = {};
+  var store;
+  try {
+    localStorage.setItem('__gw_t','1'); localStorage.removeItem('__gw_t');
+    store = localStorage;
+  } catch(e) {
+    store = {
+      getItem:function(k){return mem[k]||null;},
+      setItem:function(k,v){mem[k]=String(v);},
+      removeItem:function(k){delete mem[k];}
+    };
+  }
+  var persistent = (store === localStorage);
+  var MAX_UPLOAD = 3*1024*1024;
+
+  /* ============ идентификация задачи ============ */
+  function hashStr(s){
+    var h = 5381;
+    for (var i=0;i<s.length;i++){ h = ((h<<5)+h+s.charCodeAt(i))>>>0; }
+    return h.toString(36);
+  }
+  function extractNotionId(s){
+    if(!s) return null;
+    var clean = s.replace(/[-–]/g,'');
+    var m = clean.match(/([0-9a-f]{32})/i);
+    return m ? m[1].toLowerCase() : null;
+  }
+  function resolveTaskKey(){
+    try{
+      var sp = new URLSearchParams(location.search);
+      if (sp.get('task')) return 't_'+sp.get('task');
+      var hm = (location.hash||'').match(/task=([\w-]{2,})/);
+      if (hm) return 't_'+hm[1];
+    }catch(e){}
+    var fromRef = extractNotionId(document.referrer) || extractNotionId(location.href);
+    if (fromRef) return 'p_'+fromRef;
+    if (document.referrer && document.referrer.length > 12){
+      return 'r_'+hashStr(document.referrer);
+    }
+    var manual = store.getItem('gw_manual_bind');
+    if (manual) return manual;
+    return null;
+  }
+
+  var TASK = resolveTaskKey();
+  var $ = function(id){ return document.getElementById(id); };
+  function dataKey(){ return 'gw_files__'+TASK; }
+  function loadFiles(){
+    try{ return JSON.parse(store.getItem(dataKey())||'[]'); }catch(e){ return []; }
+  }
+  function saveFiles(arr){
+    try{ store.setItem(dataKey(), JSON.stringify(arr)); return true; }
+    catch(e){ toast('Хранилище переполнено — удалите крупные файлы или используйте ссылки'); return false; }
+  }
+
+  /* ============ типы ============ */
+  var TYPE_META = {
+    docs:  {label:'Google Docs',   group:'docs'},
+    sheets:{label:'Google Sheets', group:'sheets'},
+    slides:{label:'Google Slides', group:'slides'},
+    word:  {label:'Word',          group:'docs'},
+    excel: {label:'Excel',         group:'sheets'},
+    ppt:   {label:'PowerPoint',    group:'slides'},
+    drive: {label:'Файл',          group:'drive'}
+  };
+  function detectTypeByUrl(url){
+    var u = (url||'').toLowerCase();
+    if (u.indexOf('docs.google.com/document')>-1)      return 'docs';
+    if (u.indexOf('docs.google.com/spreadsheets')>-1)  return 'sheets';
+    if (u.indexOf('docs.google.com/presentation')>-1)  return 'slides';
+    if (/\.docx?([?#]|$)/.test(u) || u.indexOf('/:w:/')>-1) return 'word';
+    if (/\.(xlsx?|xlsm|csv)([?#]|$)/.test(u) || u.indexOf('/:x:/')>-1) return 'excel';
+    if (/\.pptx?([?#]|$)/.test(u) || u.indexOf('/:p:/')>-1) return 'ppt';
+    if (u.indexOf('drive.google.com')>-1)              return 'drive';
+    return 'drive';
+  }
+  function detectTypeByName(name){
+    var n = (name||'').toLowerCase();
+    if (/\.docx?$/.test(n)) return 'word';
+    if (/\.(xlsx?|xlsm|csv)$/.test(n)) return 'excel';
+    if (/\.pptx?$/.test(n)) return 'ppt';
+    return 'drive';
+  }
+  function detectTypeByMime(mime){
+    if (!mime) return null;
+    if (mime==='application/vnd.google-apps.document') return 'docs';
+    if (mime==='application/vnd.google-apps.spreadsheet') return 'sheets';
+    if (mime==='application/vnd.google-apps.presentation') return 'slides';
+    return null;
+  }
+  function fileIcon(t){
+    switch(t){
+      case 'docs':   return '<svg width="18" height="21" viewBox="0 0 20 24"><path d="M2 1h11l5 5v16a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" fill="#4285f4"/><path d="M5 11h10M5 14.5h10M5 18h7" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/></svg>';
+      case 'sheets': return '<svg width="18" height="21" viewBox="0 0 20 24"><path d="M2 1h11l5 5v16a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" fill="#34a853"/><path d="M5 11h10v8H5v-8zm0 2.7h10M5 16.3h10M10 11v8" stroke="#fff" stroke-width="1.3" fill="none"/></svg>';
+      case 'slides': return '<svg width="18" height="21" viewBox="0 0 20 24"><path d="M2 1h11l5 5v16a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" fill="#fbbc04"/><rect x="5" y="11" width="10" height="7" rx="1" stroke="#fff" stroke-width="1.4" fill="none"/></svg>';
+      case 'word':   return '<svg width="18" height="21" viewBox="0 0 20 24"><rect x="1" y="1" width="18" height="22" rx="2" fill="#4a90d9"/><text x="10" y="16.5" font-size="11" font-weight="700" fill="#fff" text-anchor="middle" font-family="Arial">W</text></svg>';
+      case 'excel':  return '<svg width="18" height="21" viewBox="0 0 20 24"><rect x="1" y="1" width="18" height="22" rx="2" fill="#3fae7a"/><text x="10" y="16.5" font-size="11" font-weight="700" fill="#fff" text-anchor="middle" font-family="Arial">X</text></svg>';
+      case 'ppt':    return '<svg width="18" height="21" viewBox="0 0 20 24"><rect x="1" y="1" width="18" height="22" rx="2" fill="#d9764a"/><text x="10" y="16.5" font-size="11" font-weight="700" fill="#fff" text-anchor="middle" font-family="Arial">P</text></svg>';
+      default:       return '<svg width="16" height="16" viewBox="0 0 24 24"><path d="M8.5 3.5h7L22 15l-3.5 6h-13L2 15 8.5 3.5z" fill="none" stroke="#c8c8c8" stroke-width="1.8"/></svg>';
+    }
+  }
+
+  /* ============ boot / привязка ============ */
+  function boot(){
+    if (TASK){
+      $('bindScreen').classList.remove('show');
+      $('app').style.display = '';
+      $('taskIdLabel').textContent = TASK;
+      $('gasUrl').value = store.getItem('gw_gas_url') || DEFAULT_GAS_URL;
+      render();
+      if(!persistent) toast('⚠️ Хранилище недоступно — файлы не сохранятся после перезагрузки');
+      checkNet();
+    } else {
+      $('app').style.display = 'none';
+      $('bindScreen').classList.add('show');
+    }
+  }
+  $('bindBtn').addEventListener('click', doBind);
+  $('bindInput').addEventListener('keydown', function(e){ if(e.key==='Enter') doBind(); });
+  function doBind(){
+    var v = $('bindInput').value.trim();
+    if(!v){ toast('Вставьте ссылку на задачу'); return; }
+    var id = extractNotionId(v);
+    var key = id ? 'p_'+id : 'r_'+hashStr(v);
+    store.setItem('gw_manual_bind', key);
+    TASK = key;
+    boot();
+    toast('Виджет привязан к задаче');
+  }
+
+  /* ============ лаунчеры ============ */
+  document.querySelectorAll('.go[data-type]').forEach(function(a){
+    a.addEventListener('click', function(){
+      startWatch(a.dataset.type);
+    });
+  });
+  document.querySelectorAll('.chev').forEach(function(ch){
+    ch.addEventListener('click', function(){
+      var col = document.querySelector('.col[data-col="'+ch.dataset.chev+'"]');
+      if (col) col.classList.toggle('collapsed');
+    });
+  });
+
+  /* ============ авто-добавление созданного файла ============ */
+  /* Путь 1 (без настройки): после создания скопируйте ссылку и нажмите Ctrl/Cmd+V
+     в любом месте виджета — файл добавится сам.
+     Путь 2 (полный автомат): веб-приложение Apps Script возвращает последние
+     созданные файлы Google; виджет опрашивает его ~90 секунд после клика. */
+  var watchTimer = null, watchUntil = 0, watchStartTs = 0;
+  /* URL вшит по умолчанию, в Настройках можно заменить */
+  var DEFAULT_GAS_URL = 'https://script.google.com/macros/s/AKfycbw9I_BCPMjS5kS5VL5gCfoTlpUDOZEYXZOuAjOReieJKbSWPuNLxHDulkVchggwXLhZ/exec';
+  var WIDGET_KEY = 'Mbg8jvthj931bwqgdYZXwyCWpfBTEXOo'; /* должен совпадать с SECRET в Apps Script */
+  function gasUrl(){
+    var v = (store.getItem('gw_gas_url')||'').trim();
+    /* миграция со старого развёртывания */
+    if (v.indexOf('AKfycbxjizl_jhWzSDzrkENr09') > -1){
+      store.removeItem('gw_gas_url');
+      v = '';
+    }
+    return v || DEFAULT_GAS_URL;
+  }
+  /* Определяем рабочий транспорт: fetch / JSONP / ничего */
+  var NET = null; /* 'fetch' | 'jsonp' | 'none' */
+  function checkNet(cb){
+    var url = gasUrl();
+    if (!url){ NET='none'; cb&&cb(); return; }
+    var finished = false;
+    function done(mode){
+      if (finished) return;
+      finished = true;
+      NET = mode;
+      var el = $('netStatus');
+      if (el) el.textContent = mode==='none'
+        ? '❌ песочница блокирует сеть (fetch и JSONP)'
+        : '✅ работает ('+mode+')';
+      cb && cb();
+    }
+    /* попытка fetch */
+    fetch(url+'?after=0&key='+encodeURIComponent(WIDGET_KEY)).then(function(r){ return r.json(); })
+      .then(function(d){ if(Array.isArray(d)) done('fetch'); })
+      .catch(function(){});
+    /* параллельно JSONP */
+    var cbName = '__gwping'+Math.random().toString(36).slice(2,7);
+    var sc = document.createElement('script');
+    window[cbName] = function(){ try{delete window[cbName];}catch(e){} sc.remove(); done('jsonp'); };
+    sc.onerror = function(){ sc.remove(); };
+    sc.src = url+'?after=0&key='+encodeURIComponent(WIDGET_KEY)+'&callback='+cbName;
+    document.head.appendChild(sc);
+    setTimeout(function(){ done('none'); }, 9000);
+  }
+
+  /* JSONP: работает даже когда песочница режет CORS для fetch */
+  var jsonpSeq = 0;
+  function gasRequest(params, cb){
+    var url = gasUrl();
+    if (!url){ cb(new Error('URL не задан')); return; }
+    params += '&key=' + encodeURIComponent(WIDGET_KEY);
+    var cbName = '__gwcb' + (++jsonpSeq) + Math.random().toString(36).slice(2,6);
+    var full = url + (url.indexOf('?')>-1?'&':'?') + params + '&callback=' + cbName;
+    var done = false;
+    var sc = document.createElement('script');
+    var timer = setTimeout(function(){ finish(); tryFetch(); }, 8000);
+    function finish(){
+      if (done) return true;
+      done = true;
+      clearTimeout(timer);
+      try{ delete window[cbName]; }catch(e){ window[cbName]=undefined; }
+      if (sc.parentNode) sc.parentNode.removeChild(sc);
+      return false;
+    }
+    window[cbName] = function(data){ if(!finish()) cb(null, data); };
+    sc.onerror = function(){ if(!finish()) tryFetch(); };
+    function tryFetch(){
+      fetch(url + (url.indexOf('?')>-1?'&':'?') + params)
+        .then(function(r){ return r.json(); })
+        .then(function(d){ cb(null, d); })
+        .catch(function(e){ cb(e); });
+    }
+    sc.src = full;
+    document.head.appendChild(sc);
+  }
+  function startWatch(type){
+    watchStartTs = Date.now();
+    watchUntil = watchStartTs + 90*1000;
+    if (watchTimer) clearInterval(watchTimer);
+    watchTimer = setInterval(pollGas, 5000);
+    toast('Жду создания файла — добавлю автоматически…');
+  }
+  function pollGas(){
+    if (Date.now() > watchUntil){ clearInterval(watchTimer); watchTimer=null; return; }
+    gasRequest('after='+watchStartTs, function(err, list){
+      if (err || !Array.isArray(list)) return;
+      var files = loadFiles();
+      var known = {};
+      files.forEach(function(f){ if(f.url) known[f.url]=1; });
+      list.forEach(function(item){
+        if (!item.url || known[item.url]) return;
+        var t = detectTypeByMime(item.mimeType) || detectTypeByUrl(item.url);
+        addFile({ kind:'link', name:item.name||'Без названия', url:item.url, type:t }, true);
+        toast('«'+(item.name||'файл')+'» добавлен автоматически');
+      });
+    });
+  }
+  /* Ctrl+V где угодно на виджете */
+  document.addEventListener('paste', function(e){
+    if (e.target && (e.target.tagName==='INPUT' || e.target.tagName==='TEXTAREA')) return;
+    var text = (e.clipboardData||window.clipboardData).getData('text').trim();
+    if (!/^https?:\/\/\S+$/i.test(text)) return;
+    e.preventDefault();
+    var t = detectTypeByUrl(text);
+    openForm(t);
+    $('fUrl').value = text;
+    $('fName').focus();
+    $('formHint').textContent = 'Ссылка вставлена — осталось дать название (или сохранить как есть).';
+  });
+
+  /* ============ "+" и action sheet ============ */
+  var sheetOpen = false;
+  function positionSheet(){
+    var sh = $('sheet');
+    var pb = $('plusBtn').getBoundingClientRect();
+    /* измеряем скрыто */
+    sh.style.visibility = 'hidden';
+    sh.classList.add('show');
+    var r = sh.getBoundingClientRect();
+    sh.classList.remove('show');
+    sh.style.visibility = '';
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var left = Math.min(Math.max(8, pb.left + pb.width/2 - r.width/2), vw - r.width - 8);
+    var top = pb.top - r.height - 8;                 /* пробуем вверх */
+    if (top < 8) top = pb.bottom + 8;                /* не влезло — вниз */
+    if (top + r.height > vh - 8) top = Math.max(8, vh - r.height - 8); /* и в край не упираемся */
+    sh.style.left = left + 'px';
+    sh.style.top = top + 'px';
+  }
+  function toggleSheet(force){
+    sheetOpen = (typeof force==='boolean') ? force : !sheetOpen;
+    if (sheetOpen) positionSheet();
+    $('sheet').classList.toggle('show', sheetOpen);
+    $('plusBtn').classList.toggle('open', sheetOpen);
+  }
+  $('plusBtn').addEventListener('click', function(e){ e.stopPropagation(); toggleSheet(); });
+  document.addEventListener('click', function(e){
+    if (sheetOpen && !e.target.closest('.sheet')) toggleSheet(false);
+  });
+  $('shLink').addEventListener('click', function(){ toggleSheet(false); hidePanels(); openForm(); });
+  $('shFile').addEventListener('click', function(){ toggleSheet(false); $('fileInput').click(); });
+  $('shSettings').addEventListener('click', function(){
+    toggleSheet(false); hidePanels();
+    $('settingsPanel').classList.add('show');
+    $('netStatus').textContent = 'проверяю…';
+    checkNet();
+  });
+
+  function hidePanels(){
+    $('addForm').classList.remove('show');
+    $('settingsPanel').classList.remove('show');
+  }
+
+  /* ============ настройки ============ */
+  $('settingsCloseBtn').addEventListener('click', function(){ $('settingsPanel').classList.remove('show'); });
+  $('gasSaveBtn').addEventListener('click', function(){
+    var v = $('gasUrl').value.trim();
+    if (v && !/^https:\/\/script\.google\.com\//.test(v)){
+      toast('Это не похоже на URL Apps Script'); return;
+    }
+    if (v) store.setItem('gw_gas_url', v); else store.removeItem('gw_gas_url');
+    toast(v ? 'Авто-добавление включено' : 'Авто-добавление выключено');
+  });
+  $('gasTestBtn').addEventListener('click', function(){
+    toast('Проверяю связь с Apps Script…');
+    var t0 = Date.now();
+    gasRequest('after=0', function(err, list){
+      if (err){ toast('Нет связи: '+(err.message||'ошибка сети/CORS')); return; }
+      if (!Array.isArray(list)){ toast('Ответ не JSON — проверьте деплой (доступ: Anyone)'); return; }
+      toast('Связь OK ('+(Date.now()-t0)+' мс). Файлов за 15 мин: '+list.length);
+    });
+  });
+  $('rebindBtn').addEventListener('click', function(){
+    store.removeItem('gw_manual_bind');
+    TASK = null;
+    hidePanels();
+    boot();
+  });
+  var clearArmed = false, clearTimer;
+  $('clearBtn').addEventListener('click', function(){
+    if (!clearArmed){
+      clearArmed = true;
+      $('clearBtn').textContent = 'Точно удалить всё?';
+      clearTimeout(clearTimer);
+      clearTimer = setTimeout(function(){
+        clearArmed = false;
+        $('clearBtn').textContent = 'Очистить файлы задачи';
+      }, 3500);
+    } else {
+      clearArmed = false;
+      clearTimeout(clearTimer);
+      $('clearBtn').textContent = 'Очистить файлы задачи';
+      saveFiles([]);
+      render();
+      toast('Список очищен');
+    }
+  });
+
+  /* ============ форма ссылки ============ */
+  var selectedType = null;
+  function openForm(prefType){
+    hidePanels();
+    $('addForm').classList.add('show');
+    selectType(prefType || null);
+    $('fUrl').focus();
+  }
+  function closeForm(){
+    $('addForm').classList.remove('show');
+    $('formHint').textContent = 'Вставьте ссылку — Google, Word, Excel, OneDrive. Тип определится автоматически.';
+    $('fUrl').value=''; $('fName').value='';
+    selectType(null);
+  }
+  function selectType(t){
+    selectedType = t;
+    document.querySelectorAll('.chip').forEach(function(c){
+      c.classList.toggle('on', c.dataset.t===t);
+    });
+  }
+  document.querySelectorAll('.chip').forEach(function(c){
+    c.addEventListener('click', function(){ selectType(c.dataset.t); });
+  });
+  $('fUrl').addEventListener('input', function(){
+    var v = $('fUrl').value.trim();
+    if (v) selectType(detectTypeByUrl(v));
+  });
+  $('cancelBtn').addEventListener('click', closeForm);
+  $('saveBtn').addEventListener('click', saveLink);
+  [$('fUrl'),$('fName')].forEach(function(inp){
+    inp.addEventListener('keydown', function(e){ if(e.key==='Enter') saveLink(); });
+  });
+  function saveLink(){
+    var url = $('fUrl').value.trim();
+    var name = $('fName').value.trim();
+    if (!url){ toast('Нужна ссылка на файл'); return; }
+    if (!/^https?:\/\//i.test(url)) url = 'https://'+url;
+    var type = selectedType || detectTypeByUrl(url);
+    if (!name) name = TYPE_META[type].label + ' от ' + fmtDate(Date.now());
+    addFile({ kind:'link', name:name, url:url, type:type });
+    closeForm();
+  }
+
+  /* ============ загрузка с ПК ============ */
+  $('fileInput').addEventListener('change', function(){
+    handleFiles(this.files);
+    this.value = '';
+  });
+  ['dragenter','dragover'].forEach(function(ev){
+    document.body.addEventListener(ev, function(e){
+      e.preventDefault(); document.body.classList.add('dragover');
+    });
+  });
+  ['dragleave','drop'].forEach(function(ev){
+    document.body.addEventListener(ev, function(e){
+      e.preventDefault(); document.body.classList.remove('dragover');
+      if (ev==='drop' && e.dataTransfer && e.dataTransfer.files.length){
+        handleFiles(e.dataTransfer.files);
+      }
+    });
+  });
+  var MAX_DRIVE_UPLOAD = 15*1024*1024; /* 15 МБ через Apps Script */
+  function handleFiles(fileList){
+    Array.prototype.forEach.call(fileList, function(f){
+      if (f.size > MAX_DRIVE_UPLOAD){
+        toast('«'+f.name+'» больше 15 МБ — загрузите в облако вручную и добавьте ссылкой');
+        return;
+      }
+      var reader = new FileReader();
+      reader.onload = function(){
+        var dataUrl = reader.result;
+        uploadToDrive(f, dataUrl);
+      };
+      reader.onerror = function(){ toast('Не удалось прочитать «'+f.name+'»'); };
+      reader.readAsDataURL(f);
+    });
+  }
+  /* Загрузка в Google Drive через Apps Script: файл становится обычной ссылкой,
+     открывается и скачивается из Drive на любом устройстве. */
+  function uploadToDrive(f, dataUrl){
+    toast('Загружаю «'+f.name+'» в Drive…');
+    var b64 = String(dataUrl).split(',')[1] || '';
+    fetch(gasUrl(), {
+      method:'POST',
+      headers:{'Content-Type':'text/plain;charset=utf-8'}, /* без preflight */
+      body: JSON.stringify({
+        action:'upload', key:WIDGET_KEY, task:String(TASK||''), name:f.name,
+        mime:f.type||'application/octet-stream', data:b64
+      })
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(res){
+      if (res && res.ok && res.url){
+        addFile({ kind:'link', name:res.name||f.name, url:res.url, type:detectTypeByName(f.name) });
+        toast('«'+f.name+'» загружен в Drive и добавлен');
+      } else { throw new Error(res && res.error || 'upload failed'); }
+    })
+    .catch(function(){
+      /* сеть закрыта или GAS не обновлён — локальный фолбэк */
+      if (f.size > MAX_UPLOAD){
+        toast('Drive недоступен из песочницы, а файл больше 3 МБ. Добавьте его ссылкой из облака');
+        return;
+      }
+      addFile({ kind:'upload', name:f.name, data:dataUrl, mime:f.type||'application/octet-stream', type:detectTypeByName(f.name) });
+      toast('Drive недоступен — сохранил локально (скачивание может блокироваться песочницей)');
+    });
+  }
+
+  /* ============ данные ============ */
+  function addFile(rec, silent){
+    var files = loadFiles();
+    if (rec.url && files.some(function(f){ return f.url===rec.url; })){
+      if (!silent) toast('Этот файл уже добавлен');
+      return;
+    }
+    rec.id = Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+    rec.added = Date.now();
+    files.unshift(rec);
+    if (saveFiles(files)){ render(); if(!silent) toast('Файл добавлен'); }
+  }
+
+  /* ============ рендер ============ */
+  function fmtDate(ts){
+    var d = new Date(ts);
+    var p = function(n){ return (n<10?'0':'')+n; };
+    return p(d.getDate())+'.'+p(d.getMonth()+1)+'.'+String(d.getFullYear()).slice(2);
+  }
+  function esc(s){
+    return String(s).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+  function render(){
+    var files = loadFiles();
+    var byGroup = {drive:[],docs:[],sheets:[],slides:[]};
+    files.forEach(function(f){
+      var g = (TYPE_META[f.type]||TYPE_META.drive).group;
+      byGroup[g].push(f);
+    });
+    Object.keys(byGroup).forEach(function(g){
+      var cntEl = document.querySelector('[data-cnt="'+g+'"]');
+      if (cntEl) cntEl.textContent = byGroup[g].length;
+
+      var col = document.querySelector('.col[data-col="'+g+'"]');
+      col.querySelectorAll('.fcard').forEach(function(n){ n.remove(); });
+
+      byGroup[g].forEach(function(f){
+        var card = document.createElement('div');
+        card.className = 'card fcard c-'+g;
+
+        var go = document.createElement('a');
+        go.className = 'go';
+        if (f.kind === 'upload'){
+          /* загруженные с ПК — скачиваются сразу, без окон */
+          go.href = f.data;
+          go.setAttribute('download', f.name);
+          go.title = 'Скачать «'+f.name+'»';
+        } else {
+          /* ссылки (Google и любые другие) — просто открываются */
+          go.href = f.url;
+          go.target = '_blank';
+          go.rel = 'noopener';
+          go.title = f.url || '';
+        }
+        go.innerHTML =
+          '<span class="ic">'+fileIcon(f.type)+'</span>'+
+          '<span class="meta"><span class="name">'+esc(f.name)+'</span>'+
+          '<span class="sub">'+fmtDate(f.added)+(f.kind==='upload'?' · с ПК':'')+'</span></span>';
+
+        var side = document.createElement('span');
+        side.className = 'side';
+        var del = document.createElement('button');
+        del.className = 'iconbtn del';
+        del.title = 'Удалить';
+        del.setAttribute('aria-label','Удалить '+f.name);
+        del.textContent = '✕';
+        del.addEventListener('click', function(e){
+          e.preventDefault(); e.stopPropagation();
+          var rest = loadFiles().filter(function(x){ return x.id!==f.id; });
+          saveFiles(rest);
+          render();
+        });
+        side.appendChild(del);
+
+        card.appendChild(go);
+        card.appendChild(side);
+        col.appendChild(card);
+      });
+    });
+    broadcastHeight();
+  }
+
+  /* ============ toast ============ */
+  var toastTimer;
+  function toast(msg){
+    var t = $('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function(){ t.classList.remove('show'); }, 3400);
+  }
+
+  /* ============ авто-высота (если хост слушает) ============ */
+  var lastH = 0;
+  function broadcastHeight(){
+    var wrap = document.getElementById('wrap');
+    if(!wrap) return;
+    var h = Math.ceil(wrap.getBoundingClientRect().height) + 8;
+    if (h === lastH) return;
+    lastH = h;
+    try{
+      parent.postMessage(JSON.stringify({method:'resize', height:h}), '*');
+      parent.postMessage(JSON.stringify({src:location.toString(), context:'iframe.resize', height:h}), '*');
+      parent.postMessage({type:'resize', height:h}, '*');
+      parent.postMessage({type:'embed-size', height:h}, '*');
+      parent.postMessage('resize:'+h, '*');
+    }catch(e){}
+  }
+  if (typeof ResizeObserver !== 'undefined'){
+    new ResizeObserver(broadcastHeight).observe(document.getElementById('wrap'));
+  }
+  window.addEventListener('load', broadcastHeight);
+
+  boot();
+})();
+</script>
+</body>
+</html>
