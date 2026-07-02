@@ -186,7 +186,7 @@
 <div class="panel" id="bindScreen" style="margin-top:0">
   <div class="hint" id="autoBindStatus" style="font-size:12.5px">⏳ Привязываю виджет к этой задаче… обычно занимает 5–15 секунд. Если страница не обновится сама — обновите её вручную.</div>
   <div id="manualBind" style="display:none">
-  <div class="hint" style="font-size:12.5px">Автопривязка не сработала (проверьте NOTION_TOKEN в Apps Script и подключение интеграции к страницам). Резервный способ — введите название задачи:</div>
+  <div class="hint" style="font-size:12.5px">Можно не ждать — введите название задачи, привязка сработает мгновенно:</div>
   <div class="row">
     <input id="bindInput" type="text" placeholder="Название задачи, например: Запуск FBO">
     <button class="btn solid" id="bindBtn">Привязать</button>
@@ -322,6 +322,41 @@
   var LOCAL_KEEP = 2.5*1024*1024;
   /* байты файлов на текущую сессию (не переживают перезагрузку, зато без лимита хранилища) */
   var sessionData = {};
+  /* ---- IndexedDB: постоянные локальные копии файлов без лимита localStorage.
+     Благодаря им скачивание всегда мгновенное и не зависит от Apps Script ---- */
+  var idb = null, idbFailed = false;
+  function idbOpen(cb){
+    if (idb){ cb(idb); return; }
+    if (idbFailed || typeof indexedDB === 'undefined'){ cb(null); return; }
+    try{
+      var req = indexedDB.open('gw_files_db', 1);
+      req.onupgradeneeded = function(){ req.result.createObjectStore('bytes'); };
+      req.onsuccess = function(){ idb = req.result; cb(idb); };
+      req.onerror = function(){ idbFailed = true; cb(null); };
+    }catch(e){ idbFailed = true; cb(null); }
+  }
+  function idbPut(id, blob){
+    idbOpen(function(db){
+      if (!db) return;
+      try{ db.transaction('bytes','readwrite').objectStore('bytes').put(blob, id); }catch(e){}
+    });
+  }
+  function idbGet(id, cb){
+    idbOpen(function(db){
+      if (!db){ cb(null); return; }
+      try{
+        var rq = db.transaction('bytes').objectStore('bytes').get(id);
+        rq.onsuccess = function(){ cb(rq.result || null); };
+        rq.onerror = function(){ cb(null); };
+      }catch(e){ cb(null); }
+    });
+  }
+  function idbDel(id){
+    idbOpen(function(db){
+      if (!db) return;
+      try{ db.transaction('bytes','readwrite').objectStore('bytes').delete(id); }catch(e){}
+    });
+  }
 
   /* ============ идентификация задачи ============ */
   function hashStr(s){
@@ -423,7 +458,7 @@
     /* записи прошлых сессий, у которых не осталось ни ссылки, ни данных */
     var files = loadFiles();
     var changed = false;
-    var keep = files.filter(function(f){ return f.url || f.data || f.dl || sessionData[f.id]; });
+    var keep = files.filter(function(f){ return f.url || f.data || f.dl || f.idb || sessionData[f.id]; });
     if (keep.length !== files.length) changed = true;
     keep.forEach(function(f){
       /* загрузка прошлой сессии уже не идёт — файл остался локальным */
@@ -442,11 +477,23 @@
       render();
       if(!persistent) toast('⚠️ Хранилище недоступно — файлы не сохранятся после перезагрузки');
       /* проверка связи с Apps Script теперь только при открытии Настроек */
+      afterLoad(warmGas);
     } else {
       $('app').style.display = 'none';
       $('bindScreen').classList.add('show');
+      showManual(); /* ручная привязка доступна сразу, ждать автопривязку не обязательно */
       startAutoBind();
     }
+  }
+  function afterLoad(fn){
+    if (document.readyState === 'complete') setTimeout(fn, 300);
+    else window.addEventListener('load', function(){ setTimeout(fn, 300); });
+  }
+  /* будим Apps Script заранее: к моменту реальной операции он уже тёплый */
+  function warmGas(){
+    try{
+      fetch(gasUrl()+'?after=0&key='+encodeURIComponent(WIDGET_KEY)).catch(function(){});
+    }catch(e){}
   }
   /* ---- авто-привязка: просим GAS пометить наш блок через Notion API ---- */
   var autoBindTries = 0, autoBindTimer = null, autoBindStarted = false;
@@ -454,16 +501,13 @@
     if (autoBindStarted) return;
     autoBindStarted = true;
     /* первый запрос — только после load, чтобы не задерживать отрисовку в Notion */
-    var kick = function(){
+    afterLoad(function(){
       requestTag();
-      autoBindTimer = setInterval(requestTag, 8000);
+      autoBindTimer = setInterval(requestTag, 10000);
       setTimeout(function(){
         clearInterval(autoBindTimer);
-        if (!TASK) showManual();
-      }, 30000);
-    };
-    if (document.readyState === 'complete') setTimeout(kick, 0);
-    else window.addEventListener('load', function(){ setTimeout(kick, 50); });
+      }, 45000);
+    });
   }
   function requestTag(){
     autoBindTries++;
@@ -569,7 +613,9 @@
     var settled = false;
     function settle(err, data){ if (settled) return; settled = true; cb(err, data); }
     var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-    var ft = setTimeout(function(){ if (ctrl) ctrl.abort(); }, 12000);
+    /* холодный старт Apps Script иногда занимает 15-20 секунд — ждём дольше,
+       чем раньше, чтобы не принимать медленный ответ за отсутствие связи */
+    var ft = setTimeout(function(){ if (ctrl) ctrl.abort(); }, 20000);
     fetch(full, ctrl ? {signal:ctrl.signal} : {})
       .then(function(r){ return r.json(); })
       .then(function(d){ clearTimeout(ft); settle(null, d); })
@@ -578,7 +624,7 @@
       if (settled) return;
       var cbName = '__gwcb' + (++jsonpSeq) + Math.random().toString(36).slice(2,6);
       var sc = document.createElement('script');
-      var jt = setTimeout(function(){ cleanup(); settle(new Error('нет ответа от Apps Script')); }, 10000);
+      var jt = setTimeout(function(){ cleanup(); settle(new Error('нет ответа от Apps Script')); }, 20000);
       function cleanup(){
         clearTimeout(jt);
         try{ delete window[cbName]; }catch(e){ window[cbName]=undefined; }
@@ -739,6 +785,7 @@
       clearArmed = false;
       clearTimeout(clearTimer);
       $('clearBtn').textContent = 'Очистить файлы задачи';
+      loadFiles().forEach(function(x){ idbDel(x.id); });
       saveFiles([]);
       render();
       toast('Список очищен');
@@ -820,11 +867,13 @@
            скачивание работает мгновенно, не дожидаясь Drive */
         var rec = {
           kind:'upload', name:f.name, mime:f.type||'application/octet-stream',
-          type:detectTypeByName(f.name), uploading:true
+          type:detectTypeByName(f.name), uploading:true,
+          idb:(!idbFailed && typeof indexedDB !== 'undefined')
         };
-        if (f.size <= LOCAL_KEEP) rec.data = dataUrl; /* мелкие — переживают перезагрузку */
+        if (f.size <= LOCAL_KEEP) rec.data = dataUrl; /* мелкие — дублируем и в localStorage */
         addFile(rec, true);
         sessionData[rec.id] = dataUrl;
+        idbPut(rec.id, f); /* постоянная локальная копия: скачивание всегда мгновенное */
         toast('«'+f.name+'» добавлен, загружаю в Drive…');
         uploadToDrive(rec, f.name, dataUrl);
       };
@@ -937,6 +986,8 @@
         fetching[f.id] = false;
         if (!(res && res.ok && res.data)) throw new Error(res && res.error || 'старый Apps Script: нет команды download');
         sessionData[f.id] = 'data:'+(res.mime||f.mime||'application/octet-stream')+';base64,'+res.data;
+        /* кэшируем навсегда: следующие скачивания мгновенные даже после перезагрузки */
+        try{ idbPut(f.id, dataUrlToBlob(sessionData[f.id], f.mime)); }catch(e){}
         cb(null);
       })
       .catch(function(e){ fetching[f.id] = false; cb(e); });
@@ -947,29 +998,36 @@
       saveBlob(f.name, dataUrlToBlob(local, f.mime));
       return;
     }
-    if (!recDriveId(f)){
-      toast('Данные файла не сохранились — откройте его в Drive');
-      return;
-    }
-    toast('Готовлю «'+f.name+'»…');
-    var t0 = Date.now();
-    fetchBytes(f, function(err){
-      if (err){
-        /* резерв для старого Apps Script без команды download */
-        if (f.dl){ silentDownload(f.dl); toast('Пробую скачать через Drive… Если не вышло — обновите код Apps Script (README)'); }
-        else toast('Не удалось скачать: '+(err.message||'ошибка'));
+    /* постоянная локальная копия в IndexedDB — мгновенно и без сети */
+    idbGet(f.id, function(blob){
+      if (blob){ saveBlob(f.name, blob); return; }
+      if (!recDriveId(f)){
+        toast('Данные файла не сохранились — откройте его в Drive');
         return;
       }
-      saveBlob(f.name, dataUrlToBlob(sessionData[f.id], f.mime));
-      /* браузер мог «забыть» клик, пока файл ехал по сети */
-      if (Date.now() - t0 > 4000) toast('Если скачивание не началось — нажмите на файл ещё раз');
+      toast('Готовлю «'+f.name+'»…');
+      var t0 = Date.now();
+      fetchBytes(f, function(err){
+        if (err){
+          /* резерв для старого Apps Script без команды download */
+          if (f.dl){ silentDownload(f.dl); toast('Пробую скачать через Drive… Если не вышло — обновите код Apps Script (README)'); }
+          else toast('Не удалось скачать: '+(err.message||'ошибка'));
+          return;
+        }
+        saveBlob(f.name, dataUrlToBlob(sessionData[f.id], f.mime));
+        /* браузер мог «забыть» клик, пока файл ехал по сети */
+        if (Date.now() - t0 > 4000) toast('Если скачивание не началось — нажмите на файл ещё раз');
+      });
     });
   }
   /* заранее греем байты при наведении: клик скачает мгновенно */
   function prefetchBytes(f){
     if (f.data || sessionData[f.id] || fetching[f.id]) return;
-    if (!recDriveId(f)) return;
-    fetchBytes(f, function(){});
+    idbGet(f.id, function(blob){
+      if (blob || f.data || sessionData[f.id] || fetching[f.id]) return;
+      if (!recDriveId(f)) return;
+      fetchBytes(f, function(){});
+    });
   }
 
   /* ============ рендер ============ */
@@ -1050,6 +1108,7 @@
           e.preventDefault(); e.stopPropagation();
           var rest = loadFiles().filter(function(x){ return x.id!==f.id; });
           saveFiles(rest);
+          idbDel(f.id);
           render();
         });
         side.appendChild(del);
