@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Notion Iframe Diagnostic V2</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 20px; background: #f7f7f9; color: #37352f; font-size: 14px; }
+        button { background: #2eaadc; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: 600; margin-bottom: 15px; font-size: 14px; transition: background 0.2s; }
+        button:hover { background: #069cce; }
+        button:disabled { background: #a4a4a5; cursor: not-allowed; }
+        pre { background: #fff; padding: 15px; border-radius: 6px; border: 1px solid #e1e4e8; overflow-x: auto; font-size: 13px; color: #d14; line-height: 1.5; }
+        #status { color: #e53e3e; font-weight: bold; margin-bottom: 15px; font-size: 15px; }
+        .success { color: #0f7b6c !important; }
+    </style>
+</head>
+<body>
+    <div id="status">⏳ Активное сканирование (ожидание 5 сек для ответа от Notion)...</div>
+    <button id="copyBtn" disabled>📋 Скопировать диагностику V2</button>
+    <pre id="output">Инициализация расширенных зондов...</pre>
+
+    <script>
+        const diagData = {
+            timestamp: new Date().toISOString(),
+            url: {
+                full: window.location.href,
+                search: window.location.search || "ПУСТО (нет query параметров)",
+                hash: window.location.hash || "ПУСТО (нет hash параметров)"
+            },
+            referrer: document.referrer || "ПУСТО",
+            windowName: window.name || "ПУСТО",
+            windowOpener: !!window.opener,
+            currentScript: document.currentScript ? (document.currentScript.src || "inline") : "null",
+            apis: {
+                broadcastChannel: 'BroadcastChannel' in window,
+                messageChannel: 'MessageChannel' in window
+            },
+            cspViolations: [],
+            postMessages: {
+                incoming: [],
+                pingReplies: []
+            },
+            corsErrors: {}
+        };
+
+        // 1. Перехват заголовков безопасности (CSP)
+        document.addEventListener("securitypolicyviolation", (e) => {
+            diagData.cspViolations.push({
+                directive: e.violatedDirective,
+                blockedURI: e.blockedURI
+            });
+        });
+
+        // 2. Пассивное прослушивание входящих сообщений
+        window.addEventListener('message', (event) => {
+            diagData.postMessages.incoming.push({
+                origin: event.origin,
+                data: typeof event.data === 'object' ? JSON.stringify(event.data).substring(0, 300) : event.data
+            });
+        });
+
+        // 3. Активный зонд через MessageChannel
+        try {
+            const channel = new MessageChannel();
+            channel.port1.onmessage = (e) => {
+                diagData.postMessages.pingReplies.push({ 
+                    source: 'MessageChannel_Port1', 
+                    data: e.data 
+                });
+            };
+            window.parent.postMessage({ type: "NOTION_EMBED_PING" }, "*", [channel.port2]);
+        } catch(e) {
+            diagData.corsErrors.messageChannelPing = e.message;
+        }
+
+        // 4. Обычный postMessage пинг
+        try {
+            window.parent.postMessage("PING_FROM_IFRAME", "*");
+        } catch(e) {
+            diagData.corsErrors.standardPing = e.message;
+        }
+
+        // 5. Тест BroadcastChannel (просто проверяем, можем ли создать)
+        try {
+            const bc = new BroadcastChannel('notion_test_channel');
+            bc.postMessage('ping');
+            bc.close();
+        } catch(e) {
+            diagData.corsErrors.broadcastChannel = e.message;
+        }
+
+        setTimeout(() => {
+            const statusEl = document.getElementById('status');
+            statusEl.innerText = "✅ Данные собраны. Нажмите кнопку копирования.";
+            statusEl.classList.add('success');
+            
+            const outStr = JSON.stringify(diagData, null, 2);
+            document.getElementById('output').innerText = outStr;
+            
+            const btn = document.getElementById('copyBtn');
+            btn.disabled = false;
+            btn.onclick = () => {
+                navigator.clipboard.writeText(outStr);
+                btn.innerText = "✅ Скопировано!";
+                setTimeout(() => btn.innerText = "📋 Скопировать диагностику V2", 2000);
+            };
+        }, 5000);
+    </script>
+</body>
+</html>
