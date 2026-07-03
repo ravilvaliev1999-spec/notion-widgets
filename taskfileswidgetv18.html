@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="robots" content="noindex, nofollow">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
 <link rel="preconnect" href="https://script.google.com" crossorigin>
 <link rel="preconnect" href="https://script.googleusercontent.com" crossorigin>
 <title>Файлы задачи</title>
@@ -24,7 +25,15 @@
     --ease:cubic-bezier(.2,.8,.3,1);
   }
   *{box-sizing:border-box;margin:0;padding:0}
+  /* тёмная схема для системных элементов iframe: без неё браузер рисует
+     светлый холст и светлые полосы прокрутки — те самые «линии» по краям */
+  html{color-scheme:dark}
   html,body{background:var(--bg)}
+  /* полосы прокрутки прячем совсем: прокрутка колесом/пальцем работает,
+     а серых линий на краях виджета в Notion больше нет */
+  html,body{scrollbar-width:none;-ms-overflow-style:none}
+  ::-webkit-scrollbar{width:0;height:0;background:transparent}
+  body{overflow-x:hidden}
   body{
     font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
     color:var(--txt);font-size:14px;
@@ -315,7 +324,7 @@
 (function(){
   'use strict';
 
-  var VERSION = 'v19.1';
+  var VERSION = 'v19.2';
 
   /* ============ storage ============ */
   var mem = {};
