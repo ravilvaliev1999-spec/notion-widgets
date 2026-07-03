@@ -324,7 +324,7 @@
 (function(){
   'use strict';
 
-  var VERSION = 'v19.2';
+  var VERSION = 'v20';
 
   /* ============ storage ============ */
   var mem = {};
@@ -421,8 +421,39 @@
   }
 
   var TASK = resolveTaskKey();
+
+  /* ============ режим «маяка» ============ */
+  /* Виджет в задаче живёт внутри synced-блока — у всех задач одинаковый URL,
+     и сам по себе iframe не знает, на какой он странице. Поэтому Apps Script
+     добавляет в конец страницы задачи крошечный НЕ-synced блок-маяк:
+     тот же файл с ?beacon=1#task=<id>. Маяк ничего не рисует (прозрачный),
+     а только сообщает соседним фреймам этой страницы ключ задачи. */
+  if (/[?&]beacon=1/.test(location.search)){
+    document.documentElement.style.colorScheme = 'normal';
+    document.documentElement.style.background = 'transparent';
+    document.body.style.background = 'transparent';
+    document.body.innerHTML = '';
+    var beaconKey = TASK ? String(TASK) : '';
+    var announce = function(){
+      try{
+        var n = parent.frames.length;
+        for (var i = 0; i < n; i++){
+          if (parent.frames[i] === window) continue;
+          try{ parent.frames[i].postMessage({gw_beacon: beaconKey}, '*'); }catch(e){}
+        }
+      }catch(e){}
+    };
+    window.addEventListener('message', function(ev){
+      if (ev.origin !== location.origin) return;
+      if (ev.data && ev.data.gw_who) announce();
+    });
+    /* повторяем: виджет мог загрузиться позже маяка и наоборот */
+    [0, 250, 800, 2000, 5000, 12000].forEach(function(ms){ setTimeout(announce, ms); });
+    return; /* интерфейс маяку не нужен */
+  }
+
   /* временный ключ новой задачи: создаётся при первом сохранении файла и
-     превращается в постоянный, как только Apps Script помечает блок в Notion */
+     превращается в постоянный, как только определилась задача */
   var provKey = null;
 
   function activeKey(){ return TASK || provKey; }
@@ -595,7 +626,8 @@
     if(!persistent) toast('⚠️ Хранилище недоступно — файлы не сохранятся после перезагрузки');
     afterLoad(function(){
       warmGas();                       /* будим Apps Script к первой операции */
-      if (!TASK) setTimeout(bindKick, 900);   /* тихая фоновая привязка нового блока */
+      /* даём маяку пару секунд ответить; если его нет — просим Apps Script */
+      if (!TASK) setTimeout(bindKick, 2500);
       setTimeout(retryUploads, 2500);  /* дозагружаем в Drive то, что не успело */
     });
   }
@@ -610,11 +642,35 @@
     }catch(e){}
   }
 
-  /* ============ фоновая привязка блока к задаче ============ */
-  /* Apps Script через Notion API находит наш embed-блок на недавних страницах
-     и дописывает к его URL метку #task=<id страницы>. Ответ содержит id
-     страницы, поэтому виджет переключается на постоянный ключ сразу, не
-     дожидаясь перезагрузки блока. Интерфейс всё это время полностью работает. */
+  /* ============ определение задачи через маяк ============ */
+  /* Главный путь для synced-виджета: на странице задачи рядом живёт блок-маяк
+     (см. режим ?beacon=1 выше) с меткой задачи. Спрашиваем соседние фреймы
+     страницы и принимаем ответ маяка — мгновенно и без сети. */
+  window.addEventListener('message', function(ev){
+    if (ev.origin !== location.origin) return;
+    var k = ev.data && ev.data.gw_beacon;
+    if (!k || typeof k !== 'string' || !/^[ptn]_[\w-]{1,120}$/.test(k)) return;
+    if (TASK) return; /* уже определились — первый ответ побеждает */
+    adoptKey(k);
+  });
+  function askBeacons(){
+    if (TASK) return;
+    try{
+      var n = parent.frames.length;
+      for (var i = 0; i < n; i++){
+        if (parent.frames[i] === window) continue;
+        try{ parent.frames[i].postMessage({gw_who: 1}, '*'); }catch(e){}
+      }
+    }catch(e){}
+  }
+  [80, 400, 1200, 3000, 8000, 20000].forEach(function(ms){ setTimeout(askBeacons, ms); });
+
+  /* ============ фоновая привязка через Apps Script ============ */
+  /* Резерв на случай, когда маяка на странице ещё нет (первое открытие новой
+     задачи): Apps Script находит страницу через Notion API, создаёт на ней
+     маяк (или дописывает метку обычному embed-блоку) и возвращает id страницы,
+     поэтому виджет переключается на постоянный ключ сразу. Интерфейс всё это
+     время полностью работает. */
   var bindBusy = false, bindFails = 0, bindTimer = null;
   function bindKick(){
     if (TASK) return;
@@ -646,9 +702,7 @@
          Notion перезагрузит блок с меткой, файлы подберёт adoptPending */
       if (!res.tagged){
         bindFails++;
-        maybeShowBindHint(res.synced
-          ? 'виджет завёрнут в synced-блок — замените его обычным embed-блоком'
-          : 'блок пока не найден среди недавних страниц');
+        maybeShowBindHint('задача пока не найдена — проверьте NOTION_TOKEN и доступ интеграции');
       }
     });
   }

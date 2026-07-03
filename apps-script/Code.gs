@@ -5,9 +5,9 @@
  * Команды:
  *   GET  ?after=<ms>              — файлы Google, созданные после метки времени (авто-добавление)
  *   GET  ?action=download&id=…    — байты файла из Drive (base64) для скачивания
- *   GET  ?action=tag&self=<url>   — автопривязка: пометить embed-блоки Notion меткой #task=
- *                                    (возвращает id помеченных страниц — виджет привязывается
- *                                    мгновенно, не дожидаясь перезагрузки блока)
+ *   GET  ?action=tag&self=<url>   — автопривязка: создать/починить «маяк» задачи
+ *                                    (возвращает id затронутых страниц — виджет привязывается
+ *                                    мгновенно, не дожидаясь перезагрузки блоков)
  *   POST {action:'upload', …}     — загрузить файл в Drive (папка «Notion — файлы задач/<задача>»)
  *
  * Установка:
@@ -131,25 +131,22 @@ function download_(id) {
   }
 }
 
-/* ---------- автопривязка: помечаем embed-блоки Notion меткой #task=<id страницы> ----------
- * Виджет без метки вызывает эту команду в фоне. Мы просматриваем свежие страницы,
- * находим на них embed-блоки с URL виджета без #task= и дописываем метку.
- * В ответ отдаём id помеченных страниц: виджет сразу переключается на постоянный
- * ключ, не дожидаясь перезагрузки блока.
+/* ---------- автопривязка: у каждой задачи — свой «маяк» ----------
+ * Виджет в задачах живёт внутри synced-блока (эталон — на странице «Системные
+ * виджеты»). Synced-блок мы НИКОГДА не меняем и не удаляем: он один на все
+ * задачи. Чтобы виджет знал, на какой он странице, на каждой странице задачи
+ * живёт крошечный НЕ-synced блок-«маяк»: embed того же файла с
+ * ?beacon=1#task=<id страницы>. Маяк прозрачный и ничего не рисует — он только
+ * сообщает виджету ключ задачи через postMessage между фреймами страницы.
  *
- * Два важных решения:
- * 1. Свежие страницы берём НАПРЯМУЮ из базы задач (запрос к базе), а не только
- *    из /v1/search: поиск индексирует новые страницы с задержкой в минуты, из-за
- *    чего только что созданная задача «не находилась» и привязка не срабатывала.
- * 2. Если виджет завёрнут в synced-блок (ссылку на общий блок), метка внутри него
- *    невозможна — блок один на все задачи, файлы бы склеились. Такую ссылку мы
- *    разворачиваем: ставим на её место обычный embed с меткой этой страницы,
- *    а саму ссылку убираем. Оригинальный synced-блок не затрагивается, поэтому
- *    рабочий процесс «эталон на „Системных виджетах“ → sync-копия в шаблоне»
- *    полностью поддерживается: новая задача получает копию, а при привязке
- *    копия превращается в обычный привязанный блок (выглядит так же).
- *    Разворачиваем ТОЛЬКО страницы из базы задач: эталонные страницы вне базы
- *    («Системные виджеты», «Задача ежедневная» и т.п.) никогда не трогаем. */
+ * Эта команда:
+ *   - создаёт маяк на страницах базы задач, где есть наш synced-виджет,
+ *     а маяка ещё нет (первое открытие новой задачи);
+ *   - дописывает метку маяку/обычному embed-виджету без метки;
+ *   - чинит маяк с чужой меткой (появляется при дублировании задачи —
+ *     без починки файлы двух задач склеились бы).
+ * Свежие страницы берём НАПРЯМУЮ из базы задач: /v1/search индексирует
+ * только что созданные страницы с задержкой в минуты. */
 function tag_(self) {
   var token = PropertiesService.getScriptProperties().getProperty('NOTION_TOKEN');
   if (!token) return { error: 'NOTION_TOKEN не задан в свойствах скрипта' };
@@ -162,32 +159,47 @@ function tag_(self) {
   var pages = candidatePages_(headers);
   var scanned = 0;
   var tagged = 0;
-  var syncedStuck = 0; // виджеты в synced-блоках, которые развернуть не удалось
+  var syncedSeen = 0; // synced-виджеты вне базы задач (эталоны) — не трогаем
   var taggedPages = [];
   function matches(url) {
     return url && url.split('#')[0].split('?')[0] === self;
   }
+  function isBeacon(url) {
+    return url.split('#')[0].indexOf('beacon=1') > -1;
+  }
+  function tagOf(url) {
+    var m = url.match(/#task=([0-9a-f]{32})/i);
+    return m ? m[1].toLowerCase() : null;
+  }
+  function patchUrl(blockId, newUrl) {
+    var up = UrlFetchApp.fetch('https://api.notion.com/v1/blocks/' + blockId, {
+      method: 'patch',
+      headers: headers,
+      muteHttpExceptions: true,
+      payload: JSON.stringify({ embed: { url: newUrl } })
+    });
+    return up.getResponseCode() < 300;
+  }
   for (var i = 0; i < pages.length; i++) {
-    var allowUnwrap = pages[i].fromDb; // sync-копии разворачиваем только в базе задач
+    var fromDb = pages[i].fromDb;
     var pageId = pages[i].page.id.replace(/-/g, '');
     var blocks = children_(pages[i].page.id, headers, 0);
+    var hasSyncedWidget = false;
+    var hasBeacon = false;
+    var didTag = false;
     for (var j = 0; j < blocks.length; j++) {
       var b = blocks[j].b;
       scanned++;
 
       if (b.type === 'embed' && b.embed) {
         var url = b.embed.url || '';
-        if (!matches(url) || url.indexOf('#task=') > -1) continue;
-        var up = UrlFetchApp.fetch('https://api.notion.com/v1/blocks/' + b.id, {
-          method: 'patch',
-          headers: headers,
-          muteHttpExceptions: true,
-          payload: JSON.stringify({ embed: { url: self + '#task=' + pageId } })
-        });
-        if (up.getResponseCode() < 300) {
-          tagged++;
-          if (taggedPages.indexOf(pageId) < 0) taggedPages.push(pageId);
-        }
+        if (!matches(url)) continue;
+        var base = url.split('#')[0]; // сохраняем ?beacon=1 и прочие параметры
+        var cur = tagOf(url);
+        if (isBeacon(url)) hasBeacon = true;
+        if (cur === pageId) continue; // метка уже правильная
+        if (cur && !fromDb) continue; // чужие метки чиним только в базе задач
+        if (patchUrl(b.id, base + '#task=' + pageId)) didTag = true;
         continue;
       }
 
@@ -195,36 +207,32 @@ function tag_(self) {
         var inner = innerBlocks_(b, headers);
         var ours = inner.embeds.filter(function (e) { return matches(e.url); });
         if (!ours.length) continue;
-        var isReference = !!(b.synced_block && b.synced_block.synced_from);
-        // оригинальный общий блок не трогаем (его удаление сломало бы все копии);
-        // не трогаем ссылку, где кроме виджета лежит что-то ещё,
-        // и любые страницы вне базы задач (эталоны должны остаться synced)
-        if (!isReference || ours.length !== inner.total || !allowUnwrap) { syncedStuck++; continue; }
-        // 1) сразу после ссылки вставляем обычный embed с меткой этой страницы
-        var ins = UrlFetchApp.fetch('https://api.notion.com/v1/blocks/' + blocks[j].parent + '/children', {
-          method: 'patch',
-          headers: headers,
-          muteHttpExceptions: true,
-          payload: JSON.stringify({
-            after: b.id,
-            children: [{ type: 'embed', embed: { url: self + '#task=' + pageId } }]
-          })
-        });
-        if (ins.getResponseCode() >= 300) { syncedStuck++; continue; }
-        // 2) убираем саму ссылку на общий блок с этой страницы
-        UrlFetchApp.fetch('https://api.notion.com/v1/blocks/' + b.id, {
-          method: 'delete', headers: headers, muteHttpExceptions: true
-        });
-        tagged++;
-        if (taggedPages.indexOf(pageId) < 0) taggedPages.push(pageId);
+        if (fromDb) hasSyncedWidget = true; else syncedSeen++;
       }
     }
+    // страница задачи с synced-виджетом, но без маяка: создаём маяк
+    // (невидимый embed в конце страницы; synced-блок не затрагивается)
+    if (fromDb && hasSyncedWidget && !hasBeacon) {
+      var ins = UrlFetchApp.fetch('https://api.notion.com/v1/blocks/' + pages[i].page.id + '/children', {
+        method: 'patch',
+        headers: headers,
+        muteHttpExceptions: true,
+        payload: JSON.stringify({
+          children: [{ type: 'embed', embed: { url: self + '?beacon=1#task=' + pageId } }]
+        })
+      });
+      if (ins.getResponseCode() < 300) didTag = true;
+    }
+    if (didTag) {
+      tagged++;
+      if (taggedPages.indexOf(pageId) < 0) taggedPages.push(pageId);
+    }
   }
-  return { ok: true, tagged: tagged, scanned: scanned, pages: taggedPages, synced: syncedStuck };
+  return { ok: true, tagged: tagged, scanned: scanned, pages: taggedPages, synced: syncedSeen };
 }
 
 /* свежие страницы-кандидаты: база задач напрямую + общий поиск (без дублей);
-   у страниц из базы fromDb=true — только им разрешено разворачивание sync-копий */
+   у страниц из базы fromDb=true — только на них создаются/чинятся маяки */
 function candidatePages_(headers) {
   var seen = {};
   var out = [];
