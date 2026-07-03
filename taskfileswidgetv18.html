@@ -160,6 +160,16 @@
   .btn.danger{color:#ff9c9c;border-color:rgba(255,120,120,.3)}
   .btn.danger:hover{background:rgba(255,80,80,.15)}
 
+  /* ---- тонкая строка статуса привязки (не блокирует интерфейс) ---- */
+  .hintbar{
+    display:none;align-items:center;gap:9px;flex-wrap:wrap;
+    margin-top:10px;padding:8px 12px;border-radius:11px;
+    background:var(--panel);border:1px solid var(--border);
+    font-size:11.5px;color:var(--txt-dim);
+  }
+  .hintbar.show{display:flex}
+  .hintbar .btn{padding:4px 10px;font-size:11.5px}
+
   .toast{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);background:rgba(38,38,40,.94);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);border:1px solid rgba(255,255,255,.1);color:var(--txt);padding:9px 17px;border-radius:11px;font-size:12.5px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:50;max-width:92%;text-align:center;box-shadow:0 8px 28px rgba(0,0,0,.4)}
   .toast.show{opacity:1}
 
@@ -183,23 +193,7 @@
 <body>
 <div id="wrap">
 
-<div class="panel" id="bindScreen" style="margin-top:0">
-  <div class="hint" id="autoBindStatus" style="font-size:12.5px">⏳ Привязываю виджет к этой задаче… обычно занимает 5–15 секунд. Если страница не обновится сама — обновите её вручную.</div>
-  <div id="manualBind" style="display:none">
-  <div class="hint" style="font-size:12.5px">Можно не ждать — введите название задачи, привязка сработает мгновенно:</div>
-  <div class="row">
-    <input id="bindInput" type="text" placeholder="Название задачи, например: Запуск FBO">
-    <button class="btn solid" id="bindBtn">Привязать</button>
-  </div>
-  <div class="row" id="bindResult" style="display:none">
-    <input id="bindUrl" type="text" readonly>
-    <button class="btn solid" id="bindCopyBtn">Скопировать</button>
-  </div>
-  <div class="hint" id="bindNote" style="display:none;margin-top:6px">Вставьте эту ссылку в данный блок: клик по блоку → ⋯ → «Replace» / «Заменить» — тогда привязка сохранится навсегда. Без замены она действует до перезагрузки страницы.</div>
-  </div><!-- /manualBind -->
-</div>
-
-<div id="app" style="display:none">
+<div id="app">
   <div class="grid" id="grid">
 
     <div class="col" data-col="drive">
@@ -247,6 +241,13 @@
     </div>
   </div>
 
+  <!-- строка статуса привязки: появляется только если есть несохранённые файлы,
+       никогда не блокирует интерфейс -->
+  <div class="hintbar" id="bindHint">
+    <span id="bindHintText">Привязываю файлы к задаче…</span>
+    <button class="btn" id="bindHintBtn">Привязать вручную</button>
+  </div>
+
   <div class="plus-wrap">
     <button class="plus" id="plusBtn" title="Добавить" aria-label="Добавить файл">＋</button>
     <div class="sheet" id="sheet">
@@ -279,10 +280,20 @@
   </div>
 
   <div class="panel" id="settingsPanel">
-    <div class="hint">ID задачи: <span id="taskIdLabel">—</span></div>
+    <div class="hint">Версия виджета: <span id="verLabel">—</span></div>
+    <div class="hint">Задача: <span id="taskIdLabel">—</span></div>
     <div class="hint">Связь с Apps Script: <span id="netStatus">проверяю…</span></div>
-    <div class="hint">Источник (referrer): <span id="refDebug">—</span></div>
-    <div class="hint" style="margin-top:6px">Авто-добавление созданных Google-файлов (укажите URL веб-приложения Apps Script — код даст Claude):</div>
+    <div class="hint" style="margin-top:6px">Ручная привязка (если автоматическая не сработала). Введите название задачи:</div>
+    <div class="row">
+      <input id="bindInput" type="text" placeholder="Название задачи, например: Запуск FBO">
+      <button class="btn solid" id="bindBtn">Привязать</button>
+    </div>
+    <div class="row" id="bindResult" style="display:none">
+      <input id="bindUrl" type="text" readonly>
+      <button class="btn solid" id="bindCopyBtn">Скопировать</button>
+    </div>
+    <div class="hint" id="bindNote" style="display:none">Ссылка скопирована. Вставьте её в URL этого блока (клик по блоку → ⋯ → «Replace» / «Заменить») — тогда привязка сохранится навсегда.</div>
+    <div class="hint" style="margin-top:6px">URL веб-приложения Apps Script:</div>
     <div class="row">
       <input id="gasUrl" type="text" placeholder="https://script.google.com/macros/s/…/exec" inputmode="url">
       <button class="btn" id="gasSaveBtn">Сохранить</button>
@@ -303,6 +314,8 @@
 <script>
 (function(){
   'use strict';
+
+  var VERSION = 'v19';
 
   /* ============ storage ============ */
   var mem = {};
@@ -358,12 +371,19 @@
     });
   }
 
+  /* ============ окружение ============ */
+  var $ = function(id){ return document.getElementById(id); };
+  var SELF_URL = location.origin + location.pathname;
+  var FRAMED = (function(){ try{ return window.self !== window.top; }catch(e){ return true; } })();
+  /* десктопное приложение Notion (Electron): всплывающие окна уходят во внешний
+     браузер, поэтому blob туда не передать — качаем по прямой ссылке Drive */
+  var NOTION_APP = /Electron/i.test(navigator.userAgent) && /Notion/i.test(navigator.userAgent);
+
   /* ============ идентификация задачи ============ */
-  function hashStr(s){
-    var h = 5381;
-    for (var i=0;i<s.length;i++){ h = ((h<<5)+h+s.charCodeAt(i))>>>0; }
-    return h.toString(36);
-  }
+  /* Виджет НИКОГДА не ждёт определения страницы: интерфейс рисуется сразу.
+     Если в URL блока есть метка #task= — файлы этой задачи показываются мгновенно.
+     Если метки нет — это новая задача: список пуст, всё работает, а привязка
+     происходит в фоне (и обязательно — при сохранении первого файла). */
   function extractNotionId(s){
     if(!s) return null;
     var clean = s.replace(/[-–]/g,'');
@@ -387,20 +407,104 @@
     /* 2) настоящий ID страницы из referrer (если браузер его отдал) */
     var fromRef = extractNotionId(document.referrer);
     if (fromRef) return 'p_'+fromRef;
-    /* 3) иначе — просим метку. Общие фолбэки убраны сознательно:
-       они «работали», но незаметно склеивали файлы всех задач в одно хранилище */
+    /* 3) метки нет — новая задача; ключ появится при первом сохранении файла */
     return null;
   }
 
   var TASK = resolveTaskKey();
-  var $ = function(id){ return document.getElementById(id); };
-  function dataKey(){ return 'gw_files__'+TASK; }
+  /* временный ключ новой задачи: создаётся при первом сохранении файла и
+     превращается в постоянный, как только Apps Script помечает блок в Notion */
+  var provKey = null;
+
+  function activeKey(){ return TASK || provKey; }
+  function filesKeyName(key){ return 'gw_files__'+key; }
+  function rawFiles(key){
+    try{ return JSON.parse(store.getItem(filesKeyName(key))||'[]'); }catch(e){ return []; }
+  }
   function loadFiles(){
-    try{ return JSON.parse(store.getItem(dataKey())||'[]'); }catch(e){ return []; }
+    var k = activeKey();
+    return k ? rawFiles(k) : [];
   }
   function saveFiles(arr){
-    try{ store.setItem(dataKey(), JSON.stringify(arr)); return true; }
+    var k = activeKey();
+    if (!k) return false;
+    try{ store.setItem(filesKeyName(k), JSON.stringify(arr)); return true; }
     catch(e){ toast('Хранилище переполнено — удалите крупные файлы или используйте ссылки'); return false; }
+  }
+  function ensureKey(){
+    if (TASK) return TASK;
+    if (!provKey){
+      provKey = 'n_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+      registerPending(provKey);
+      bindKick(); /* файл сохраняется — самое время привязать блок к задаче */
+    }
+    return provKey;
+  }
+
+  /* ---- реестр «ничейных» наборов файлов: спасает файлы, сохранённые до того,
+     как Notion применил метку к блоку (после применения блок перезагружается) ---- */
+  var PENDING_KEY = 'gw_pending';
+  function loadPending(){
+    try{ return JSON.parse(store.getItem(PENDING_KEY)||'[]'); }catch(e){ return []; }
+  }
+  function savePending(arr){
+    try{ store.setItem(PENDING_KEY, JSON.stringify(arr)); }catch(e){}
+  }
+  function registerPending(key){
+    var p = loadPending().filter(function(x){ return x.key!==key; });
+    p.push({key:key, ts:Date.now()});
+    savePending(p);
+  }
+  function unregisterPending(key){
+    savePending(loadPending().filter(function(x){ return x.key!==key; }));
+  }
+  function mergeFilesInto(fromKey, toKey){
+    var src = rawFiles(fromKey);
+    if (!src.length){ store.removeItem(filesKeyName(fromKey)); return; }
+    var dst = rawFiles(toKey);
+    var seen = {};
+    dst.forEach(function(f){ seen[f.id]=1; });
+    src.forEach(function(f){ if(!seen[f.id]) dst.push(f); });
+    try{ store.setItem(filesKeyName(toKey), JSON.stringify(dst)); }catch(e){ return; }
+    store.removeItem(filesKeyName(fromKey));
+  }
+  function adoptPendingIfNeeded(){
+    if (!TASK) return;
+    var pend = loadPending();
+    if (!pend.length) return;
+    var rest = [];
+    pend.forEach(function(p){
+      if (p.key===TASK) return;                          /* метка применилась — запись отработала */
+      if (Date.now()-p.ts > 48*3600*1000){               /* старьё вычищаем вместе с данными */
+        store.removeItem(filesKeyName(p.key)); return;
+      }
+      rest.push(p);
+    });
+    if (!rawFiles(TASK).length){
+      var withFiles = rest.filter(function(p){ return rawFiles(p.key).length > 0; });
+      if (withFiles.length===1){
+        /* единственный свежий «ничейный» набор — это файлы, сохранённые в этом
+           блоке до перезагрузки после привязки; забираем их себе */
+        mergeFilesInto(withFiles[0].key, TASK);
+        rest = rest.filter(function(p){ return p.key!==withFiles[0].key; });
+      }
+    }
+    savePending(rest);
+  }
+  /* переключаемся на постоянный ключ задачи, перенося уже сохранённые файлы */
+  function adoptKey(newKey){
+    if (!newKey || newKey===TASK) return;
+    var oldKey = activeKey();
+    if (oldKey && oldKey!==newKey) mergeFilesInto(oldKey, newKey);
+    if (provKey){ unregisterPending(provKey); provKey = null; }
+    TASK = newKey;
+    try{
+      var label = newKey.replace(/^p_/,'').replace(/^t_/,'');
+      history.replaceState(null,'','#task='+encodeURIComponent(label));
+    }catch(e){}
+    var tl = $('taskIdLabel'); if (tl) tl.textContent = TASK;
+    hideBindHint();
+    render();
   }
 
   /* ============ типы ============ */
@@ -450,13 +554,14 @@
     }
   }
 
-  /* ============ boot / привязка ============ */
-  /* ВАЖНО для скорости: до события load никаких запросов к Apps Script.
-     Notion держит спиннер, пока iframe не сообщит load, а динамические
-     <script> к script.google.com задерживают load на секунды. */
+  /* ============ boot ============ */
+  /* ВАЖНО для скорости: интерфейс рисуется сразу и целиком из localStorage.
+     До события load — ни одного сетевого запроса: Notion держит спиннер,
+     пока iframe не сообщит load, а запросы к script.google.com тянут секунды. */
   function pruneDead(){
     /* записи прошлых сессий, у которых не осталось ни ссылки, ни данных */
     var files = loadFiles();
+    if (!files.length) return;
     var changed = false;
     var keep = files.filter(function(f){ return f.url || f.data || f.dl || f.idb || sessionData[f.id]; });
     if (keep.length !== files.length) changed = true;
@@ -467,23 +572,18 @@
     if (changed) saveFiles(keep);
   }
   function boot(){
-    if (TASK){
-      $('bindScreen').classList.remove('show');
-      $('app').style.display = '';
-      $('taskIdLabel').textContent = TASK;
-      $('refDebug').textContent = (document.referrer || 'пусто').slice(0, 90);
-      $('gasUrl').value = store.getItem('gw_gas_url') || DEFAULT_GAS_URL;
-      pruneDead();
-      render();
-      if(!persistent) toast('⚠️ Хранилище недоступно — файлы не сохранятся после перезагрузки');
-      /* проверка связи с Apps Script теперь только при открытии Настроек */
-      afterLoad(warmGas);
-    } else {
-      $('app').style.display = 'none';
-      $('bindScreen').classList.add('show');
-      showManual(); /* ручная привязка доступна сразу, ждать автопривязку не обязательно */
-      startAutoBind();
-    }
+    $('verLabel').textContent = VERSION;
+    $('taskIdLabel').textContent = TASK || 'новая — привяжется при первом файле';
+    $('gasUrl').value = store.getItem('gw_gas_url') || DEFAULT_GAS_URL;
+    adoptPendingIfNeeded();
+    pruneDead();
+    render();
+    if(!persistent) toast('⚠️ Хранилище недоступно — файлы не сохранятся после перезагрузки');
+    afterLoad(function(){
+      warmGas();                       /* будим Apps Script к первой операции */
+      if (!TASK) setTimeout(bindKick, 900);   /* тихая фоновая привязка нового блока */
+      setTimeout(retryUploads, 2500);  /* дозагружаем в Drive то, что не успело */
+    });
   }
   function afterLoad(fn){
     if (document.readyState === 'complete') setTimeout(fn, 300);
@@ -495,68 +595,79 @@
       fetch(gasUrl()+'?after=0&key='+encodeURIComponent(WIDGET_KEY)).catch(function(){});
     }catch(e){}
   }
-  /* ---- авто-привязка: просим GAS пометить наш блок через Notion API ---- */
-  var autoBindTries = 0, autoBindTimer = null, autoBindStarted = false;
-  function startAutoBind(){
-    if (autoBindStarted) return;
-    autoBindStarted = true;
-    /* первый запрос — только после load, чтобы не задерживать отрисовку в Notion */
-    afterLoad(function(){
-      requestTag();
-      autoBindTimer = setInterval(requestTag, 10000);
-      setTimeout(function(){
-        clearInterval(autoBindTimer);
-      }, 45000);
-    });
+
+  /* ============ фоновая привязка блока к задаче ============ */
+  /* Apps Script через Notion API находит наш embed-блок на недавних страницах
+     и дописывает к его URL метку #task=<id страницы>. Ответ содержит id
+     страницы, поэтому виджет переключается на постоянный ключ сразу, не
+     дожидаясь перезагрузки блока. Интерфейс всё это время полностью работает. */
+  var bindBusy = false, bindFails = 0, bindTimer = null;
+  function bindKick(){
+    if (TASK) return;
+    bindNow();
+    clearTimeout(bindTimer);
+    bindTimer = setTimeout(function(){ if(!TASK) bindNow(); }, 18000);
   }
-  function requestTag(){
-    autoBindTries++;
-    var self = location.origin + location.pathname;
-    gasRequest('action=tag&self='+encodeURIComponent(self), function(err, res){
-      var st = $('autoBindStatus');
-      if (err){
-        st.textContent = '⚠️ Нет связи с Apps Script ('+(err.message||'ошибка')+'). Попытка '+autoBindTries+'…';
-      } else if (Array.isArray(res)){
-        /* старый код без команды tag: развёртывание не обновилось */
-        st.textContent = '⚠️ Apps Script отвечает СТАРОЙ версией кода. Обновите код и переразверните: Развернуть → Управление развертываниями → ✏ → Версия: Новая.';
-        clearInterval(autoBindTimer);
-        showManual();
-      } else if (res && res.error){
-        st.textContent = '⚠️ Ошибка Apps Script: '+res.error+'. Проверьте свойство NOTION_TOKEN и подключение интеграции (Connections).';
-        showManual();
-      } else if (res && res.ok && res.tagged > 0){
-        st.textContent = '✅ Метка записана в блок ('+res.tagged+' шт.) — сейчас Notion перезагрузит виджет. Если через 10 секунд ничего не произошло, обновите страницу.';
-      } else if (res && res.ok){
-        st.textContent = '⏳ Блок пока не найден среди недавних страниц (попытка '+autoBindTries+', просмотрено блоков: '+(res.scanned||0)+'). Проверьте, что интеграция подключена к этим страницам через Connections.';
-      } else {
-        st.textContent = '⚠️ Непонятный ответ Apps Script: '+JSON.stringify(res).slice(0,120);
-        showManual();
+  function bindNow(){
+    if (TASK || bindBusy) return;
+    bindBusy = true;
+    gasRequest('action=tag&self='+encodeURIComponent(SELF_URL), function(err, res){
+      bindBusy = false;
+      if (TASK) return;
+      if (err || !res || Array.isArray(res) || res.error || !res.ok){
+        bindFails++;
+        maybeShowBindHint(err ? 'нет связи с Apps Script'
+          : (res && res.error) ? String(res.error)
+          : Array.isArray(res) ? 'Apps Script отвечает старой версией кода — переразверните его'
+          : 'блок пока не найден');
+        return;
+      }
+      var ids = res.pages || [];
+      if (ids.length === 1){
+        /* нашли ровно один свежепомеченный блок — это мы */
+        adoptKey('p_'+String(ids[0]).replace(/-/g,'').toLowerCase());
+        return;
+      }
+      /* старый Apps Script без списка pages или несколько блоков сразу:
+         Notion перезагрузит блок с меткой, файлы подберёт adoptPending */
+      if (!res.tagged){
+        bindFails++;
+        maybeShowBindHint('блок пока не найден среди недавних страниц');
       }
     });
   }
-  function showManual(){
-    $('manualBind').style.display = '';
+  function maybeShowBindHint(reason){
+    /* показываем строку статуса только когда есть что терять */
+    if (TASK || !provKey || !loadFiles().length) return;
+    if (bindFails < 2) return;
+    $('bindHintText').textContent = '⚠️ Файлы пока не привязаны к задаче ('+reason+'). Они сохранены локально, но могут не найтись после перезагрузки.';
+    $('bindHint').classList.add('show');
+    broadcastHeight();
   }
+  function hideBindHint(){
+    $('bindHint').classList.remove('show');
+    broadcastHeight();
+  }
+  $('bindHintBtn').addEventListener('click', function(){
+    hidePanels();
+    $('settingsPanel').classList.add('show');
+    $('bindInput').focus();
+    broadcastHeight();
+  });
 
+  /* ---- ручная привязка (в Настройках; нужна только если авто не сработала) ---- */
   $('bindBtn').addEventListener('click', doBind);
   $('bindInput').addEventListener('keydown', function(e){ if(e.key==='Enter') doBind(); });
-  function taggedUrl(name){
-    return location.origin + location.pathname + '#task=' + encodeURIComponent(name);
-  }
   function doBind(){
     var v = $('bindInput').value.trim();
     if(!v){ toast('Введите название задачи'); return; }
-    /* привязка на текущую сессию */
-    try{ history.replaceState(null,'', '#task='+encodeURIComponent(v)); }catch(e){}
-    TASK = taskKeyFromLabel(v);
-    /* постоянная ссылка для блока */
-    var url = taggedUrl(v);
+    adoptKey(taskKeyFromLabel(v));
+    var url = SELF_URL + '#task=' + encodeURIComponent(v);
     $('bindUrl').value = url;
     $('bindResult').style.display = '';
     $('bindNote').style.display = '';
     copyText(url);
-    boot();
-    toast('Привязано. Ссылка с меткой скопирована — замените ею URL блока');
+    toast('Привязано. Ссылка скопирована — замените ею URL блока');
   }
   $('bindCopyBtn').addEventListener('click', function(){ copyText($('bindUrl').value); toast('Скопировано'); });
   function copyText(text){
@@ -588,7 +699,7 @@
   /* Путь 1 (без настройки): после создания скопируйте ссылку и нажмите Ctrl/Cmd+V
      в любом месте виджета — файл добавится сам.
      Путь 2 (полный автомат): веб-приложение Apps Script возвращает последние
-     созданные файлы Google; виджет опрашивает его ~90 секунд после клика. */
+     созданные файлы Google; виджет опрашивает его ~2 минуты после клика. */
   var watchTimer = null, watchUntil = 0, watchStartTs = 0;
   /* URL вшит по умолчанию, в Настройках можно заменить */
   var DEFAULT_GAS_URL = 'https://script.google.com/macros/s/AKfycbyvpZSDEocqIMvok-Uu_HDwrRJ1PQaQflyRM8HSs_KCGtsrxk44B15PUwV1wloJKPt4/exec';
@@ -736,22 +847,24 @@
     $('settingsPanel').classList.add('show');
     $('netStatus').textContent = 'проверяю…';
     checkNet();
+    broadcastHeight();
   });
 
   function hidePanels(){
     $('addForm').classList.remove('show');
     $('settingsPanel').classList.remove('show');
+    broadcastHeight();
   }
 
   /* ============ настройки ============ */
-  $('settingsCloseBtn').addEventListener('click', function(){ $('settingsPanel').classList.remove('show'); });
+  $('settingsCloseBtn').addEventListener('click', function(){ $('settingsPanel').classList.remove('show'); broadcastHeight(); });
   $('gasSaveBtn').addEventListener('click', function(){
     var v = $('gasUrl').value.trim();
     if (v && !/^https:\/\/script\.google\.com\//.test(v)){
       toast('Это не похоже на URL Apps Script'); return;
     }
     if (v) store.setItem('gw_gas_url', v); else store.removeItem('gw_gas_url');
-    toast(v ? 'Авто-добавление включено' : 'Авто-добавление выключено');
+    toast(v ? 'URL Apps Script сохранён' : 'URL Apps Script сброшен');
   });
   $('gasTestBtn').addEventListener('click', function(){
     toast('Проверяю связь с Apps Script…');
@@ -764,12 +877,13 @@
   });
   $('rebindBtn').addEventListener('click', function(){
     try{ history.replaceState(null,'', location.pathname); }catch(e){}
-    TASK = null;
-    hidePanels();
+    TASK = null; provKey = null; bindFails = 0;
+    $('taskIdLabel').textContent = 'новая — привяжется при первом файле';
     $('bindResult').style.display='none';
     $('bindNote').style.display='none';
     $('bindInput').value='';
-    boot();
+    render();
+    toast('Отвязано. Файлы появятся при новой привязке');
   });
   var clearArmed = false, clearTimer;
   $('clearBtn').addEventListener('click', function(){
@@ -799,12 +913,14 @@
     $('addForm').classList.add('show');
     selectType(prefType || null);
     $('fUrl').focus();
+    broadcastHeight();
   }
   function closeForm(){
     $('addForm').classList.remove('show');
     $('formHint').textContent = 'Вставьте ссылку — Google, Word, Excel, OneDrive. Тип определится автоматически.';
     $('fUrl').value=''; $('fName').value='';
     selectType(null);
+    broadcastHeight();
   }
   function selectType(t){
     selectedType = t;
@@ -874,7 +990,7 @@
         addFile(rec, true);
         sessionData[rec.id] = dataUrl;
         idbPut(rec.id, f); /* постоянная локальная копия: скачивание всегда мгновенное */
-        toast('«'+f.name+'» добавлен, загружаю в Drive…');
+        toast('«'+f.name+'» добавлен — загружаю в Drive в фоне');
         uploadToDrive(rec, f.name, dataUrl);
       };
       reader.onerror = function(){ toast('Не удалось прочитать «'+f.name+'»'); };
@@ -883,13 +999,13 @@
   }
   /* Загрузка в Google Drive через Apps Script идёт в фоне; когда закончится,
      карточка получает ссылку на Drive. Скачивание всё это время уже работает. */
-  function uploadToDrive(rec, name, dataUrl){
+  function uploadToDrive(rec, name, dataUrl, done, silent){
     var b64 = dataUrl.split(',')[1] || '';
     fetch(gasUrl(), {
       method:'POST',
       headers:{'Content-Type':'text/plain;charset=utf-8'}, /* без preflight */
       body: JSON.stringify({
-        action:'upload', key:WIDGET_KEY, task:String(TASK||''), name:name,
+        action:'upload', key:WIDGET_KEY, task:String(activeKey()||''), name:name,
         mime:rec.mime, data:b64
       })
     })
@@ -902,24 +1018,50 @@
         x.driveId = res.id || null;           /* для скачивания оригинала через GAS */
         x.dl = res.id ? 'https://drive.google.com/uc?export=download&id='+res.id : null;
         delete x.uploading;
-        delete x.data;                        /* байты теперь в Drive; на эту сессию копия остаётся */
+        delete x.data;                        /* байты теперь в Drive; локальная копия в IndexedDB остаётся */
       });
-      toast('«'+name+'» загружен в Drive');
+      if (!silent) toast('«'+name+'» загружен в Drive');
+      done && done(true);
     })
     .catch(function(){
-      if (rec.data){
-        updateFile(rec.id, function(x){ delete x.uploading; });
-        toast('Drive недоступен — «'+name+'» сохранён локально, скачивание работает');
-      } else {
-        /* крупный файл: до перезагрузки страницы он скачивается из памяти */
-        updateFile(rec.id, function(x){ delete x.uploading; });
-        toast('Drive недоступен — «'+name+'» доступен до перезагрузки страницы. Добавьте его ссылкой из облака');
+      updateFile(rec.id, function(x){ delete x.uploading; });
+      if (!silent){
+        toast('Drive недоступен — «'+name+'» сохранён локально, скачивание работает. Повторю загрузку позже');
       }
+      done && done(false);
+    });
+  }
+  /* дозагрузка в Drive файлов, у которых прошлая попытка не удалась
+     (например, закрыли страницу раньше времени или Apps Script был недоступен) */
+  var retryBusy = false;
+  function retryUploads(){
+    if (retryBusy) return;
+    var files = loadFiles();
+    var f = null;
+    for (var i=0;i<files.length;i++){
+      if (files[i].kind==='upload' && !files[i].url && !files[i].uploading){ f = files[i]; break; }
+    }
+    if (!f) return;
+    var next = function(){ retryBusy = false; setTimeout(retryUploads, 1500); };
+    var go = function(dataUrl){
+      updateFile(f.id, function(x){ x.uploading = true; });
+      uploadToDrive(f, f.name, dataUrl, next, true);
+    };
+    retryBusy = true;
+    var src = f.data || sessionData[f.id];
+    if (src){ go(src); return; }
+    idbGet(f.id, function(blob){
+      if (!blob){ retryBusy = false; return; } /* байтов нет — дозагружать нечего */
+      var fr = new FileReader();
+      fr.onload = function(){ sessionData[f.id] = String(fr.result); go(String(fr.result)); };
+      fr.onerror = function(){ retryBusy = false; };
+      fr.readAsDataURL(blob);
     });
   }
 
   /* ============ данные ============ */
   function addFile(rec, silent){
+    ensureKey(); /* новая задача получает ключ в момент первого сохранения */
     var files = loadFiles();
     if (rec.url && files.some(function(f){ return f.url===rec.url; })){
       if (!silent) toast('Этот файл уже добавлен');
@@ -946,10 +1088,16 @@
   }
 
   /* ============ скачивание ============ */
-  /* Скачиваем через Blob + <a download>: браузер сохраняет файл сразу,
-     без вкладок и всплывающих окон, ровно в исходном формате.
-     Прежний способ (скрытый iframe на drive.google.com) в песочнице Notion
-     блокировался браузером — клик не «доносился» до вложенного фрейма. */
+  /* Notion вставляет виджет в iframe-песочницу БЕЗ разрешения allow-downloads:
+     обычный клик по <a download> браузер молча блокирует (файл «не качается»).
+     Зато у песочницы есть allow-popups-to-escape-sandbox — окно, открытое
+     виджетом, живёт вне песочницы, и скачивание из него работает.
+     Поэтому:
+       — виджет открыт напрямую (не в iframe): качаем как обычно, без окон;
+       — веб-версия Notion: мгновенно открываем крошечное окно, кладём в него
+         файл и закрываем — браузер сохраняет файл, окно исчезает само;
+       — приложение Notion (Electron): окно уходит во внешний браузер, blob
+         туда не передать — качаем по прямой ссылке Google Drive. */
   function dataUrlToBlob(dataUrl, fallbackMime){
     var parts = String(dataUrl).split(',');
     var mime = (parts[0].match(/^data:([^;]+)/)||[])[1] || fallbackMime || 'application/octet-stream';
@@ -958,7 +1106,7 @@
     for (var i=0;i<bin.length;i++) u8[i] = bin.charCodeAt(i);
     return new Blob([u8], {type:mime});
   }
-  function saveBlob(name, blob){
+  function saveBlobDirect(name, blob){
     var a = document.createElement('a');
     var u = URL.createObjectURL(blob);
     a.href = u;
@@ -973,50 +1121,139 @@
     var m = f.dl && f.dl.match(/[?&]id=([^&]+)/); /* записи старых версий виджета */
     return m ? m[1] : null;
   }
-  var fetching = {};
-  /* подтягиваем байты из Drive через Apps Script (fetch с CORS работает) */
+  function driveDl(id){
+    return 'https://drive.google.com/uc?export=download&id='+encodeURIComponent(id);
+  }
+  /* окно-курьер: открывается СИНХРОННО в обработчике клика (иначе блокировщик),
+     получает blob и закрывается само, как только скачивание стартовало */
+  function openCourier(){
+    var w = null;
+    try{ w = window.open('', '_blank', 'width=340,height=120'); }catch(e){}
+    if (!w) return null;
+    try{
+      w.document.write(
+        '<!doctype html><title>Скачивание…</title>'+
+        '<body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;'+
+        'background:#191919;color:rgba(255,255,255,.85);'+
+        'font:14px -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif">'+
+        '<div id="m">Готовлю файл…</div></body>');
+    }catch(e){}
+    return w;
+  }
+  function courierSay(w, text){
+    try{ var m = w.document.getElementById('m'); if (m) m.textContent = text; }catch(e){}
+  }
+  function courierDownload(w, name, blob){
+    try{
+      var u = URL.createObjectURL(blob);
+      var d = w.document;
+      var a = d.createElement('a');
+      a.href = u;
+      a.download = name || 'file';
+      d.body.appendChild(a);
+      a.click();
+      courierSay(w, '«'+(name||'файл')+'» скачивается…');
+      /* скачиванием управляет браузер — окно можно закрывать */
+      setTimeout(function(){ try{ w.close(); }catch(e){} }, 900);
+      setTimeout(function(){ URL.revokeObjectURL(u); }, 30000);
+      return true;
+    }catch(e){
+      try{ w.close(); }catch(e2){}
+      return false;
+    }
+  }
+  function courierDrive(w, f){
+    var did = recDriveId(f);
+    if (!did){
+      try{ w.close(); }catch(e){}
+      toast('Данные файла не сохранились — добавьте его заново');
+      return;
+    }
+    /* сервер Drive отдаёт файл как attachment — скачивание идёт без песочницы;
+       вкладку со скачиванием браузер закрывает сам, но подстрахуемся */
+    try{ w.location = driveDl(did); }catch(e){}
+    setTimeout(function(){ try{ w.close(); }catch(e){} }, 12000);
+  }
+  var fetching = {}; /* id файла -> очередь колбэков, ждущих байты */
+  /* подтягиваем байты из Drive через Apps Script (fetch с CORS работает);
+     повторный вызов для того же файла не падает, а ждёт уже идущий запрос —
+     иначе клик сразу после наведения (предзагрузки) уходил бы в обход */
   function fetchBytes(f, cb){
+    if (sessionData[f.id]){ cb(null); return; }
     var did = recDriveId(f);
     if (!did){ cb(new Error('нет id файла')); return; }
-    if (fetching[f.id]){ cb(new Error('уже качается')); return; }
-    fetching[f.id] = true;
+    if (fetching[f.id]){ fetching[f.id].push(cb); return; }
+    fetching[f.id] = [cb];
+    function finish(err){
+      var q = fetching[f.id] || [];
+      delete fetching[f.id];
+      q.forEach(function(fn){ try{ fn(err); }catch(e){} });
+    }
     fetch(gasUrl()+'?action=download&id='+encodeURIComponent(did)+'&key='+encodeURIComponent(WIDGET_KEY))
       .then(function(r){ return r.json(); })
       .then(function(res){
-        fetching[f.id] = false;
         if (!(res && res.ok && res.data)) throw new Error(res && res.error || 'старый Apps Script: нет команды download');
         sessionData[f.id] = 'data:'+(res.mime||f.mime||'application/octet-stream')+';base64,'+res.data;
         /* кэшируем навсегда: следующие скачивания мгновенные даже после перезагрузки */
         try{ idbPut(f.id, dataUrlToBlob(sessionData[f.id], f.mime)); }catch(e){}
-        cb(null);
+        finish(null);
       })
-      .catch(function(e){ fetching[f.id] = false; cb(e); });
+      .catch(function(e){ finish(e); });
   }
   function downloadFile(f){
     var local = f.data || sessionData[f.id];
-    if (local){
-      saveBlob(f.name, dataUrlToBlob(local, f.mime));
+
+    /* 1) виджет открыт напрямую — качаем без окон */
+    if (!FRAMED){
+      if (local){ saveBlobDirect(f.name, dataUrlToBlob(local, f.mime)); return; }
+      idbGet(f.id, function(blob){
+        if (blob){ saveBlobDirect(f.name, blob); return; }
+        if (!recDriveId(f)){ toast('Данные файла не сохранились — добавьте его заново'); return; }
+        toast('Готовлю «'+f.name+'»…');
+        fetchBytes(f, function(err){
+          if (err){ toast('Не удалось скачать: '+(err.message||'ошибка')); return; }
+          saveBlobDirect(f.name, dataUrlToBlob(sessionData[f.id], f.mime));
+        });
+      });
       return;
     }
-    /* постоянная локальная копия в IndexedDB — мгновенно и без сети */
+
+    /* 2) приложение Notion: окно откроется во внешнем браузере — только Drive */
+    if (NOTION_APP){
+      var did = recDriveId(f);
+      if (did){
+        window.open(driveDl(did), '_blank');
+        toast('Скачивание пошло через браузер');
+      } else {
+        toast('Файл ещё загружается в Drive — попробуйте через минуту');
+        retryUploads();
+      }
+      return;
+    }
+
+    /* 3) веб-версия Notion: окно-курьер (вне песочницы) скачивает и закрывается */
+    var w = openCourier();
+    if (!w){
+      /* блокировщик всплывающих окон: пробуем прямой способ и подсказываем */
+      if (local){ saveBlobDirect(f.name, dataUrlToBlob(local, f.mime)); }
+      toast('Разрешите всплывающие окна для этого сайта, чтобы скачивание работало');
+      return;
+    }
+    var deliver = function(blob){
+      if (!courierDownload(w, f.name, blob)) courierDrive(w, f);
+    };
+    if (local){ deliver(dataUrlToBlob(local, f.mime)); return; }
     idbGet(f.id, function(blob){
-      if (blob){ saveBlob(f.name, blob); return; }
+      if (blob){ deliver(blob); return; }
       if (!recDriveId(f)){
-        toast('Данные файла не сохранились — откройте его в Drive');
+        try{ w.close(); }catch(e){}
+        toast('Данные файла не сохранились — добавьте его заново');
         return;
       }
-      toast('Готовлю «'+f.name+'»…');
-      var t0 = Date.now();
+      courierSay(w, 'Скачиваю «'+f.name+'» из Drive…');
       fetchBytes(f, function(err){
-        if (err){
-          /* резерв для старого Apps Script без команды download */
-          if (f.dl){ silentDownload(f.dl); toast('Пробую скачать через Drive… Если не вышло — обновите код Apps Script (README)'); }
-          else toast('Не удалось скачать: '+(err.message||'ошибка'));
-          return;
-        }
-        saveBlob(f.name, dataUrlToBlob(sessionData[f.id], f.mime));
-        /* браузер мог «забыть» клик, пока файл ехал по сети */
-        if (Date.now() - t0 > 4000) toast('Если скачивание не началось — нажмите на файл ещё раз');
+        if (err){ courierDrive(w, f); return; } /* резерв: прямая ссылка Drive */
+        deliver(dataUrlToBlob(sessionData[f.id], f.mime));
       });
     });
   }
@@ -1064,7 +1301,7 @@
         var go = document.createElement('a');
         go.className = 'go';
         if (f.kind === 'upload' || f.kind === 'drive'){
-          /* наши файлы: клик = мгновенное скачивание оригинала, без окон */
+          /* наши файлы: клик = скачивание оригинала */
           go.href = '#';
           go.title = 'Скачать «'+f.name+'»';
           go.addEventListener('click', function(e){
@@ -1119,18 +1356,6 @@
       });
     });
     broadcastHeight();
-  }
-
-  /* резервное скачивание через скрытый iframe — только для старого Apps Script
-     без команды download; в песочнице Notion часто блокируется браузером */
-  var dlFrame = null;
-  function silentDownload(url){
-    if (dlFrame) dlFrame.remove();
-    dlFrame = document.createElement('iframe');
-    dlFrame.style.display = 'none';
-    dlFrame.src = url;
-    document.body.appendChild(dlFrame);
-    setTimeout(function(){ if(dlFrame){ dlFrame.remove(); dlFrame=null; } }, 60000);
   }
 
   /* ============ toast ============ */
