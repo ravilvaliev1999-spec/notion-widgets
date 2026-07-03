@@ -144,9 +144,12 @@ function download_(id) {
  * 2. Если виджет завёрнут в synced-блок (ссылку на общий блок), метка внутри него
  *    невозможна — блок один на все задачи, файлы бы склеились. Такую ссылку мы
  *    разворачиваем: ставим на её место обычный embed с меткой этой страницы,
- *    а саму ссылку убираем. Оригинальный synced-блок и другие страницы не
- *    затрагиваются. Так шаблон продолжает работать, даже если виджет в нём
- *    снова окажется внутри synced-блока. */
+ *    а саму ссылку убираем. Оригинальный synced-блок не затрагивается, поэтому
+ *    рабочий процесс «эталон на „Системных виджетах“ → sync-копия в шаблоне»
+ *    полностью поддерживается: новая задача получает копию, а при привязке
+ *    копия превращается в обычный привязанный блок (выглядит так же).
+ *    Разворачиваем ТОЛЬКО страницы из базы задач: эталонные страницы вне базы
+ *    («Системные виджеты», «Задача ежедневная» и т.п.) никогда не трогаем. */
 function tag_(self) {
   var token = PropertiesService.getScriptProperties().getProperty('NOTION_TOKEN');
   if (!token) return { error: 'NOTION_TOKEN не задан в свойствах скрипта' };
@@ -165,8 +168,9 @@ function tag_(self) {
     return url && url.split('#')[0].split('?')[0] === self;
   }
   for (var i = 0; i < pages.length; i++) {
-    var pageId = pages[i].id.replace(/-/g, '');
-    var blocks = children_(pages[i].id, headers, 0);
+    var allowUnwrap = pages[i].fromDb; // sync-копии разворачиваем только в базе задач
+    var pageId = pages[i].page.id.replace(/-/g, '');
+    var blocks = children_(pages[i].page.id, headers, 0);
     for (var j = 0; j < blocks.length; j++) {
       var b = blocks[j].b;
       scanned++;
@@ -193,8 +197,9 @@ function tag_(self) {
         if (!ours.length) continue;
         var isReference = !!(b.synced_block && b.synced_block.synced_from);
         // оригинальный общий блок не трогаем (его удаление сломало бы все копии);
-        // не трогаем и ссылку, где кроме виджета лежит что-то ещё
-        if (!isReference || ours.length !== inner.total) { syncedStuck++; continue; }
+        // не трогаем ссылку, где кроме виджета лежит что-то ещё,
+        // и любые страницы вне базы задач (эталоны должны остаться synced)
+        if (!isReference || ours.length !== inner.total || !allowUnwrap) { syncedStuck++; continue; }
         // 1) сразу после ссылки вставляем обычный embed с меткой этой страницы
         var ins = UrlFetchApp.fetch('https://api.notion.com/v1/blocks/' + blocks[j].parent + '/children', {
           method: 'patch',
@@ -218,13 +223,14 @@ function tag_(self) {
   return { ok: true, tagged: tagged, scanned: scanned, pages: taggedPages, synced: syncedStuck };
 }
 
-/* свежие страницы-кандидаты: база задач напрямую + общий поиск (без дублей) */
+/* свежие страницы-кандидаты: база задач напрямую + общий поиск (без дублей);
+   у страниц из базы fromDb=true — только им разрешено разворачивание sync-копий */
 function candidatePages_(headers) {
   var seen = {};
   var out = [];
-  function add(list) {
+  function add(list, fromDb) {
     for (var i = 0; i < list.length; i++) {
-      if (!seen[list[i].id]) { seen[list[i].id] = 1; out.push(list[i]); }
+      if (!seen[list[i].id]) { seen[list[i].id] = 1; out.push({ page: list[i], fromDb: fromDb }); }
     }
   }
   // 1) база задач: только что созданные страницы видны здесь сразу
@@ -240,7 +246,7 @@ function candidatePages_(headers) {
         sorts: [{ timestamp: 'last_edited_time', direction: 'descending' }]
       })
     });
-    if (q.getResponseCode() < 300) add(JSON.parse(q.getContentText()).results || []);
+    if (q.getResponseCode() < 300) add(JSON.parse(q.getContentText()).results || [], true);
   } catch (ignored) {}
   // 2) общий поиск — для виджетов на страницах вне базы задач
   var resp = UrlFetchApp.fetch('https://api.notion.com/v1/search', {
@@ -253,7 +259,7 @@ function candidatePages_(headers) {
       page_size: 15
     })
   });
-  if (resp.getResponseCode() < 300) add(JSON.parse(resp.getContentText()).results || []);
+  if (resp.getResponseCode() < 300) add(JSON.parse(resp.getContentText()).results || [], false);
   return out;
 }
 
