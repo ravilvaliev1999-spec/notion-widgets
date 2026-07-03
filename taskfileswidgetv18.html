@@ -315,7 +315,7 @@
 (function(){
   'use strict';
 
-  var VERSION = 'v19';
+  var VERSION = 'v19.1';
 
   /* ============ storage ============ */
   var mem = {};
@@ -481,13 +481,15 @@
       rest.push(p);
     });
     if (!rawFiles(TASK).length){
-      var withFiles = rest.filter(function(p){ return rawFiles(p.key).length > 0; });
-      if (withFiles.length===1){
-        /* единственный свежий «ничейный» набор — это файлы, сохранённые в этом
-           блоке до перезагрузки после привязки; забираем их себе */
-        mergeFilesInto(withFiles[0].key, TASK);
-        rest = rest.filter(function(p){ return p.key!==withFiles[0].key; });
-      }
+      /* задача ещё пуста, а в реестре лежат свежие «ничейные» файлы — это то,
+         что сохранили до срабатывания привязки (возможно, за несколько визитов).
+         Забираем всё: с быстрой привязкой такие наборы копятся только у одной
+         задачи, а видимый лишний файл проще удалить, чем искать пропавший */
+      var adopted = {};
+      rest.forEach(function(p){
+        if (rawFiles(p.key).length){ mergeFilesInto(p.key, TASK); adopted[p.key]=1; }
+      });
+      rest = rest.filter(function(p){ return !adopted[p.key]; });
     }
     savePending(rest);
   }
@@ -502,6 +504,9 @@
       var label = newKey.replace(/^p_/,'').replace(/^t_/,'');
       history.replaceState(null,'','#task='+encodeURIComponent(label));
     }catch(e){}
+    /* привязка могла случиться позже сохранения (и даже в другом визите) —
+       подбираем файлы, оставшиеся под временными ключами */
+    adoptPendingIfNeeded();
     var tl = $('taskIdLabel'); if (tl) tl.textContent = TASK;
     hideBindHint();
     render();
@@ -632,7 +637,9 @@
          Notion перезагрузит блок с меткой, файлы подберёт adoptPending */
       if (!res.tagged){
         bindFails++;
-        maybeShowBindHint('блок пока не найден среди недавних страниц');
+        maybeShowBindHint(res.synced
+          ? 'виджет завёрнут в synced-блок — замените его обычным embed-блоком'
+          : 'блок пока не найден среди недавних страниц');
       }
     });
   }
