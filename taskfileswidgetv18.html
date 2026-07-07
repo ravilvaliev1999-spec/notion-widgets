@@ -55,13 +55,39 @@
 
   .board {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr)); /* всегда 3 колонки — просто сужаются */
     gap: 18px;
     align-items: start;
   }
 
-  @media (max-width: 1100px) { .board { grid-template-columns: repeat(2, 1fr); } }
-  @media (max-width: 700px)  { .board { grid-template-columns: 1fr; } .container { padding: 16px 14px 80px; } }
+  @media (max-width: 900px) { .board { gap: 10px; } .container { padding: 16px 10px 90px; } }
+  @media (max-width: 600px) { .board { gap: 6px; }  .container { padding: 12px 6px 90px; } }
+
+  /* адаптация содержимого под ширину самой колонки */
+  .column { min-width: 0; container-type: inline-size; }
+
+  @container (max-width: 340px) {
+    .column { padding: 12px 10px; border-radius: 18px; }
+    .column-icon { width: 32px; height: 32px; border-radius: 10px; }
+    .column-icon svg { width: 18px; height: 18px; }
+    .column-title { font-size: 14.5px; }
+    .metric-cell .value { font-size: 13.5px; }
+    .item-name { font-size: 12.5px; }
+    .item { padding: 8px 9px; gap: 8px; }
+  }
+  @container (max-width: 250px) {
+    .column { padding: 10px 7px; border-radius: 16px; }
+    .column-head { gap: 6px; }
+    .column-domain, .item-domain { display: none; }
+    .column-title { font-size: 13px; }
+    .metrics-row { grid-template-columns: 1fr; }
+    .mp-row { padding: 6px 6px; gap: 6px; }
+    .mp-badge { width: 24px; height: 24px; }
+    .mp-badge .letter { font-size: 11px; }
+    .mp-stat .val { font-size: 11px; }
+    .item-icon { width: 22px; height: 22px; border-radius: 6px; }
+    .drag-handle { display: none; }
+  }
 
   /* ─── Column ─── */
   .column {
@@ -409,6 +435,38 @@
   }
   .add-btn-inline svg { width: 13px; height: 13px; }
 
+  /* привязанные к таблице значения */
+  .metric-cell .value.linked, .mp-stat .val.linked {
+    box-shadow: inset 0 -2px 0 rgba(0, 113, 227, 0.45);
+  }
+
+  /* ─── FAB "Sync" ─── */
+  .fab-sync {
+    position: fixed;
+    bottom: 92px;
+    right: 28px;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: var(--card-bg);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid var(--card-border);
+    color: var(--text-secondary);
+    cursor: pointer;
+    box-shadow: var(--card-shadow);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+    transition: all 0.2s ease;
+    font-family: inherit;
+  }
+  .fab-sync:hover { color: var(--accent); transform: translateY(-2px); }
+  .fab-sync svg { width: 19px; height: 19px; }
+  .fab-sync.spinning svg { animation: spin 0.9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
   /* ─── FAB "New section" ─── */
   .fab-add {
     position: fixed;
@@ -641,6 +699,14 @@
     <div class="board" id="board"></div>
   </div>
 
+  <!-- FAB "Sync from Google Sheets" -->
+  <button class="fab-sync" id="fabSync" onclick="syncAll(false)" title="Обновить данные из таблиц">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
+      <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+    </svg>
+  </button>
+
   <!-- FAB "New section" -->
   <button class="fab-add" onclick="openColumnModal()" title="Новый раздел">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
@@ -730,6 +796,14 @@
         <label for="mpUrl">Ссылка (необязательно)</label>
         <input type="url" id="mpUrl" placeholder="https://..." autocomplete="off">
       </div>
+      <div class="form-group">
+        <label>Ячейки в Google Таблице (Лист!A1) — источник: ссылка выше или основная ссылка раздела</label>
+        <div class="metric-edit-row">
+          <input type="text" id="mpCellTurnover" placeholder="ТО, напр. Свод!B2" autocomplete="off">
+          <input type="text" id="mpCellMargin" placeholder="Рент., напр. Свод!C2" autocomplete="off">
+          <input type="text" id="mpCellProfit" placeholder="Прибыль, напр. Свод!D2" autocomplete="off">
+        </div>
+      </div>
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick="closeMpModal()">Отмена</button>
         <button class="btn btn-primary" onclick="saveMp()">Добавить</button>
@@ -739,6 +813,10 @@
 
 <script>
   const STORAGE_KEY = 'finance_board_v6';
+
+  /* ─── Google Apps Script (тот же деплой, что у виджета файлов) ── */
+  const GAS_URL = 'https://script.google.com/macros/s/AKfycbyvpZSDEocqIMvok-Uu_HDwrRJ1PQaQflyRM8HSs_KCGtsrxk44B15PUwV1wloJKPt4/exec';
+  const GAS_KEY = 'Mbg8jvthj931bwqgdYZXwyCWpfBTEXOo'; /* = SECRET в Code.gs */
 
   // ─── Regular icons ─────────────────────────────
   const ICONS = {
@@ -883,9 +961,11 @@
         c.marketplaces.forEach(mp => {
           if (mp.url == null) mp.url = '';
           if (mp.customLogo === undefined) mp.customLogo = null;
+          if (!mp.cells) mp.cells = { turnover: '', margin: '', profit: '' };
         });
         (c.metrics || []).forEach(m => {
           if (m.label === 'Заказов сегодня') m.label = 'Заказы';
+          if (m.cell === undefined) m.cell = '';
         });
         c.items.forEach(i => {
           if (!i.icon) i.icon = i.type || 'sheet';
@@ -896,6 +976,7 @@
       });
     } catch { state = structuredClone(DEFAULT_STATE); }
     render();
+    if (collectBindings().length) syncAll(true); // тихая автоподтяжка данных
   }
 
   function save() {
@@ -980,7 +1061,8 @@
         ${col.metrics.map((m, i) => `
           <div class="metric-cell">
             <span class="label">${escapeHtml(m.label)}</span>
-            <span class="value ${!m.value ? 'empty' : ''}"
+            <span class="value ${!m.value ? 'empty' : ''} ${m.cell ? 'linked' : ''}"
+                  ${m.cell ? `title="Из таблицы: ${escapeAttr(m.cell)}"` : ''}
                   contenteditable="true"
                   data-col="${col.id}"
                   data-idx="${i}"
@@ -1025,7 +1107,10 @@
            ondragover="onColDragOver(event, '${col.id}')"
            ondrop="onColDrop(event, '${col.id}')"
            ondragleave="onColDragLeave(event)">
-        <div class="column-head ${headClass}" onclick="handleColumnClick(event, '${col.id}')">
+        <div class="column-head ${headClass}" onclick="handleColumnClick(event, '${col.id}')"
+             draggable="true"
+             ondragstart="onColDragStart(event, '${col.id}')"
+             ondragend="onDragEnd(event)">
           <div class="drag-handle"
                draggable="true"
                title="Перетащить"
@@ -1038,6 +1123,12 @@
             <div class="column-domain">${escapeHtml(domainStr)}</div>
           </div>
           <div class="column-menu">
+            <button class="icon-btn" onclick="event.stopPropagation(); moveColumn('${col.id}', -1)" title="Сдвинуть влево">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+            </button>
+            <button class="icon-btn" onclick="event.stopPropagation(); moveColumn('${col.id}', 1)" title="Сдвинуть вправо">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
             <button class="icon-btn" onclick="event.stopPropagation(); openColumnModal('${col.id}')" title="Настройки">${GEAR_ICON}</button>
           </div>
         </div>
@@ -1080,7 +1171,8 @@
           ${['turnover','margin','profit'].map(field => `
             <span class="mp-stat">
               <span class="lbl">${field==='turnover'?'ТО':field==='margin'?'Рент':'Прибыль'}</span>
-              <span class="val ${!mp[field] ? 'empty' : ''}"
+              <span class="val ${!mp[field] ? 'empty' : ''} ${mp.cells && mp.cells[field] ? 'linked' : ''}"
+                    ${mp.cells && mp.cells[field] ? `title="Из таблицы: ${escapeAttr(mp.cells[field])}"` : ''}
                     contenteditable="true"
                     data-col="${colId}" data-mp="${mp.id}" data-field="${field}"
                     onblur="updateMpValue(event)"
@@ -1147,6 +1239,15 @@
     if (!url) return;
     if (e.target.closest('.item-actions, .drag-handle')) return;
     window.open(url, '_blank');
+  }
+
+  // ─── Reorder columns by buttons (работает и на телефоне) ──
+  function moveColumn(colId, dir) {
+    const idx = state.columns.findIndex(c => c.id === colId);
+    const j = idx + dir;
+    if (idx < 0 || j < 0 || j >= state.columns.length) return;
+    [state.columns[idx], state.columns[j]] = [state.columns[j], state.columns[idx]];
+    save();
   }
 
   // ─── Drag & Drop ────────────────────────────────
@@ -1466,6 +1567,7 @@
     document.getElementById('metricsEditor').innerHTML = colDraft.metrics.map((m, i) => `
       <div class="metric-edit-row">
         <input type="text" value="${escapeHtml(m.label)}" placeholder="Название" oninput="colDraft.metrics[${i}].label = this.value">
+        <input type="text" value="${escapeHtml(m.cell || '')}" placeholder="Лист!B2" style="flex: 0 0 110px" title="Ячейка в таблице из основной ссылки" oninput="colDraft.metrics[${i}].cell = this.value.trim()">
         <button onclick="colDraft.metrics.splice(${i}, 1); renderMetricsEditor()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M18 6L6 18M6 6l12 12"/></svg>
         </button>
@@ -1474,7 +1576,7 @@
   }
 
   function addMetricRow() {
-    colDraft.metrics.push({ label: '', value: '' });
+    colDraft.metrics.push({ label: '', value: '', cell: '' });
     renderMetricsEditor();
   }
 
@@ -1528,8 +1630,12 @@
     const mp = mpId ? col.marketplaces.find(m => m.id === mpId) : null;
     mpCtx = { colId, mpId };
     mpDraft = mp
-      ? { key: mp.key, name: mp.name, url: mp.url || '', customLogo: mp.customLogo || null }
-      : { key: 'ozon', name: MARKETPLACES.ozon.name, url: '', customLogo: null };
+      ? { key: mp.key, name: mp.name, url: mp.url || '', customLogo: mp.customLogo || null, cells: { ...(mp.cells || {}) } }
+      : { key: 'ozon', name: MARKETPLACES.ozon.name, url: '', customLogo: null, cells: { turnover: '', margin: '', profit: '' } };
+
+    document.getElementById('mpCellTurnover').value = mpDraft.cells.turnover || '';
+    document.getElementById('mpCellMargin').value   = mpDraft.cells.margin || '';
+    document.getElementById('mpCellProfit').value   = mpDraft.cells.profit || '';
 
     const fileInput = document.getElementById('mpLogoInput');
     fileInput.value = '';
@@ -1586,11 +1692,16 @@
     const name = document.getElementById('mpName').value.trim() || (MARKETPLACES[mpDraft.key]?.name ?? 'Маркетплейс');
     let url = document.getElementById('mpUrl').value.trim();
     if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;
+    const cells = {
+      turnover: document.getElementById('mpCellTurnover').value.trim(),
+      margin:   document.getElementById('mpCellMargin').value.trim(),
+      profit:   document.getElementById('mpCellProfit').value.trim()
+    };
     const col = state.columns.find(c => c.id === mpCtx.colId);
     if (!col.marketplaces) col.marketplaces = [];
     if (mpCtx.mpId) {
       const mp = col.marketplaces.find(m => m.id === mpCtx.mpId);
-      Object.assign(mp, { key: mpDraft.key, name, url, customLogo: mpDraft.customLogo });
+      Object.assign(mp, { key: mpDraft.key, name, url, customLogo: mpDraft.customLogo, cells });
     } else {
       col.marketplaces.push({
         id: uid(),
@@ -1598,6 +1709,7 @@
         name,
         url,
         customLogo: mpDraft.customLogo,
+        cells,
         turnover: '',
         margin: '',
         profit: ''
@@ -1633,6 +1745,83 @@
     const mp = col.marketplaces.find(m => m.id === mpId);
     mp[field] = raw;
     save();
+  }
+
+  // ─── Синхронизация с Google Таблицами ───────────
+  function ssIdFromUrl(url) {
+    const m = /\/d\/([a-zA-Z0-9_-]{20,})/.exec(url || '');
+    return m ? m[1] : null;
+  }
+
+  // Собираем все привязки: {ssId, range, apply(value)}
+  function collectBindings() {
+    const jobs = [];
+    state.columns.forEach(col => {
+      const colSs = ssIdFromUrl(col.primaryUrl);
+      (col.metrics || []).forEach(m => {
+        if (m.cell && colSs) jobs.push({ ssId: colSs, range: m.cell, apply: v => { m.value = v; } });
+      });
+      (col.marketplaces || []).forEach(mp => {
+        const ss = ssIdFromUrl(mp.url) || colSs;
+        ['turnover', 'margin', 'profit'].forEach(f => {
+          const cell = mp.cells && mp.cells[f];
+          if (cell && ss) jobs.push({ ssId: ss, range: cell, apply: v => { mp[f] = v; } });
+        });
+      });
+    });
+    return jobs;
+  }
+
+  function gasGet(params) {
+    const qs = Object.entries({ ...params, key: GAS_KEY })
+      .map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+    const url = `${GAS_URL}?${qs}`;
+    return fetch(url).then(r => r.json()).catch(() => new Promise((resolve, reject) => {
+      // JSONP-запасной вариант для песочниц, где закрыт CORS (встраивание в Notion)
+      const cb = 'gascb_' + Math.random().toString(36).slice(2, 9);
+      window[cb] = data => { delete window[cb]; sc.remove(); resolve(data); };
+      const sc = document.createElement('script');
+      sc.src = `${url}&callback=${cb}`;
+      sc.onerror = () => { delete window[cb]; sc.remove(); reject(new Error('gas jsonp failed')); };
+      document.body.appendChild(sc);
+    }));
+  }
+
+  let syncing = false;
+  async function syncAll(silent) {
+    if (syncing) return;
+    const jobs = collectBindings();
+    if (!jobs.length) {
+      if (!silent) alert('Нет привязанных ячеек.\n\nОткройте настройки раздела (⚙) и укажите ячейку у метрики (напр. Свод!B2), либо ячейки ТО/Рент/Прибыль в настройках маркетплейса. Данные берутся из таблицы по основной ссылке раздела (или ссылке маркетплейса).');
+      return;
+    }
+    syncing = true;
+    const btn = document.getElementById('fabSync');
+    btn && btn.classList.add('spinning');
+    try {
+      // группируем по таблице, чтобы сделать минимум запросов
+      const bySs = {};
+      jobs.forEach(j => { (bySs[j.ssId] ||= []).push(j); });
+      for (const [ssId, list] of Object.entries(bySs)) {
+        const ranges = [...new Set(list.map(j => j.range))];
+        const data = await gasGet({ action: 'sheets', id: ssId, ranges: ranges.join('|') });
+        if (data && data.values) {
+          list.forEach(j => {
+            const v = data.values[j.range];
+            if (v !== null && v !== undefined) j.apply(String(v));
+          });
+        } else if (data && data.error && !silent) {
+          alert('Ошибка Apps Script: ' + data.error + '\n\nПроверьте, что Code.gs обновлён (action=sheets) и деплой переопубликован.');
+        }
+      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      render();
+    } catch (err) {
+      if (!silent) alert('Не удалось обновить данные: ' + err);
+    } finally {
+      syncing = false;
+      btn && btn.classList.remove('spinning');
+    }
   }
 
   ['itemModal', 'columnModal', 'mpModal'].forEach(id => {
