@@ -1,0 +1,1655 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Финансы</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-font-smoothing: antialiased; }
+
+  :root {
+    color-scheme: light dark;
+    --bg-page: #ffffff;
+    --text-primary: #1d1d1f;
+    --text-secondary: #6e6e73;
+    --text-tertiary: #86868b;
+    --card-bg: rgba(255, 255, 255, 0.72);
+    --card-inner: rgba(255, 255, 255, 0.6);
+    --card-border: rgba(0, 0, 0, 0.08);
+    --card-shadow: 0 8px 32px rgba(0, 0, 0, 0.06), 0 2px 6px rgba(0, 0, 0, 0.04);
+    --hover-bg: rgba(0, 0, 0, 0.04);
+    --input-bg: rgba(0, 0, 0, 0.04);
+    --divider: rgba(0, 0, 0, 0.06);
+    --accent: #0071e3;
+    --accent-hover: #0077ed;
+    --danger: #ff3b30;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg-page: #191919;
+      --text-primary: #f5f5f7;
+      --text-secondary: #a1a1a6;
+      --text-tertiary: #6e6e73;
+      --card-bg: rgba(45, 45, 47, 0.72);
+      --card-inner: rgba(58, 58, 60, 0.5);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --card-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 2px 6px rgba(0, 0, 0, 0.2);
+      --hover-bg: rgba(255, 255, 255, 0.08);
+      --input-bg: rgba(255, 255, 255, 0.06);
+      --divider: rgba(255, 255, 255, 0.08);
+      --accent: #0a84ff;
+      --accent-hover: #409cff;
+    }
+  }
+
+  html, body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+    background: var(--bg-page);
+    color: var(--text-primary);
+    min-height: 100vh;
+    letter-spacing: -0.01em;
+  }
+
+  .container { max-width: 1400px; margin: 0 auto; padding: 24px 24px 100px; }
+
+  .board {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 18px;
+    align-items: start;
+  }
+
+  @media (max-width: 1100px) { .board { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 700px)  { .board { grid-template-columns: 1fr; } .container { padding: 16px 14px 80px; } }
+
+  /* ─── Column ─── */
+  .column {
+    background: var(--card-bg);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid var(--card-border);
+    border-radius: 22px;
+    box-shadow: var(--card-shadow);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    position: relative;
+    transition: transform 0.2s, opacity 0.2s;
+  }
+
+  .column.dragging { opacity: 0.35; transform: scale(0.98); }
+  .column.drag-over { box-shadow: 0 0 0 3px var(--accent), var(--card-shadow); }
+
+  .column-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 8px 12px;
+    border-bottom: 1px solid var(--divider);
+    margin: -4px -4px 0;
+    cursor: pointer;
+    transition: all 0.2s;
+    border-radius: 12px 12px 0 0;
+    position: relative;
+  }
+
+  .column-head.no-url { cursor: default; }
+  .column-head.clickable:hover { background: var(--hover-bg); }
+
+  .drag-handle {
+    width: 18px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-tertiary);
+    cursor: grab;
+    border-radius: 6px;
+    opacity: 0;
+    transition: all 0.15s;
+    flex-shrink: 0;
+  }
+  .drag-handle:active { cursor: grabbing; }
+  .column:hover .drag-handle, .mp-row:hover .drag-handle, .item:hover .drag-handle { opacity: 1; }
+  .drag-handle:hover { background: var(--hover-bg); color: var(--text-secondary); }
+  .drag-handle svg { width: 12px; height: 14px; }
+
+  .column-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    color: white;
+    position: relative;
+    overflow: hidden;
+  }
+  .column-icon svg { width: 22px; height: 22px; }
+  .column-icon img.custom-logo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+
+  .column-title-wrap { flex: 1; min-width: 0; }
+  .column-title {
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .column-domain {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-top: 2px;
+  }
+
+  .column-menu { display: flex; gap: 2px; opacity: 0; transition: opacity 0.15s; }
+  .column:hover .column-menu { opacity: 1; }
+
+  .icon-btn {
+    width: 30px; height: 30px;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-secondary);
+    transition: all 0.15s;
+  }
+  .icon-btn:hover { background: var(--hover-bg); color: var(--text-primary); }
+  .icon-btn.delete:hover { color: var(--danger); }
+  .icon-btn svg { width: 15px; height: 15px; }
+
+  /* ─── Metrics ─── */
+  .metrics-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .metric-cell {
+    padding: 9px 11px;
+    background: var(--card-inner);
+    border: 1px solid var(--divider);
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .metric-cell .label {
+    font-size: 9.5px;
+    color: var(--text-secondary);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .metric-cell .value {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    cursor: text;
+    padding: 1px 3px;
+    margin: -1px -3px;
+    border-radius: 5px;
+    outline: none;
+    min-height: 20px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .metric-cell .value:hover, .metric-cell .value:focus { background: var(--hover-bg); }
+  .metric-cell .value.empty::before { content: '—'; color: var(--text-tertiary); }
+
+  /* ─── Marketplaces ─── */
+  .mp-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    background: var(--card-inner);
+    border: 1px solid var(--divider);
+    border-radius: 12px;
+    position: relative;
+    transition: transform 0.15s, opacity 0.15s;
+  }
+  .mp-row.dragging { opacity: 0.4; }
+  .mp-row.drag-over { border-color: var(--accent); box-shadow: inset 0 2px 0 var(--accent); }
+
+  .mp-badge {
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  }
+  .mp-badge .letter {
+    font-weight: 900; font-size: 13px; letter-spacing: -0.02em;
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .mp-badge img {
+    width: 100%; height: 100%;
+    object-fit: cover;
+    position: absolute; inset: 0;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+  .mp-badge img.loaded, .mp-badge img.custom-logo { opacity: 1; }
+
+  .mp-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    flex: 1;
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    align-items: baseline;
+  }
+  .mp-stat {
+    display: flex; flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+    white-space: nowrap; overflow: hidden;
+  }
+  .mp-stat .lbl {
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+  .mp-stat .val {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    cursor: text;
+    padding: 1px 3px;
+    margin: -1px -3px;
+    border-radius: 4px;
+    outline: none;
+    min-width: 8px;
+    display: inline-block;
+  }
+  .mp-stat .val:hover, .mp-stat .val:focus { background: var(--hover-bg); }
+  .mp-stat .val.empty::before { content: '—'; color: var(--text-tertiary); font-weight: 400; }
+
+  .mp-actions {
+    display: flex;
+    gap: 2px;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .mp-row:hover .mp-actions { opacity: 1; }
+
+  /* ─── Items ─── */
+  .items {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border-radius: 12px;
+    padding: 2px;
+    margin: -2px;
+    transition: background 0.15s, box-shadow 0.15s;
+  }
+  .items.drag-over-empty,
+  .mp-list.drag-over-empty {
+    background: rgba(0, 113, 227, 0.08);
+    box-shadow: inset 0 0 0 2px var(--accent);
+  }
+  .mp-list {
+    display: grid;
+    gap: 6px;
+    border-radius: 12px;
+    padding: 2px;
+    margin: -2px;
+    transition: background 0.15s, box-shadow 0.15s;
+  }
+
+  .item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 11px;
+    background: var(--card-inner);
+    border: 1px solid var(--divider);
+    border-radius: 12px;
+    text-decoration: none;
+    color: inherit;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s, opacity 0.2s;
+    position: relative;
+  }
+  .item:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
+    border-color: rgba(0, 0, 0, 0.1);
+  }
+  @media (prefers-color-scheme: dark) {
+    .item:hover { border-color: rgba(255, 255, 255, 0.15); }
+  }
+  .item.dragging { opacity: 0.4; }
+  .item.drag-over { border-color: var(--accent); box-shadow: inset 0 2px 0 var(--accent); }
+
+  .item-icon {
+    width: 28px; height: 28px;
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    color: white;
+    position: relative;
+    overflow: hidden;
+  }
+  .item-icon.circle { border-radius: 50%; }
+  .item-icon svg { width: 15px; height: 15px; }
+  .item-icon .lettermark { font-weight: 800; font-size: 12px; letter-spacing: -0.03em; }
+  .item-icon img { width: 100%; height: 100%; object-fit: cover; position: absolute; inset: 0; opacity: 0; transition: opacity 0.2s; }
+  .item-icon img.loaded, .item-icon img.custom-logo { opacity: 1; }
+
+  .item-info { flex: 1; min-width: 0; }
+  .item-name {
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--text-primary);
+    line-height: 1.3;
+    letter-spacing: -0.005em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .item-domain {
+    font-size: 10.5px;
+    color: var(--text-tertiary);
+    margin-top: 1px;
+  }
+
+  .item-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.15s; }
+  .item:hover .item-actions { opacity: 1; }
+
+  .item.checklist {
+    background: linear-gradient(135deg, rgba(52, 199, 89, 0.08), rgba(0, 113, 227, 0.05));
+    border: 1px dashed rgba(52, 199, 89, 0.3);
+  }
+  .item.checklist:hover {
+    background: linear-gradient(135deg, rgba(52, 199, 89, 0.12), rgba(0, 113, 227, 0.08));
+    border-style: solid;
+  }
+
+  .add-btn-inline {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px;
+    background: transparent;
+    border: 1px dashed var(--divider);
+    border-radius: 11px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: inherit;
+  }
+  .add-btn-inline:hover {
+    background: var(--hover-bg);
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
+  }
+  .add-btn-inline svg { width: 13px; height: 13px; }
+
+  /* ─── FAB "New section" ─── */
+  .fab-add {
+    position: fixed;
+    bottom: 28px;
+    right: 28px;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: white;
+    border: none;
+    cursor: pointer;
+    box-shadow: 0 10px 30px rgba(0, 113, 227, 0.35), 0 4px 12px rgba(0, 0, 0, 0.1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+    transition: all 0.2s ease;
+    font-family: inherit;
+  }
+  .fab-add:hover {
+    background: var(--accent-hover);
+    transform: translateY(-2px);
+    box-shadow: 0 14px 36px rgba(0, 113, 227, 0.45), 0 6px 16px rgba(0, 0, 0, 0.12);
+  }
+  .fab-add:active { transform: translateY(0); }
+  .fab-add svg { width: 22px; height: 22px; }
+
+  /* ─── Modal ─── */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    padding: 20px;
+    animation: fadeIn 0.2s ease;
+  }
+  .modal-overlay.active { display: flex; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes slideUp {
+    from { transform: translateY(20px) scale(0.96); opacity: 0; }
+    to { transform: translateY(0) scale(1); opacity: 1; }
+  }
+
+  .modal {
+    background: var(--card-bg);
+    backdrop-filter: blur(40px) saturate(180%);
+    -webkit-backdrop-filter: blur(40px) saturate(180%);
+    border: 1px solid var(--card-border);
+    border-radius: 22px;
+    padding: 24px;
+    width: 100%;
+    max-width: 480px;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+    animation: slideUp 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .modal h2 {
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 18px;
+    letter-spacing: -0.02em;
+  }
+
+  .form-group { margin-bottom: 14px; }
+
+  .form-group label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .form-group input {
+    width: 100%;
+    padding: 11px 14px;
+    background: var(--input-bg);
+    border: 1px solid transparent;
+    border-radius: 11px;
+    font-size: 15px;
+    color: var(--text-primary);
+    font-family: inherit;
+    transition: all 0.2s;
+    outline: none;
+  }
+  .form-group input:focus { background: rgba(0, 113, 227, 0.06); border-color: var(--accent); }
+
+  .icon-picker {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 6px;
+  }
+  .icon-option {
+    aspect-ratio: 1;
+    background: var(--input-bg);
+    border: 2px solid transparent;
+    border-radius: 10px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    transition: all 0.15s;
+    position: relative;
+    overflow: hidden;
+  }
+  .icon-option .lettermark { font-weight: 800; font-size: 13px; letter-spacing: -0.03em; }
+  .icon-option.circle-preview { border-radius: 50%; }
+  .icon-option:hover { transform: scale(1.06); }
+  .icon-option.selected { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .icon-option svg { width: 16px; height: 16px; }
+  .icon-option img { width: 100%; height: 100%; object-fit: cover; position: absolute; inset: 0; }
+
+  .icon-option.upload {
+    border: 1.5px dashed var(--text-tertiary);
+    color: var(--text-secondary);
+    background: transparent;
+  }
+  .icon-option.upload:hover { border-color: var(--accent); color: var(--accent); }
+
+  .color-picker { display: flex; gap: 8px; flex-wrap: wrap; }
+  .color-option {
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    cursor: pointer;
+    border: 3px solid transparent;
+    transition: all 0.15s;
+  }
+  .color-option:hover { transform: scale(1.1); }
+  .color-option.selected { border-color: var(--text-primary); }
+
+  .modal-actions { display: flex; gap: 8px; margin-top: 22px; }
+
+  .btn {
+    flex: 1;
+    padding: 12px;
+    border: none;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.15s;
+  }
+  .btn-secondary { background: var(--input-bg); color: var(--text-primary); }
+  .btn-secondary:hover { background: var(--hover-bg); }
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-danger { background: rgba(255, 59, 48, 0.1); color: var(--danger); flex: 0 0 auto; padding: 12px 16px; }
+  .btn-danger:hover { background: rgba(255, 59, 48, 0.2); }
+
+  .metric-edit-row {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 6px;
+    align-items: center;
+  }
+  .metric-edit-row input {
+    flex: 1;
+    padding: 9px 12px;
+    background: var(--input-bg);
+    border: 1px solid transparent;
+    border-radius: 9px;
+    font-size: 13px;
+    color: var(--text-primary);
+    font-family: inherit;
+    outline: none;
+  }
+  .metric-edit-row input:focus { border-color: var(--accent); }
+  .metric-edit-row button {
+    width: 32px; height: 32px;
+    border-radius: 9px;
+    border: none;
+    background: rgba(255, 59, 48, 0.1);
+    color: var(--danger);
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .mp-picker {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .mp-picker-btn {
+    aspect-ratio: 1;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 14px;
+    cursor: pointer;
+    border: 2px solid transparent;
+    transition: all 0.15s;
+    position: relative;
+    overflow: hidden;
+  }
+  .mp-picker-btn:hover { transform: scale(1.08); }
+  .mp-picker-btn .letter {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .mp-picker-btn img {
+    width: 100%; height: 100%; object-fit: cover;
+    position: absolute; inset: 0;
+    opacity: 0; transition: opacity 0.2s;
+  }
+  .mp-picker-btn img.loaded, .mp-picker-btn img.custom-logo { opacity: 1; }
+  .mp-picker-btn.upload {
+    border: 1.5px dashed var(--text-tertiary);
+    color: var(--text-secondary);
+    background: transparent;
+    aspect-ratio: 1;
+  }
+  .mp-picker-btn.upload:hover { border-color: var(--accent); color: var(--accent); }
+</style>
+</head>
+<body>
+  <div class="container">
+    <div class="board" id="board"></div>
+  </div>
+
+  <!-- FAB "New section" -->
+  <button class="fab-add" onclick="openColumnModal()" title="Новый раздел">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+      <path d="M12 5v14M5 12h14"/>
+    </svg>
+  </button>
+
+  <!-- Item modal -->
+  <div class="modal-overlay" id="itemModal">
+    <div class="modal">
+      <h2 id="itemModalTitle">Новая ссылка</h2>
+      <div class="form-group">
+        <label for="itemName">Название</label>
+        <input type="text" id="itemName" placeholder="Например: Логистика" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label for="itemUrl">Ссылка</label>
+        <input type="url" id="itemUrl" placeholder="https://..." autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label>Иконка</label>
+        <div class="icon-picker" id="itemIconPicker"></div>
+        <input type="file" id="itemLogoInput" accept="image/*" style="display:none">
+      </div>
+      <div class="form-group">
+        <label>Цвет</label>
+        <div class="color-picker" id="itemColorPicker"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeItemModal()">Отмена</button>
+        <button class="btn btn-primary" onclick="saveItem()">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Column modal -->
+  <div class="modal-overlay" id="columnModal">
+    <div class="modal">
+      <h2 id="columnModalTitle">Новый раздел</h2>
+      <div class="form-group">
+        <label for="columnTitle">Название</label>
+        <input type="text" id="columnTitle" placeholder="Например: Финансовый результат" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label for="columnUrl">Основная ссылка (открывается по клику на заголовок)</label>
+        <input type="url" id="columnUrl" placeholder="https://docs.google.com/..." autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label>Иконка</label>
+        <div class="icon-picker" id="columnIconPicker"></div>
+        <input type="file" id="columnLogoInput" accept="image/*" style="display:none">
+      </div>
+      <div class="form-group">
+        <label>Цвет</label>
+        <div class="color-picker" id="columnColorPicker"></div>
+      </div>
+      <div class="form-group">
+        <label>Метрики</label>
+        <div id="metricsEditor"></div>
+        <button class="add-btn-inline" style="margin-top: 6px; width: 100%;" onclick="addMetricRow()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          Метрика
+        </button>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-danger" id="deleteColumnBtn" onclick="deleteColumn()" style="display:none;">Удалить</button>
+        <button class="btn btn-secondary" onclick="closeColumnModal()">Отмена</button>
+        <button class="btn btn-primary" onclick="saveColumn()">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Marketplace modal -->
+  <div class="modal-overlay" id="mpModal">
+    <div class="modal">
+      <h2>Добавить маркетплейс</h2>
+      <div class="form-group">
+        <label>Бренд (или загрузить свой логотип)</label>
+        <div class="mp-picker" id="mpPicker"></div>
+        <input type="file" id="mpLogoInput" accept="image/*" style="display:none">
+      </div>
+      <div class="form-group">
+        <label for="mpName">Название</label>
+        <input type="text" id="mpName" placeholder="OZON" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label for="mpUrl">Ссылка (необязательно)</label>
+        <input type="url" id="mpUrl" placeholder="https://..." autocomplete="off">
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeMpModal()">Отмена</button>
+        <button class="btn btn-primary" onclick="saveMp()">Добавить</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const STORAGE_KEY = 'finance_board_v6';
+
+  // ─── Regular icons ─────────────────────────────
+  const ICONS = {
+    chart:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>',
+    bars:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>',
+    calendar:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>',
+    money:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>',
+    wallet:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/></svg>',
+    package:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>',
+    truck:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>',
+    briefcase: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>',
+    home:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>',
+    user:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+    bolt:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
+    star:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
+    sheet:     '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11zM8 12h2v6H8zm3 0h2v6h-2zm3 0h2v6h-2z"/></svg>',
+    excel:     '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm4 18H6V4h7v5h5v11zM8.5 11l1.75 2.5L8.5 16h1.75l1-1.5 1 1.5H14l-1.75-2.5L14 11h-1.75l-1 1.5-1-1.5H8.5z"/></svg>',
+    notion:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/></svg>',
+    checklist: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>',
+    link:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>'
+  };
+
+  const COLORS = {
+    green:    'linear-gradient(135deg, #34c759, #0f9d58)',
+    blue:     'linear-gradient(135deg, #0a84ff, #0055c4)',
+    orange:   'linear-gradient(135deg, #ff9500, #ff6a00)',
+    purple:   'linear-gradient(135deg, #af52de, #7c3aed)',
+    red:      'linear-gradient(135deg, #ff3b30, #c9182a)',
+    teal:     'linear-gradient(135deg, #5ac8fa, #007aff)',
+    pink:     'linear-gradient(135deg, #ff2d55, #ff375f)',
+    yellow:   'linear-gradient(135deg, #ffcc00, #ff9500)',
+    graphite: 'linear-gradient(135deg, #8e8e93, #48484a)'
+  };
+
+  const MARKETPLACES = {
+    ozon:      { name: 'OZON',          letter: 'O', bg: '#005BFF',                                  color: '#fff', domain: 'ozon.ru' },
+    wb:        { name: 'Wildberries',   letter: 'W', bg: 'linear-gradient(135deg,#a020f0,#cb11ab)',  color: '#fff', domain: 'wildberries.ru' },
+    yandex:    { name: 'Яндекс Маркет', letter: 'Я', bg: '#FCE000',                                  color: '#000', domain: 'market.yandex.ru' },
+    lemana:    { name: 'Лемана Про',    letter: 'L', bg: 'linear-gradient(135deg,#78BE20,#4a8c1a)',  color: '#fff', domain: 'lemanapro.ru' },
+    petrovich: { name: 'Петрович',      letter: 'П', bg: '#E30613',                                  color: '#fff', domain: 'petrovich.ru' }
+  };
+
+  function primaryLogoUrl(domain) { return `https://icons.duckduckgo.com/ip3/${domain}.ico`; }
+  function fallbackLogoUrl(domain) { return `https://logo.clearbit.com/${domain}`; }
+  function logoImgHtml(m) {
+    return `<img
+      src="${primaryLogoUrl(m.domain)}"
+      alt="${m.letter}"
+      loading="lazy"
+      onload="this.classList.add('loaded')"
+      onerror="this.onerror=null; this.src='${fallbackLogoUrl(m.domain)}';">`;
+  }
+
+  // ─── Defaults (new order: План-факт, Ежедневный отчёт, Финансовый результат) ─
+  const DEFAULT_STATE = {
+    columns: [
+      {
+        id: 'col-plan',
+        title: 'План-факт',
+        primaryUrl: 'https://docs.google.com/spreadsheets/d/18N5BTp5pucflEkjfxN42XW3TVD7ijRooooLENDSyCNw/edit?gid=1471308300#gid=1471308300',
+        icon: 'bars',
+        color: 'blue',
+        customLogo: null,
+        metrics: [
+          { label: 'Товарооборот',   value: '' },
+          { label: 'Рентабельность', value: '' },
+          { label: 'Прибыль',        value: '' }
+        ],
+        marketplaces: [
+          { id: 'mp-ozon', key: 'ozon',      name: 'OZON',          url: '', customLogo: null, turnover: '', margin: '', profit: '' },
+          { id: 'mp-wb',   key: 'wb',        name: 'Wildberries',   url: '', customLogo: null, turnover: '', margin: '', profit: '' },
+          { id: 'mp-yx',   key: 'yandex',    name: 'Яндекс Маркет', url: '', customLogo: null, turnover: '', margin: '', profit: '' },
+          { id: 'mp-lm',   key: 'lemana',    name: 'Лемана Про',    url: '', customLogo: null, turnover: '', margin: '', profit: '' },
+          { id: 'mp-pt',   key: 'petrovich', name: 'Петрович',      url: '', customLogo: null, turnover: '', margin: '', profit: '' }
+        ],
+        items: [
+          { id: 'i-sg',  name: 'Сургут план-факт', url: 'https://docs.google.com/spreadsheets/d/1GM5yj02rdMn8Awb8c2cHI3E88FqExABRQnBP5gcJDzA/edit?gid=1140550675#gid=1140550675', icon: 'sheet', color: 'teal',   shape: 'square', customLogo: null },
+          { id: 'i-pl',  name: 'Личный план-факт', url: 'https://docs.google.com/spreadsheets/d/1JgNrNaiV_BImoZe3hkLdrz3NKvNjbrgxewray9YAdkc/edit?usp=drive_web&ouid=110674916578572419155', icon: 'sheet', color: 'purple', shape: 'square', customLogo: null }
+        ]
+      },
+      {
+        id: 'col-daily',
+        title: 'Ежедневный отчёт',
+        primaryUrl: 'https://docs.google.com/spreadsheets/d/1i_33Y3iFeQZhYq_AgWKPqkzF_rRJBoPgaLgI84QVBII/edit?gid=2137022750#gid=2137022750',
+        icon: 'calendar',
+        color: 'orange',
+        customLogo: null,
+        metrics: [
+          { label: 'Заказы',         value: '' },
+          { label: 'Рентабельность', value: '' },
+          { label: 'Прибыль',        value: '' }
+        ],
+        marketplaces: [],
+        items: [
+          { id: 'i-yn',  name: 'Юнитка',   url: 'https://docs.google.com/spreadsheets/d/1qBufATbMpZOdqeiWn8699t2AIIRTNbpNRtyD4_Qgn2E/edit?gid=0#gid=0', icon: 'sheet', color: 'orange', shape: 'square', customLogo: null },
+          { id: 'i-sz',  name: 'Зарплаты', url: '', icon: 'excel', color: 'green', shape: 'square', customLogo: null }
+        ]
+      },
+      {
+        id: 'col-fin',
+        title: 'Финансовый результат',
+        primaryUrl: 'https://docs.google.com/spreadsheets/d/1roXoFuYj0i0beuAgXDtY2_KSoPdNsHEH9n5rCHwGysY/edit?gid=2135708165#gid=2135708165',
+        icon: 'chart',
+        color: 'green',
+        customLogo: null,
+        hideMarketplaces: true,
+        metrics: [],
+        marketplaces: [],
+        items: [
+          { id: 'i-cl', name: 'Чек-лист проверки', url: '', icon: 'checklist', color: 'green', shape: 'square', customLogo: null }
+        ]
+      }
+    ]
+  };
+
+  // ─── State ──────────────────────────────────────
+  let state = { columns: [] };
+  let itemCtx = null, itemDraft = null;
+  let colCtx = null,  colDraft = null;
+  let mpCtx = null,   mpDraft = null;
+
+  // Drag state
+  let dragKind = null;   // 'column' | 'item' | 'mp'
+  let dragSrc  = null;   // { colId, itemId?, mpId? }
+
+  function load() {
+    try {
+      let stored = localStorage.getItem(STORAGE_KEY);
+      if (!stored) {
+        for (const legacy of ['finance_board_v5', 'finance_board_v4']) {
+          const s = localStorage.getItem(legacy);
+          if (s) { stored = s; break; }
+        }
+      }
+      state = stored ? JSON.parse(stored) : structuredClone(DEFAULT_STATE);
+      // migrations
+      state.columns.forEach(c => {
+        if (!c.marketplaces) c.marketplaces = [];
+        if (c.primaryUrl == null) c.primaryUrl = '';
+        if (c.customLogo === undefined) c.customLogo = null;
+        if (c.hideMarketplaces === undefined) c.hideMarketplaces = (c.id === 'col-fin' || c.title === 'Финансовый результат');
+        c.marketplaces.forEach(mp => {
+          if (mp.url == null) mp.url = '';
+          if (mp.customLogo === undefined) mp.customLogo = null;
+        });
+        (c.metrics || []).forEach(m => {
+          if (m.label === 'Заказов сегодня') m.label = 'Заказы';
+        });
+        c.items.forEach(i => {
+          if (!i.icon) i.icon = i.type || 'sheet';
+          if (!i.color) i.color = c.color || 'blue';
+          if (!i.shape) i.shape = MARKETPLACES[i.icon] ? 'circle' : 'square';
+          if (i.customLogo === undefined) i.customLogo = null;
+        });
+      });
+    } catch { state = structuredClone(DEFAULT_STATE); }
+    render();
+  }
+
+  function save() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    render();
+  }
+
+  function uid() { return 'x-' + Math.random().toString(36).slice(2, 9); }
+
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function escapeAttr(s) { return escapeHtml(s); }
+
+  function getDomain(url) {
+    if (!url) return '';
+    try { return new URL(url).hostname.replace('www.', ''); }
+    catch { return url; }
+  }
+
+  function formatMetric(val) {
+    if (!val && val !== 0) return '';
+    const raw = String(val).trim();
+    const suffix = raw.match(/[₽$€%a-zа-я]+\s*$/i)?.[0] || '';
+    const numPart = raw.replace(/[₽$€%a-zа-я]+\s*$/i, '').trim().replace(/\s/g, '').replace(',', '.');
+    const num = parseFloat(numPart);
+    if (isNaN(num)) return raw;
+    const formatted = num.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+    return suffix ? `${formatted} ${suffix.trim()}` : formatted;
+  }
+
+  function iconBg(key, colorKey) {
+    if (MARKETPLACES[key]) return MARKETPLACES[key].bg;
+    return COLORS[colorKey] || COLORS.blue;
+  }
+
+  function iconContentHtml(key, colorKey, customLogo) {
+    if (customLogo) {
+      return `<img class="custom-logo" src="${customLogo}" alt="">`;
+    }
+    const m = MARKETPLACES[key];
+    if (m) {
+      return `<span class="lettermark" style="color:${m.color}">${m.letter}</span>${logoImgHtml(m)}`;
+    }
+    return ICONS[key] || ICONS.link;
+  }
+
+  function iconShape(key, storedShape, customLogo) {
+    if (customLogo) return storedShape || 'circle';
+    if (MARKETPLACES[key]) return 'circle';
+    return storedShape || 'square';
+  }
+
+  const DRAG_ICON = '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="15" cy="18" r="1.5"/></svg>';
+
+  const GEAR_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="3"/>
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+  </svg>`;
+
+  const EDIT_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
+  const TRASH_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>`;
+
+  // ─── Render ─────────────────────────────────────
+  function render() {
+    const board = document.getElementById('board');
+    board.innerHTML = state.columns.map(col => renderColumn(col)).join('');
+  }
+
+  function renderColumn(col) {
+    const gradient = COLORS[col.color] || COLORS.blue;
+    const iconContent = col.customLogo
+      ? `<img class="custom-logo" src="${col.customLogo}" alt="">`
+      : (ICONS[col.icon] || ICONS.star);
+    const iconBgStyle = col.customLogo ? 'background: #fff' : `background: ${gradient}`;
+    const hasUrl   = !!col.primaryUrl;
+
+    const metricsHtml = col.metrics && col.metrics.length ? `
+      <div class="metrics-row">
+        ${col.metrics.map((m, i) => `
+          <div class="metric-cell">
+            <span class="label">${escapeHtml(m.label)}</span>
+            <span class="value ${!m.value ? 'empty' : ''}"
+                  contenteditable="true"
+                  data-col="${col.id}"
+                  data-idx="${i}"
+                  onblur="updateMetric(event)"
+                  onkeydown="if(event.key==='Enter'){event.preventDefault();event.target.blur()}"
+              >${m.value ? escapeHtml(formatMetric(m.value)) : ''}</span>
+          </div>
+        `).join('')}
+      </div>
+    ` : '';
+
+    const mpsHtml = col.hideMarketplaces ? '' : `
+      <div class="mp-list"
+           ondragover="onMpDragOver(event, '${col.id}', null)"
+           ondrop="onMpDrop(event, '${col.id}', null)">
+        ${(col.marketplaces || []).map(mp => renderMp(mp, col.id)).join('')}
+      </div>
+      <button class="add-btn-inline" onclick="openMpModal('${col.id}')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        Маркетплейс
+      </button>
+    `;
+
+    const itemsHtml = `
+      <div class="items"
+           ondragover="onItemDragOver(event, '${col.id}', null)"
+           ondrop="onItemDrop(event, '${col.id}', null)">
+        ${(col.items || []).map(item => renderItem(item, col.id)).join('')}
+        <button class="add-btn-inline" onclick="openItemModal('${col.id}')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          Ссылка
+        </button>
+      </div>
+    `;
+
+    const headClass = hasUrl ? 'clickable' : 'no-url';
+    const domainStr = hasUrl ? getDomain(col.primaryUrl) : 'основная ссылка не задана';
+
+    return `
+      <div class="column"
+           data-col-id="${col.id}"
+           ondragover="onColDragOver(event, '${col.id}')"
+           ondrop="onColDrop(event, '${col.id}')"
+           ondragleave="onColDragLeave(event)">
+        <div class="column-head ${headClass}" onclick="handleColumnClick(event, '${col.id}')">
+          <div class="drag-handle"
+               draggable="true"
+               title="Перетащить"
+               onclick="event.stopPropagation()"
+               ondragstart="onColDragStart(event, '${col.id}')"
+               ondragend="onDragEnd(event)">${DRAG_ICON}</div>
+          <div class="column-icon" style="${iconBgStyle}">${iconContent}</div>
+          <div class="column-title-wrap">
+            <div class="column-title">${escapeHtml(col.title)}</div>
+            <div class="column-domain">${escapeHtml(domainStr)}</div>
+          </div>
+          <div class="column-menu">
+            <button class="icon-btn" onclick="event.stopPropagation(); openColumnModal('${col.id}')" title="Настройки">${GEAR_ICON}</button>
+          </div>
+        </div>
+        ${metricsHtml}
+        ${mpsHtml}
+        ${itemsHtml}
+      </div>
+    `;
+  }
+
+  function renderMp(mp, colId) {
+    const m = MARKETPLACES[mp.key] || { bg: '#8e8e93', color: '#fff', letter: '?', domain: '', name: '?' };
+    const useCustom = !!mp.customLogo;
+    const badge = `
+      <div class="mp-badge" style="background: ${useCustom ? '#fff' : m.bg}" title="${escapeAttr(mp.name || m.name)}">
+        ${useCustom
+          ? `<img class="custom-logo" src="${mp.customLogo}" alt="">`
+          : `<span class="letter" style="color:${m.color}">${m.letter}</span>${m.domain ? logoImgHtml(m) : ''}`
+        }
+      </div>
+    `;
+    const clickable = !!mp.url;
+
+    return `
+      <div class="mp-row"
+           data-mp-id="${mp.id}"
+           ${clickable ? `onclick="handleMpClick(event, '${mp.url}')"` : ''}
+           style="${clickable ? 'cursor:pointer' : ''}"
+           ondragover="onMpDragOver(event, '${colId}', '${mp.id}')"
+           ondrop="onMpDrop(event, '${colId}', '${mp.id}')"
+           ondragleave="onDragLeave(event)">
+        <div class="drag-handle"
+             draggable="true"
+             title="Перетащить"
+             onclick="event.stopPropagation()"
+             ondragstart="onMpDragStart(event, '${colId}', '${mp.id}')"
+             ondragend="onDragEnd(event)">${DRAG_ICON}</div>
+        ${badge}
+        <div class="mp-stats" onclick="event.stopPropagation()">
+          ${['turnover','margin','profit'].map(field => `
+            <span class="mp-stat">
+              <span class="lbl">${field==='turnover'?'ТО':field==='margin'?'Рент':'Прибыль'}</span>
+              <span class="val ${!mp[field] ? 'empty' : ''}"
+                    contenteditable="true"
+                    data-col="${colId}" data-mp="${mp.id}" data-field="${field}"
+                    onblur="updateMpValue(event)"
+                    onkeydown="if(event.key==='Enter'){event.preventDefault();event.target.blur()}"
+                >${mp[field] ? escapeHtml(formatMetric(mp[field])) : ''}</span>
+            </span>
+          `).join('')}
+        </div>
+        <div class="mp-actions" onclick="event.stopPropagation()">
+          <button class="icon-btn" onclick="editMp('${colId}', '${mp.id}')" title="Изменить">${EDIT_ICON}</button>
+          <button class="icon-btn delete" onclick="deleteMp('${colId}', '${mp.id}')" title="Удалить">${TRASH_ICON}</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderItem(item, colId) {
+    const bg = item.customLogo ? '#fff' : iconBg(item.icon, item.color);
+    const shape = iconShape(item.icon, item.shape, item.customLogo);
+    const content = iconContentHtml(item.icon, item.color, item.customLogo);
+    const domain = item.url ? getDomain(item.url) : '';
+    const empty = !item.url;
+    const isChecklist = item.icon === 'checklist';
+    return `
+      <div class="item ${isChecklist ? 'checklist' : ''}"
+           data-item-id="${item.id}"
+           onclick="openItem('${item.url}', event)"
+           style="${empty ? 'opacity: 0.65;' : ''}"
+           ondragover="onItemDragOver(event, '${colId}', '${item.id}')"
+           ondrop="onItemDrop(event, '${colId}', '${item.id}')"
+           ondragleave="onDragLeave(event)">
+        <div class="drag-handle"
+             draggable="true"
+             title="Перетащить"
+             onclick="event.stopPropagation()"
+             ondragstart="onItemDragStart(event, '${colId}', '${item.id}')"
+             ondragend="onDragEnd(event)">${DRAG_ICON}</div>
+        <div class="item-icon ${shape === 'circle' ? 'circle' : ''}" style="background: ${bg}">${content}</div>
+        <div class="item-info">
+          <div class="item-name">${escapeHtml(item.name)}</div>
+          <div class="item-domain">${empty ? '<em>ссылка не задана</em>' : escapeHtml(domain)}</div>
+        </div>
+        <div class="item-actions" onclick="event.stopPropagation()">
+          <button class="icon-btn" onclick="editItem('${colId}', '${item.id}')" title="Изменить">${EDIT_ICON}</button>
+          <button class="icon-btn delete" onclick="deleteItem('${colId}', '${item.id}')" title="Удалить">${TRASH_ICON}</button>
+        </div>
+      </div>
+    `;
+  }
+
+  // ─── Click handlers ─────────────────────────────
+  function handleColumnClick(e, colId) {
+    if (e.target.closest('.column-menu, .drag-handle')) return;
+    const col = state.columns.find(c => c.id === colId);
+    if (col.primaryUrl) window.open(col.primaryUrl, '_blank');
+  }
+
+  function handleMpClick(e, url) {
+    if (e.target.closest('.mp-stats, .mp-actions, .drag-handle')) return;
+    if (url) window.open(url, '_blank');
+  }
+
+  function openItem(url, e) {
+    if (!url) return;
+    if (e.target.closest('.item-actions, .drag-handle')) return;
+    window.open(url, '_blank');
+  }
+
+  // ─── Drag & Drop ────────────────────────────────
+  function onColDragStart(e, colId) {
+    dragKind = 'column';
+    dragSrc = { colId };
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', colId);
+    const col = e.target.closest('.column');
+    setTimeout(() => col && col.classList.add('dragging'), 0);
+    e.stopPropagation();
+  }
+
+  function onColDragOver(e, colId) {
+    if (dragKind !== 'column') return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    document.querySelectorAll('.column.drag-over').forEach(el => el.classList.remove('drag-over'));
+    const col = document.querySelector(`.column[data-col-id="${colId}"]`);
+    if (col && dragSrc && dragSrc.colId !== colId) col.classList.add('drag-over');
+  }
+
+  function onColDragLeave(e) {
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+      e.currentTarget.classList.remove('drag-over');
+    }
+  }
+
+  function onColDrop(e, colId) {
+    if (dragKind !== 'column') return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (!dragSrc || dragSrc.colId === colId) return;
+    const srcIdx = state.columns.findIndex(c => c.id === dragSrc.colId);
+    const dstIdx = state.columns.findIndex(c => c.id === colId);
+    if (srcIdx < 0 || dstIdx < 0) return;
+    const [moved] = state.columns.splice(srcIdx, 1);
+    state.columns.splice(dstIdx, 0, moved);
+    save();
+  }
+
+  function onItemDragStart(e, colId, itemId) {
+    dragKind = 'item';
+    dragSrc = { colId, itemId };
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', itemId);
+    const item = e.target.closest('.item');
+    setTimeout(() => item && item.classList.add('dragging'), 0);
+    e.stopPropagation();
+  }
+
+  function onItemDragOver(e, colId, itemId) {
+    if (dragKind !== 'item') return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    document.querySelectorAll('.item.drag-over').forEach(el => el.classList.remove('drag-over'));
+    document.querySelectorAll('.items.drag-over-empty').forEach(el => el.classList.remove('drag-over-empty'));
+    if (itemId && dragSrc.itemId !== itemId) {
+      const el = document.querySelector(`.item[data-item-id="${itemId}"]`);
+      if (el) el.classList.add('drag-over');
+    } else if (!itemId) {
+      const cont = e.currentTarget.closest('.items');
+      if (cont) cont.classList.add('drag-over-empty');
+    }
+  }
+
+  function onItemDrop(e, colId, itemId) {
+    if (dragKind !== 'item') return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (!dragSrc) return;
+    const srcCol = state.columns.find(c => c.id === dragSrc.colId);
+    const dstCol = state.columns.find(c => c.id === colId);
+    if (!srcCol || !dstCol) return;
+    const srcIdx = srcCol.items.findIndex(i => i.id === dragSrc.itemId);
+    if (srcIdx < 0) return;
+    if (srcCol === dstCol && itemId === dragSrc.itemId) return;
+    const [moved] = srcCol.items.splice(srcIdx, 1);
+    let dstIdx;
+    if (itemId) {
+      dstIdx = dstCol.items.findIndex(i => i.id === itemId);
+      if (dstIdx < 0) dstIdx = dstCol.items.length;
+    } else {
+      dstIdx = dstCol.items.length;
+    }
+    dstCol.items.splice(dstIdx, 0, moved);
+    save();
+  }
+
+  function onMpDragStart(e, colId, mpId) {
+    dragKind = 'mp';
+    dragSrc = { colId, mpId };
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', mpId);
+    const el = e.target.closest('.mp-row');
+    setTimeout(() => el && el.classList.add('dragging'), 0);
+    e.stopPropagation();
+  }
+
+  function onMpDragOver(e, colId, mpId) {
+    if (dragKind !== 'mp') return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    document.querySelectorAll('.mp-row.drag-over').forEach(el => el.classList.remove('drag-over'));
+    document.querySelectorAll('.mp-list.drag-over-empty').forEach(el => el.classList.remove('drag-over-empty'));
+    if (mpId && dragSrc.mpId !== mpId) {
+      const el = document.querySelector(`.mp-row[data-mp-id="${mpId}"]`);
+      if (el) el.classList.add('drag-over');
+    } else if (!mpId) {
+      const cont = e.currentTarget.closest('.mp-list');
+      if (cont) cont.classList.add('drag-over-empty');
+    }
+  }
+
+  function onMpDrop(e, colId, mpId) {
+    if (dragKind !== 'mp') return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (!dragSrc) return;
+    const srcCol = state.columns.find(c => c.id === dragSrc.colId);
+    const dstCol = state.columns.find(c => c.id === colId);
+    if (!srcCol || !dstCol) return;
+    const srcIdx = srcCol.marketplaces.findIndex(m => m.id === dragSrc.mpId);
+    if (srcIdx < 0) return;
+    if (srcCol === dstCol && mpId === dragSrc.mpId) return;
+    const [moved] = srcCol.marketplaces.splice(srcIdx, 1);
+    let dstIdx;
+    if (mpId) {
+      dstIdx = dstCol.marketplaces.findIndex(m => m.id === mpId);
+      if (dstIdx < 0) dstIdx = dstCol.marketplaces.length;
+    } else {
+      dstIdx = dstCol.marketplaces.length;
+    }
+    dstCol.marketplaces.splice(dstIdx, 0, moved);
+    save();
+  }
+
+  function onDragEnd() {
+    document.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging'));
+    document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+    dragKind = null;
+    dragSrc = null;
+  }
+
+  function onDragLeave(e) {
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+      e.currentTarget.classList.remove('drag-over');
+    }
+  }
+
+  // ─── Item modal ─────────────────────────────────
+  function openItemModal(colId, itemId = null) {
+    const col = state.columns.find(c => c.id === colId);
+    const item = itemId ? col.items.find(i => i.id === itemId) : null;
+
+    itemCtx = { colId, itemId };
+    itemDraft = item
+      ? { icon: item.icon, color: item.color, shape: item.shape, customLogo: item.customLogo }
+      : { icon: 'sheet', color: 'green', shape: 'square', customLogo: null };
+
+    document.getElementById('itemModalTitle').textContent = item ? 'Редактировать ссылку' : 'Новая ссылка';
+    document.getElementById('itemName').value = item ? item.name : '';
+    document.getElementById('itemUrl').value = item ? item.url : '';
+
+    const fileInput = document.getElementById('itemLogoInput');
+    fileInput.value = '';
+    fileInput.onchange = e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = ev => { itemDraft.customLogo = ev.target.result; itemDraft.shape = 'circle'; renderItemIconPicker(); };
+      reader.readAsDataURL(file);
+    };
+
+    renderItemIconPicker();
+    renderItemColorPicker();
+    document.getElementById('itemModal').classList.add('active');
+    setTimeout(() => document.getElementById('itemName').focus(), 100);
+  }
+
+  function renderItemIconPicker() {
+    const container = document.getElementById('itemIconPicker');
+    const regular = Object.entries(ICONS).map(([k, svg]) => {
+      const bg = COLORS[itemDraft.color] || COLORS.blue;
+      const sel = (!itemDraft.customLogo && itemDraft.icon === k) ? 'selected' : '';
+      return `<div class="icon-option ${sel}" style="background:${bg}" onclick="selectItemIcon('${k}', 'square')">${svg}</div>`;
+    }).join('');
+    const brand = Object.entries(MARKETPLACES).map(([k, m]) => {
+      const sel = (!itemDraft.customLogo && itemDraft.icon === k) ? 'selected' : '';
+      return `<div class="icon-option circle-preview ${sel}" style="background:${m.bg}" onclick="selectItemIcon('${k}', 'circle')" title="${m.name}">
+                <span class="lettermark" style="color:${m.color}">${m.letter}</span>
+                ${logoImgHtml(m)}
+              </div>`;
+    }).join('');
+    const custom = itemDraft.customLogo
+      ? `<div class="icon-option circle-preview selected" style="background:#fff" title="Свой логотип">
+           <img src="${itemDraft.customLogo}" alt="">
+         </div>`
+      : '';
+    const upload = `<div class="icon-option upload" onclick="document.getElementById('itemLogoInput').click()" title="Загрузить PNG">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    </div>`;
+    container.innerHTML = regular + brand + custom + upload;
+  }
+
+  function renderItemColorPicker() {
+    document.getElementById('itemColorPicker').innerHTML = Object.entries(COLORS).map(([k, v]) => `
+      <div class="color-option ${itemDraft.color === k ? 'selected' : ''}"
+           style="background: ${v}"
+           onclick="selectItemColor('${k}')"></div>
+    `).join('');
+  }
+
+  function selectItemIcon(k, shape) {
+    itemDraft.icon = k;
+    itemDraft.shape = shape;
+    itemDraft.customLogo = null;
+    renderItemIconPicker();
+  }
+
+  function selectItemColor(k) {
+    itemDraft.color = k;
+    renderItemIconPicker();
+    renderItemColorPicker();
+  }
+
+  function editItem(colId, itemId) { openItemModal(colId, itemId); }
+
+  function closeItemModal() {
+    document.getElementById('itemModal').classList.remove('active');
+    itemCtx = null; itemDraft = null;
+  }
+
+  function saveItem() {
+    const name = document.getElementById('itemName').value.trim();
+    let url = document.getElementById('itemUrl').value.trim();
+    if (!name) return;
+    if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;
+
+    const col = state.columns.find(c => c.id === itemCtx.colId);
+    if (itemCtx.itemId) {
+      const item = col.items.find(i => i.id === itemCtx.itemId);
+      Object.assign(item, { name, url, icon: itemDraft.icon, color: itemDraft.color, shape: itemDraft.shape, customLogo: itemDraft.customLogo });
+    } else {
+      col.items.push({ id: uid(), name, url, icon: itemDraft.icon, color: itemDraft.color, shape: itemDraft.shape, customLogo: itemDraft.customLogo });
+    }
+    save();
+    closeItemModal();
+  }
+
+  function deleteItem(colId, itemId) {
+    if (!confirm('Удалить ссылку?')) return;
+    const col = state.columns.find(c => c.id === colId);
+    col.items = col.items.filter(i => i.id !== itemId);
+    save();
+  }
+
+  // ─── Column modal ───────────────────────────────
+  function openColumnModal(colId = null) {
+    const col = colId ? state.columns.find(c => c.id === colId) : null;
+    colCtx = { id: colId };
+    colDraft = col
+      ? { title: col.title, primaryUrl: col.primaryUrl || '', icon: col.icon, color: col.color, metrics: structuredClone(col.metrics || []), customLogo: col.customLogo }
+      : { title: '', primaryUrl: '', icon: 'chart', color: 'blue', metrics: [], customLogo: null };
+
+    document.getElementById('columnModalTitle').textContent = col ? 'Настройки раздела' : 'Новый раздел';
+    document.getElementById('columnTitle').value = colDraft.title;
+    document.getElementById('columnUrl').value = colDraft.primaryUrl;
+    document.getElementById('deleteColumnBtn').style.display = col ? '' : 'none';
+
+    const fileInput = document.getElementById('columnLogoInput');
+    fileInput.value = '';
+    fileInput.onchange = e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = ev => { colDraft.customLogo = ev.target.result; renderColumnIconPicker(); };
+      reader.readAsDataURL(file);
+    };
+
+    renderColumnIconPicker();
+    renderColumnColorPicker();
+    renderMetricsEditor();
+    document.getElementById('columnModal').classList.add('active');
+    setTimeout(() => document.getElementById('columnTitle').focus(), 100);
+  }
+
+  function renderColumnIconPicker() {
+    const regular = Object.entries(ICONS).map(([k, svg]) => `
+      <div class="icon-option ${!colDraft.customLogo && colDraft.icon === k ? 'selected' : ''}"
+           style="background: ${COLORS[colDraft.color] || COLORS.blue}"
+           onclick="selectColumnIcon('${k}')">${svg}</div>
+    `).join('');
+    const custom = colDraft.customLogo
+      ? `<div class="icon-option selected" style="background:#fff"><img src="${colDraft.customLogo}" alt=""></div>`
+      : '';
+    const upload = `<div class="icon-option upload" onclick="document.getElementById('columnLogoInput').click()" title="Загрузить PNG">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    </div>`;
+    document.getElementById('columnIconPicker').innerHTML = regular + custom + upload;
+  }
+
+  function renderColumnColorPicker() {
+    document.getElementById('columnColorPicker').innerHTML = Object.entries(COLORS).map(([k, v]) => `
+      <div class="color-option ${colDraft.color === k ? 'selected' : ''}"
+           style="background: ${v}"
+           onclick="selectColumnColor('${k}')"></div>
+    `).join('');
+  }
+
+  function selectColumnIcon(k) { colDraft.icon = k; colDraft.customLogo = null; renderColumnIconPicker(); }
+  function selectColumnColor(k) { colDraft.color = k; renderColumnIconPicker(); renderColumnColorPicker(); }
+
+  function renderMetricsEditor() {
+    document.getElementById('metricsEditor').innerHTML = colDraft.metrics.map((m, i) => `
+      <div class="metric-edit-row">
+        <input type="text" value="${escapeHtml(m.label)}" placeholder="Название" oninput="colDraft.metrics[${i}].label = this.value">
+        <button onclick="colDraft.metrics.splice(${i}, 1); renderMetricsEditor()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+    `).join('');
+  }
+
+  function addMetricRow() {
+    colDraft.metrics.push({ label: '', value: '' });
+    renderMetricsEditor();
+  }
+
+  function closeColumnModal() {
+    document.getElementById('columnModal').classList.remove('active');
+    colCtx = null; colDraft = null;
+  }
+
+  function saveColumn() {
+    const title = document.getElementById('columnTitle').value.trim();
+    let url = document.getElementById('columnUrl').value.trim();
+    if (!title) return;
+    if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;
+    colDraft.title = title;
+    colDraft.primaryUrl = url;
+    colDraft.metrics = colDraft.metrics.filter(m => m.label.trim());
+
+    if (colCtx.id) {
+      const col = state.columns.find(c => c.id === colCtx.id);
+      const oldVals = {};
+      (col.metrics || []).forEach(m => { oldVals[m.label] = m.value; });
+      colDraft.metrics = colDraft.metrics.map(m => ({ ...m, value: oldVals[m.label] ?? m.value ?? '' }));
+      Object.assign(col, { title, primaryUrl: url, icon: colDraft.icon, color: colDraft.color, metrics: colDraft.metrics, customLogo: colDraft.customLogo });
+    } else {
+      state.columns.push({
+        id: uid(),
+        title,
+        primaryUrl: url,
+        icon: colDraft.icon,
+        color: colDraft.color,
+        customLogo: colDraft.customLogo,
+        metrics: colDraft.metrics,
+        marketplaces: [],
+        items: []
+      });
+    }
+    save();
+    closeColumnModal();
+  }
+
+  function deleteColumn() {
+    if (!confirm('Удалить раздел вместе со всеми ссылками?')) return;
+    state.columns = state.columns.filter(c => c.id !== colCtx.id);
+    save();
+    closeColumnModal();
+  }
+
+  // ─── Marketplace modal ──────────────────────────
+  function openMpModal(colId, mpId = null) {
+    const col = state.columns.find(c => c.id === colId);
+    const mp = mpId ? col.marketplaces.find(m => m.id === mpId) : null;
+    mpCtx = { colId, mpId };
+    mpDraft = mp
+      ? { key: mp.key, name: mp.name, url: mp.url || '', customLogo: mp.customLogo || null }
+      : { key: 'ozon', name: MARKETPLACES.ozon.name, url: '', customLogo: null };
+
+    const fileInput = document.getElementById('mpLogoInput');
+    fileInput.value = '';
+    fileInput.onchange = e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = ev => { mpDraft.customLogo = ev.target.result; renderMpPicker(); };
+      reader.readAsDataURL(file);
+    };
+
+    renderMpPicker();
+    document.getElementById('mpName').value = mpDraft.name;
+    document.getElementById('mpUrl').value = mpDraft.url;
+    document.getElementById('mpModal').classList.add('active');
+  }
+
+  function renderMpPicker() {
+    const brand = Object.entries(MARKETPLACES).map(([k, m]) => `
+      <div class="mp-picker-btn"
+           style="background: ${m.bg}; ${!mpDraft.customLogo && mpDraft.key === k ? 'border-color: var(--text-primary);' : ''}"
+           onclick="selectMp('${k}')" title="${m.name}">
+        <span class="letter" style="color:${m.color}">${m.letter}</span>
+        ${logoImgHtml(m)}
+      </div>
+    `).join('');
+    const custom = mpDraft.customLogo
+      ? `<div class="mp-picker-btn" style="background:#fff; border-color: var(--text-primary);" title="Свой">
+           <img class="custom-logo" src="${mpDraft.customLogo}" alt="">
+         </div>`
+      : '';
+    const upload = `<div class="mp-picker-btn upload" onclick="document.getElementById('mpLogoInput').click()" title="Загрузить свой">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    </div>`;
+    document.getElementById('mpPicker').innerHTML = brand + custom + upload;
+  }
+
+  function selectMp(k) {
+    mpDraft.key = k;
+    mpDraft.customLogo = null;
+    if (!mpCtx.mpId) mpDraft.name = MARKETPLACES[k].name;
+    document.getElementById('mpName').value = mpDraft.name;
+    renderMpPicker();
+  }
+
+  function closeMpModal() {
+    document.getElementById('mpModal').classList.remove('active');
+    mpCtx = null; mpDraft = null;
+  }
+
+  function editMp(colId, mpId) { openMpModal(colId, mpId); }
+
+  function saveMp() {
+    const name = document.getElementById('mpName').value.trim() || (MARKETPLACES[mpDraft.key]?.name ?? 'Маркетплейс');
+    let url = document.getElementById('mpUrl').value.trim();
+    if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;
+    const col = state.columns.find(c => c.id === mpCtx.colId);
+    if (!col.marketplaces) col.marketplaces = [];
+    if (mpCtx.mpId) {
+      const mp = col.marketplaces.find(m => m.id === mpCtx.mpId);
+      Object.assign(mp, { key: mpDraft.key, name, url, customLogo: mpDraft.customLogo });
+    } else {
+      col.marketplaces.push({
+        id: uid(),
+        key: mpDraft.key,
+        name,
+        url,
+        customLogo: mpDraft.customLogo,
+        turnover: '',
+        margin: '',
+        profit: ''
+      });
+    }
+    save();
+    closeMpModal();
+  }
+
+  function deleteMp(colId, mpId) {
+    if (!confirm('Удалить маркетплейс?')) return;
+    const col = state.columns.find(c => c.id === colId);
+    col.marketplaces = col.marketplaces.filter(m => m.id !== mpId);
+    save();
+  }
+
+  // ─── Inline editing ─────────────────────────────
+  function updateMetric(e) {
+    const colId = e.target.dataset.col;
+    const idx = parseInt(e.target.dataset.idx);
+    const raw = e.target.textContent.trim();
+    const col = state.columns.find(c => c.id === colId);
+    col.metrics[idx].value = raw;
+    save();
+  }
+
+  function updateMpValue(e) {
+    const colId = e.target.dataset.col;
+    const mpId = e.target.dataset.mp;
+    const field = e.target.dataset.field;
+    const raw = e.target.textContent.trim();
+    const col = state.columns.find(c => c.id === colId);
+    const mp = col.marketplaces.find(m => m.id === mpId);
+    mp[field] = raw;
+    save();
+  }
+
+  ['itemModal', 'columnModal', 'mpModal'].forEach(id => {
+    document.getElementById(id).addEventListener('click', e => {
+      if (e.target.id === id) {
+        if (id === 'itemModal') closeItemModal();
+        else if (id === 'columnModal') closeColumnModal();
+        else closeMpModal();
+      }
+    });
+  });
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { closeItemModal(); closeColumnModal(); closeMpModal(); }
+  });
+
+  load();
+</script>
+</body>
+</html>
