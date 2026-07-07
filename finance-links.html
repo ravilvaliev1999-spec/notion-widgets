@@ -64,7 +64,32 @@
   @media (max-width: 600px) { .board { gap: 6px; }  .container { padding: 12px 6px 90px; } }
 
   /* адаптация содержимого под ширину самой колонки */
-  .column { min-width: 0; container-type: inline-size; }
+  .column { min-width: 0; container-type: inline-size; position: relative; }
+
+  /* ручка изменения ширины между колонками */
+  .col-resizer {
+    position: absolute;
+    top: 0; bottom: 0;
+    right: -14px;
+    width: 14px;
+    cursor: col-resize;
+    z-index: 5;
+    display: flex; align-items: center; justify-content: center;
+    touch-action: none;
+  }
+  .col-resizer::after {
+    content: '';
+    width: 3px;
+    height: 36px;
+    border-radius: 2px;
+    background: var(--divider);
+    opacity: 0;
+    transition: opacity 0.15s, background 0.15s;
+  }
+  .col-resizer:hover::after, .col-resizer.active::after {
+    opacity: 1;
+    background: var(--accent);
+  }
 
   @container (max-width: 340px) {
     .column { padding: 12px 10px; border-radius: 18px; }
@@ -218,7 +243,11 @@
     text-overflow: ellipsis;
   }
   .metric-cell .value {
-    font-size: 15px;
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    line-height: 1.25;
+    font-size: 14px;
     font-weight: 600;
     color: var(--text-primary);
     font-variant-numeric: tabular-nums;
@@ -228,9 +257,6 @@
     border-radius: 5px;
     outline: none;
     min-height: 20px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
   .metric-cell .value:hover, .metric-cell .value:focus { background: var(--hover-bg); }
   .metric-cell .value.empty::before { content: '—'; color: var(--text-tertiary); }
@@ -286,7 +312,6 @@
     display: flex; flex-direction: column;
     gap: 1px;
     min-width: 0;
-    white-space: nowrap; overflow: hidden;
   }
   .mp-stat .lbl {
     font-size: 9.5px;
@@ -296,7 +321,11 @@
     color: var(--text-tertiary);
   }
   .mp-stat .val {
-    font-size: 12.5px;
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    line-height: 1.2;
+    font-size: 12px;
     font-weight: 600;
     color: var(--text-primary);
     font-variant-numeric: tabular-nums;
@@ -390,9 +419,11 @@
     color: var(--text-primary);
     line-height: 1.3;
     letter-spacing: -0.005em;
-    white-space: nowrap;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
     overflow: hidden;
-    text-overflow: ellipsis;
+    word-break: break-word;
   }
   .item-domain {
     font-size: 10.5px;
@@ -736,6 +767,7 @@
         <div class="color-picker" id="itemColorPicker"></div>
       </div>
       <div class="modal-actions">
+        <button class="btn btn-danger" id="deleteItemBtn" onclick="deleteItemFromModal()" style="display:none;">Удалить</button>
         <button class="btn btn-secondary" onclick="closeItemModal()">Отмена</button>
         <button class="btn btn-primary" onclick="saveItem()">Сохранить</button>
       </div>
@@ -771,6 +803,19 @@
           Метрика
         </button>
       </div>
+      <div class="form-group" id="columnAddTools" style="display:none;">
+        <label>Добавить в раздел</label>
+        <div style="display:flex; gap:8px;">
+          <button class="add-btn-inline" style="flex:1;" onclick="addMpFromSettings()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+            Маркетплейс
+          </button>
+          <button class="add-btn-inline" style="flex:1;" onclick="addItemFromSettings()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+            Ссылка
+          </button>
+        </div>
+      </div>
       <div class="modal-actions">
         <button class="btn btn-danger" id="deleteColumnBtn" onclick="deleteColumn()" style="display:none;">Удалить</button>
         <button class="btn btn-secondary" onclick="closeColumnModal()">Отмена</button>
@@ -797,11 +842,11 @@
         <input type="url" id="mpUrl" placeholder="https://..." autocomplete="off">
       </div>
       <div class="form-group">
-        <label>Ячейки в Google Таблице (Лист!A1) — источник: ссылка выше или основная ссылка раздела</label>
+        <label>Ячейки в таблице (просто B2 — лист текущего месяца; или Свод!B2). Источник: ссылка выше или основная ссылка раздела</label>
         <div class="metric-edit-row">
-          <input type="text" id="mpCellTurnover" placeholder="ТО, напр. Свод!B2" autocomplete="off">
-          <input type="text" id="mpCellMargin" placeholder="Рент., напр. Свод!C2" autocomplete="off">
-          <input type="text" id="mpCellProfit" placeholder="Прибыль, напр. Свод!D2" autocomplete="off">
+          <input type="text" id="mpCellTurnover" placeholder="ТО: B2" autocomplete="off">
+          <input type="text" id="mpCellMargin" placeholder="%: C2" autocomplete="off">
+          <input type="text" id="mpCellProfit" placeholder="ВПМП: D2" autocomplete="off">
         </div>
       </div>
       <div class="modal-actions">
@@ -881,9 +926,9 @@
         color: 'blue',
         customLogo: null,
         metrics: [
-          { label: 'Товарооборот',   value: '' },
-          { label: 'Рентабельность', value: '' },
-          { label: 'Прибыль',        value: '' }
+          { label: 'ТО',   value: '' },
+          { label: '%',    value: '' },
+          { label: 'ВПМП', value: '' }
         ],
         marketplaces: [
           { id: 'mp-ozon', key: 'ozon',      name: 'OZON',          url: '', customLogo: null, turnover: '', margin: '', profit: '' },
@@ -905,9 +950,9 @@
         color: 'orange',
         customLogo: null,
         metrics: [
-          { label: 'Заказы',         value: '' },
-          { label: 'Рентабельность', value: '' },
-          { label: 'Прибыль',        value: '' }
+          { label: 'Заказы', value: '' },
+          { label: '%',      value: '' },
+          { label: 'ВПМП',   value: '' }
         ],
         marketplaces: [],
         items: [
@@ -965,6 +1010,9 @@
         });
         (c.metrics || []).forEach(m => {
           if (m.label === 'Заказов сегодня') m.label = 'Заказы';
+          if (/^товарооборот$/i.test(m.label)) m.label = 'ТО';
+          if (/^рентабельность$/i.test(m.label)) m.label = '%';
+          if (/^прибыль$/i.test(m.label)) m.label = 'ВПМП';
           if (m.cell === undefined) m.cell = '';
         });
         c.items.forEach(i => {
@@ -1045,10 +1093,19 @@
   // ─── Render ─────────────────────────────────────
   function render() {
     const board = document.getElementById('board');
-    board.innerHTML = state.columns.map(col => renderColumn(col)).join('');
+    normalizeWidths();
+    board.style.gridTemplateColumns = state.widths.map(w => `minmax(0, ${w}fr)`).join(' ');
+    board.innerHTML = state.columns.map((col, i) => renderColumn(col, i)).join('');
   }
 
-  function renderColumn(col) {
+  function normalizeWidths() {
+    if (!Array.isArray(state.widths)) state.widths = [];
+    while (state.widths.length < state.columns.length) state.widths.push(1);
+    state.widths.length = state.columns.length;
+    state.widths = state.widths.map(w => (typeof w === 'number' && w > 0.05 ? w : 1));
+  }
+
+  function renderColumn(col, idx) {
     const gradient = COLORS[col.color] || COLORS.blue;
     const iconContent = col.customLogo
       ? `<img class="custom-logo" src="${col.customLogo}" alt="">`
@@ -1080,10 +1137,6 @@
            ondrop="onMpDrop(event, '${col.id}', null)">
         ${(col.marketplaces || []).map(mp => renderMp(mp, col.id)).join('')}
       </div>
-      <button class="add-btn-inline" onclick="openMpModal('${col.id}')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-        Маркетплейс
-      </button>
     `;
 
     const itemsHtml = `
@@ -1091,36 +1144,24 @@
            ondragover="onItemDragOver(event, '${col.id}', null)"
            ondrop="onItemDrop(event, '${col.id}', null)">
         ${(col.items || []).map(item => renderItem(item, col.id)).join('')}
-        <button class="add-btn-inline" onclick="openItemModal('${col.id}')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-          Ссылка
-        </button>
       </div>
     `;
 
     const headClass = hasUrl ? 'clickable' : 'no-url';
-    const domainStr = hasUrl ? getDomain(col.primaryUrl) : 'основная ссылка не задана';
 
     return `
       <div class="column"
            data-col-id="${col.id}"
+           draggable="true"
+           ondragstart="onColDragStart(event, '${col.id}')"
+           ondragend="onDragEnd(event)"
            ondragover="onColDragOver(event, '${col.id}')"
            ondrop="onColDrop(event, '${col.id}')"
            ondragleave="onColDragLeave(event)">
-        <div class="column-head ${headClass}" onclick="handleColumnClick(event, '${col.id}')"
-             draggable="true"
-             ondragstart="onColDragStart(event, '${col.id}')"
-             ondragend="onDragEnd(event)">
-          <div class="drag-handle"
-               draggable="true"
-               title="Перетащить"
-               onclick="event.stopPropagation()"
-               ondragstart="onColDragStart(event, '${col.id}')"
-               ondragend="onDragEnd(event)">${DRAG_ICON}</div>
+        <div class="column-head ${headClass}" onclick="handleColumnClick(event, '${col.id}')">
           <div class="column-icon" style="${iconBgStyle}">${iconContent}</div>
           <div class="column-title-wrap">
             <div class="column-title">${escapeHtml(col.title)}</div>
-            <div class="column-domain">${escapeHtml(domainStr)}</div>
           </div>
           <div class="column-menu">
             <button class="icon-btn" onclick="event.stopPropagation(); moveColumn('${col.id}', -1)" title="Сдвинуть влево">
@@ -1135,6 +1176,7 @@
         ${metricsHtml}
         ${mpsHtml}
         ${itemsHtml}
+        ${idx < state.columns.length - 1 ? `<div class="col-resizer" onpointerdown="startColResize(event, ${idx})" ondblclick="resetColWidths()" title="Тянуть для изменения ширины, двойной клик — сбросить"></div>` : ''}
       </div>
     `;
   }
@@ -1170,7 +1212,7 @@
         <div class="mp-stats" onclick="event.stopPropagation()">
           ${['turnover','margin','profit'].map(field => `
             <span class="mp-stat">
-              <span class="lbl">${field==='turnover'?'ТО':field==='margin'?'Рент':'Прибыль'}</span>
+              <span class="lbl">${field==='turnover'?'ТО':field==='margin'?'%':'ВПМП'}</span>
               <span class="val ${!mp[field] ? 'empty' : ''} ${mp.cells && mp.cells[field] ? 'linked' : ''}"
                     ${mp.cells && mp.cells[field] ? `title="Из таблицы: ${escapeAttr(mp.cells[field])}"` : ''}
                     contenteditable="true"
@@ -1193,7 +1235,6 @@
     const bg = item.customLogo ? '#fff' : iconBg(item.icon, item.color);
     const shape = iconShape(item.icon, item.shape, item.customLogo);
     const content = iconContentHtml(item.icon, item.color, item.customLogo);
-    const domain = item.url ? getDomain(item.url) : '';
     const empty = !item.url;
     const isChecklist = item.icon === 'checklist';
     return `
@@ -1213,7 +1254,6 @@
         <div class="item-icon ${shape === 'circle' ? 'circle' : ''}" style="background: ${bg}">${content}</div>
         <div class="item-info">
           <div class="item-name">${escapeHtml(item.name)}</div>
-          <div class="item-domain">${empty ? '<em>ссылка не задана</em>' : escapeHtml(domain)}</div>
         </div>
         <div class="item-actions" onclick="event.stopPropagation()">
           <button class="icon-btn" onclick="editItem('${colId}', '${item.id}')" title="Изменить">${EDIT_ICON}</button>
@@ -1224,21 +1264,31 @@
   }
 
   // ─── Click handlers ─────────────────────────────
+  function openUrl(url) {
+    if (!url) return;
+    if (/https?:\/\/[^/]*notion\.(so|site)/i.test(url)) {
+      // ссылки Notion — в той же вкладке
+      try { window.top.location.href = url; return; } catch (_) {}
+      try { window.location.href = url; return; } catch (_) {}
+    }
+    window.open(url, '_blank');
+  }
+
   function handleColumnClick(e, colId) {
     if (e.target.closest('.column-menu, .drag-handle')) return;
     const col = state.columns.find(c => c.id === colId);
-    if (col.primaryUrl) window.open(col.primaryUrl, '_blank');
+    openUrl(col.primaryUrl);
   }
 
   function handleMpClick(e, url) {
     if (e.target.closest('.mp-stats, .mp-actions, .drag-handle')) return;
-    if (url) window.open(url, '_blank');
+    openUrl(url);
   }
 
   function openItem(url, e) {
     if (!url) return;
     if (e.target.closest('.item-actions, .drag-handle')) return;
-    window.open(url, '_blank');
+    openUrl(url);
   }
 
   // ─── Reorder columns by buttons (работает и на телефоне) ──
@@ -1250,8 +1300,50 @@
     save();
   }
 
+  // ─── Ручное изменение ширины колонок ────────────
+  function startColResize(e, idx) {
+    e.preventDefault();
+    e.stopPropagation();
+    const board = document.getElementById('board');
+    const cols = board.querySelectorAll('.column');
+    if (!cols[idx] || !cols[idx + 1]) return;
+    const startX = e.clientX;
+    const wL = cols[idx].getBoundingClientRect().width;
+    const wR = cols[idx + 1].getBoundingClientRect().width;
+    const pairFr = state.widths[idx] + state.widths[idx + 1];
+    const MIN = 130;
+    const rz = e.currentTarget;
+    rz.classList.add('active');
+    rz.setPointerCapture && rz.setPointerCapture(e.pointerId);
+
+    const onMove = ev => {
+      const dx = ev.clientX - startX;
+      let newL = Math.min(Math.max(wL + dx, MIN), wL + wR - MIN);
+      state.widths[idx] = pairFr * newL / (wL + wR);
+      state.widths[idx + 1] = pairFr - state.widths[idx];
+      board.style.gridTemplateColumns = state.widths.map(w => `minmax(0, ${w}fr)`).join(' ');
+    };
+    const onUp = () => {
+      rz.classList.remove('active');
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }
+
+  function resetColWidths() {
+    state.widths = state.columns.map(() => 1);
+    save();
+  }
+
   // ─── Drag & Drop ────────────────────────────────
   function onColDragStart(e, colId) {
+    if (e.target.closest && e.target.closest('[contenteditable="true"], input, textarea, .icon-btn, .col-resizer')) {
+      e.preventDefault();
+      return;
+    }
     dragKind = 'column';
     dragSrc = { colId };
     e.dataTransfer.effectAllowed = 'move';
@@ -1411,6 +1503,7 @@
       : { icon: 'sheet', color: 'green', shape: 'square', customLogo: null };
 
     document.getElementById('itemModalTitle').textContent = item ? 'Редактировать ссылку' : 'Новая ссылка';
+    document.getElementById('deleteItemBtn').style.display = item ? '' : 'none';
     document.getElementById('itemName').value = item ? item.name : '';
     document.getElementById('itemUrl').value = item ? item.url : '';
 
@@ -1500,6 +1593,13 @@
     closeItemModal();
   }
 
+  function deleteItemFromModal() {
+    if (!itemCtx || !itemCtx.itemId) return;
+    const { colId, itemId } = itemCtx;
+    closeItemModal();
+    deleteItem(colId, itemId);
+  }
+
   function deleteItem(colId, itemId) {
     if (!confirm('Удалить ссылку?')) return;
     const col = state.columns.find(c => c.id === colId);
@@ -1519,6 +1619,7 @@
     document.getElementById('columnTitle').value = colDraft.title;
     document.getElementById('columnUrl').value = colDraft.primaryUrl;
     document.getElementById('deleteColumnBtn').style.display = col ? '' : 'none';
+    document.getElementById('columnAddTools').style.display = col ? '' : 'none';
 
     const fileInput = document.getElementById('columnLogoInput');
     fileInput.value = '';
@@ -1567,7 +1668,7 @@
     document.getElementById('metricsEditor').innerHTML = colDraft.metrics.map((m, i) => `
       <div class="metric-edit-row">
         <input type="text" value="${escapeHtml(m.label)}" placeholder="Название" oninput="colDraft.metrics[${i}].label = this.value">
-        <input type="text" value="${escapeHtml(m.cell || '')}" placeholder="Лист!B2" style="flex: 0 0 110px" title="Ячейка в таблице из основной ссылки" oninput="colDraft.metrics[${i}].cell = this.value.trim()">
+        <input type="text" value="${escapeHtml(m.cell || '')}" placeholder="B2" style="flex: 0 0 110px" title="Ячейка. Просто B2 — лист текущего месяца; или Свод!B2" oninput="colDraft.metrics[${i}].cell = this.value.trim()">
         <button onclick="colDraft.metrics.splice(${i}, 1); renderMetricsEditor()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M18 6L6 18M6 6l12 12"/></svg>
         </button>
@@ -1615,6 +1716,20 @@
     }
     save();
     closeColumnModal();
+  }
+
+  function addMpFromSettings() {
+    const colId = colCtx;
+    if (!colId) return;
+    saveColumn();
+    openMpModal(colId);
+  }
+
+  function addItemFromSettings() {
+    const colId = colCtx;
+    if (!colId) return;
+    saveColumn();
+    openItemModal(colId);
   }
 
   function deleteColumn() {
@@ -1748,6 +1863,19 @@
   }
 
   // ─── Синхронизация с Google Таблицами ───────────
+  const RU_MONTHS = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+
+  // «B2» → «Июль!B2»; поддержка токенов {месяц} и {год}
+  function resolveRange(r) {
+    const now = new Date();
+    const month = RU_MONTHS[now.getMonth()];
+    r = String(r)
+      .replace(/\{\s*месяц\s*\}/gi, month)
+      .replace(/\{\s*год\s*\}/gi, String(now.getFullYear()));
+    if (!r.includes('!')) r = month + '!' + r;
+    return r;
+  }
+
   function ssIdFromUrl(url) {
     const m = /\/d\/([a-zA-Z0-9_-]{20,})/.exec(url || '');
     return m ? m[1] : null;
@@ -1759,13 +1887,13 @@
     state.columns.forEach(col => {
       const colSs = ssIdFromUrl(col.primaryUrl);
       (col.metrics || []).forEach(m => {
-        if (m.cell && colSs) jobs.push({ ssId: colSs, range: m.cell, apply: v => { m.value = v; } });
+        if (m.cell && colSs) jobs.push({ ssId: colSs, range: resolveRange(m.cell), apply: v => { m.value = v; } });
       });
       (col.marketplaces || []).forEach(mp => {
         const ss = ssIdFromUrl(mp.url) || colSs;
         ['turnover', 'margin', 'profit'].forEach(f => {
           const cell = mp.cells && mp.cells[f];
-          if (cell && ss) jobs.push({ ssId: ss, range: cell, apply: v => { mp[f] = v; } });
+          if (cell && ss) jobs.push({ ssId: ss, range: resolveRange(cell), apply: v => { mp[f] = v; } });
         });
       });
     });
@@ -1792,7 +1920,7 @@
     if (syncing) return;
     const jobs = collectBindings();
     if (!jobs.length) {
-      if (!silent) alert('Нет привязанных ячеек.\n\nОткройте настройки раздела (⚙) и укажите ячейку у метрики (напр. Свод!B2), либо ячейки ТО/Рент/Прибыль в настройках маркетплейса. Данные берутся из таблицы по основной ссылке раздела (или ссылке маркетплейса).');
+      if (!silent) alert('Нет привязанных ячеек.\n\nОткройте настройки раздела (⚙) и укажите ячейку у показателя, например B2 — лист подставится сам по текущему месяцу (Июль, Август…). Можно явно: Свод!B2 или {месяц}!B2. То же для ТО / % / ВПМП маркетплейсов.');
       return;
     }
     syncing = true;
