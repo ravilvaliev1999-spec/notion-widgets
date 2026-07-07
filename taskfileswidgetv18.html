@@ -2,1465 +2,1654 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<meta name="robots" content="noindex, nofollow">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="color-scheme" content="dark">
-<link rel="preconnect" href="https://script.google.com" crossorigin>
-<link rel="preconnect" href="https://script.googleusercontent.com" crossorigin>
-<title>Файлы задачи</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Финансы</title>
 <style>
-  :root{
-    --bg:#191919;            /* системный фон тёмной темы Notion */
-    --panel:#202020;
-    --txt:rgba(255,255,255,.9);
-    --txt-dim:rgba(255,255,255,.45);
-    --border:rgba(255,255,255,.08);
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-font-smoothing: antialiased; }
 
-    /* точные цвета со скриншота */
-    --drive-bg:#2f2f2f; --drive-bd:#4a4a4a; --drive-tx:#e6e6e5; --drive-sub:#939392;
-    --docs-bg:#1f3b54;  --docs-bd:#3c546a;  --docs-tx:#d0e3f3;  --docs-sub:#8097ab;
-    --sheets-bg:#1c3829;--sheets-bd:#395245;--sheets-tx:#ceebd7;--sheets-sub:#7d9a88;
-    --slides-bg:#5c3a1e;--slides-bd:#71533b;--slides-tx:#f4d9c0;--slides-sub:#af9176;
-
-    --ease:cubic-bezier(.2,.8,.3,1);
-  }
-  *{box-sizing:border-box;margin:0;padding:0}
-  /* тёмная схема для системных элементов iframe: без неё браузер рисует
-     светлый холст и светлые полосы прокрутки — те самые «линии» по краям */
-  html{color-scheme:dark}
-  html,body{background:var(--bg)}
-  /* полосы прокрутки прячем совсем: прокрутка колесом/пальцем работает,
-     а серых линий на краях виджета в Notion больше нет */
-  html,body{scrollbar-width:none;-ms-overflow-style:none}
-  ::-webkit-scrollbar{width:0;height:0;background:transparent}
-  body{overflow-x:hidden}
-  body{
-    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
-    color:var(--txt);font-size:14px;
-    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
-    padding:4px;
-  }
-  body.dragover::after{
-    content:'Отпустите файл, чтобы добавить';
-    position:fixed;inset:4px;border:2px dashed rgba(255,255,255,.35);border-radius:14px;
-    display:flex;align-items:center;justify-content:center;font-size:14px;color:var(--txt);
-    background:rgba(25,25,25,.92);z-index:40;pointer-events:none;
+  :root {
+    color-scheme: light dark;
+    --bg-page: #ffffff;
+    --text-primary: #1d1d1f;
+    --text-secondary: #6e6e73;
+    --text-tertiary: #86868b;
+    --card-bg: rgba(255, 255, 255, 0.72);
+    --card-inner: rgba(255, 255, 255, 0.6);
+    --card-border: rgba(0, 0, 0, 0.08);
+    --card-shadow: 0 8px 32px rgba(0, 0, 0, 0.06), 0 2px 6px rgba(0, 0, 0, 0.04);
+    --hover-bg: rgba(0, 0, 0, 0.04);
+    --input-bg: rgba(0, 0, 0, 0.04);
+    --divider: rgba(0, 0, 0, 0.06);
+    --accent: #0071e3;
+    --accent-hover: #0077ed;
+    --danger: #ff3b30;
   }
 
-  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;align-items:start}
-  .col{display:flex;flex-direction:column;gap:9px;min-width:0}
-
-  /* ---- карточка ---- */
-  .card{
-    border-radius:12px;
-    display:flex;align-items:stretch;position:relative;
-    border:1px solid transparent;user-select:none;
-    transition:transform .18s var(--ease), box-shadow .18s var(--ease), filter .18s var(--ease);
-    will-change:transform;
-  }
-  /* Apple-подсветка: мягкий подъём + свечение */
-  @media(hover:hover){
-    .card:hover{
-      transform:translateY(-1.5px);
-      filter:brightness(1.12);
-      box-shadow:0 6px 18px rgba(0,0,0,.4);
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg-page: #191919;
+      --text-primary: #f5f5f7;
+      --text-secondary: #a1a1a6;
+      --text-tertiary: #6e6e73;
+      --card-bg: rgba(45, 45, 47, 0.72);
+      --card-inner: rgba(58, 58, 60, 0.5);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --card-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 2px 6px rgba(0, 0, 0, 0.2);
+      --hover-bg: rgba(255, 255, 255, 0.08);
+      --input-bg: rgba(255, 255, 255, 0.06);
+      --divider: rgba(255, 255, 255, 0.08);
+      --accent: #0a84ff;
+      --accent-hover: #409cff;
     }
   }
-  .card:active{transform:scale(.985);filter:brightness(1.05);transition-duration:.08s}
 
-  .card .go{
-    flex:1;min-width:0;display:flex;align-items:center;gap:11px;
-    padding:13px 4px 13px 14px;text-decoration:none;color:inherit;cursor:pointer;
-    border-radius:12px 0 0 12px;-webkit-tap-highlight-color:transparent;
+  html, body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+    background: var(--bg-page);
+    color: var(--text-primary);
+    min-height: 100vh;
+    letter-spacing: -0.01em;
   }
-  .card .go:focus-visible{outline:2px solid rgba(255,255,255,.4);outline-offset:-2px;border-radius:12px}
-  .card .ic{width:26px;height:26px;flex:none;display:flex;align-items:center;justify-content:center}
-  .card .meta{min-width:0;flex:1}
-  .card .name{display:block;font-weight:600;font-size:14px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .card .sub{display:block;font-size:11.5px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .card .cnt{font-size:11px;min-width:21px;height:21px;padding:0 6px;border-radius:11px;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;flex:none;color:inherit;opacity:.75}
-  .card .side{display:flex;align-items:center;padding:0 9px 0 4px;flex:none;gap:2px}
 
-  .iconbtn{
-    width:24px;height:24px;border:none;background:none;border-radius:7px;cursor:pointer;
-    color:inherit;opacity:.55;display:flex;align-items:center;justify-content:center;
-    text-decoration:none;font-size:12px;padding:0;-webkit-tap-highlight-color:transparent;
-    transition:background .15s,opacity .15s;
+  .container { max-width: 1400px; margin: 0 auto; padding: 24px 24px 100px; }
+
+  .board {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 18px;
+    align-items: start;
   }
-  .iconbtn:hover{background:rgba(255,255,255,.14);opacity:1}
-  .iconbtn svg{transition:transform .18s var(--ease)}
-  .col.collapsed .chev svg{transform:rotate(-90deg)}
-  .col.collapsed .fcard{display:none}
 
-  .c-drive{background:var(--drive-bg);border-color:var(--drive-bd)}
-  .c-drive .name{color:var(--drive-tx)} .c-drive .sub{color:var(--drive-sub)}
-  .c-docs{background:var(--docs-bg);border-color:var(--docs-bd)}
-  .c-docs .name{color:var(--docs-tx)} .c-docs .sub{color:var(--docs-sub)}
-  .c-sheets{background:var(--sheets-bg);border-color:var(--sheets-bd)}
-  .c-sheets .name{color:var(--sheets-tx)} .c-sheets .sub{color:var(--sheets-sub)}
-  .c-slides{background:var(--slides-bg);border-color:var(--slides-bd)}
-  .c-slides .name{color:var(--slides-tx)} .c-slides .sub{color:var(--slides-sub)}
+  @media (max-width: 1100px) { .board { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 700px)  { .board { grid-template-columns: 1fr; } .container { padding: 16px 14px 80px; } }
 
-  .fcard .del{opacity:0}
-  @media(hover:hover){ .fcard:hover .del{opacity:.55} }
-  @media(hover:none){ .fcard .del{opacity:.45} } /* на тач-устройствах видна всегда */
-  .fcard .del:hover{background:rgba(255,80,80,.28);opacity:1}
-  .fcard.uploading{opacity:.72}
-  .fcard.uploading .sub{animation:gwpulse 1.4s ease-in-out infinite}
-  @keyframes gwpulse{50%{opacity:.45}}
-
-  /* ---- круглая кнопка "+" по центру, стиль Apple ---- */
-  .plus-wrap{display:flex;justify-content:center;margin-top:12px;position:relative}
-  .plus{
-    width:36px;height:36px;border-radius:50%;border:none;cursor:pointer;
-    background:rgba(255,255,255,.08);color:rgba(255,255,255,.7);
-    font-size:19px;font-weight:300;line-height:1;
-    display:flex;align-items:center;justify-content:center;
-    transition:transform .2s var(--ease), background .2s, color .2s;
-    -webkit-tap-highlight-color:transparent;
+  /* ─── Column ─── */
+  .column {
+    background: var(--card-bg);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid var(--card-border);
+    border-radius: 22px;
+    box-shadow: var(--card-shadow);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    position: relative;
+    transition: transform 0.2s, opacity 0.2s;
   }
-  .plus:hover{background:rgba(255,255,255,.15);color:#fff;transform:scale(1.08)}
-  .plus:active{transform:scale(.94)}
-  .plus.open{transform:rotate(45deg);background:rgba(255,255,255,.18);color:#fff}
 
-  /* ---- action sheet: полупрозрачный, с блюром, как в iOS ---- */
-  .sheet{
-    position:fixed;left:0;top:0;
-    transform:translateY(4px) scale(.97);transform-origin:center bottom;
-    min-width:216px;
-    background:rgba(38,38,40,.86);
-    -webkit-backdrop-filter:blur(22px) saturate(180%);
-    backdrop-filter:blur(22px) saturate(180%);
-    border:1px solid rgba(255,255,255,.1);
-    border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.55);
-    overflow:hidden;opacity:0;pointer-events:none;
-    transition:opacity .18s var(--ease), transform .18s var(--ease);z-index:30;
-  }
-  .sheet.show{opacity:1;pointer-events:auto;transform:translateY(0) scale(1)}
-  .sheet button{
-    display:flex;align-items:center;gap:11px;width:100%;
-    border:none;background:none;color:var(--txt);cursor:pointer;
-    font-family:inherit;font-size:13.5px;padding:12px 17px;text-align:left;
-    -webkit-tap-highlight-color:transparent;
-  }
-  .sheet button:hover{background:rgba(255,255,255,.07)}
-  .sheet .sep{height:1px;background:rgba(255,255,255,.09)}
-  .sheet .sicon{width:18px;text-align:center;opacity:.8}
-  .sheet .muted{color:var(--txt-dim)}
-  #fileInput{display:none}
+  .column.dragging { opacity: 0.35; transform: scale(0.98); }
+  .column.drag-over { box-shadow: 0 0 0 3px var(--accent), var(--card-shadow); }
 
-  /* ---- панели ---- */
-  .panel{margin-top:10px;padding:13px;border-radius:13px;background:var(--panel);border:1px solid var(--border);display:none}
-  .panel.show{display:block}
-  .panel .row{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;align-items:center}
-  .panel .row:last-child{margin-bottom:0}
-  .panel input[type=text]{flex:1;background:rgba(0,0,0,.3);border:1px solid var(--border);border-radius:8px;color:var(--txt);padding:8px 11px;font-size:13px;font-family:inherit;min-width:120px}
-  .panel input[type=text]:focus{outline:none;border-color:rgba(255,255,255,.28)}
-  .panel input::placeholder{color:rgba(255,255,255,.25)}
-  .chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
-  .chip{font-size:11.5px;padding:4px 11px;border-radius:20px;cursor:pointer;background:rgba(255,255,255,.06);color:var(--txt-dim);border:1px solid transparent;transition:all .15s;-webkit-tap-highlight-color:transparent}
-  .chip.on{background:rgba(255,255,255,.15);color:var(--txt);border-color:rgba(255,255,255,.2)}
-  .actions{display:flex;gap:8px;justify-content:flex-end}
-  .hint{font-size:11px;color:var(--txt-dim);margin-bottom:8px;word-break:break-word}
-  .btn{border:1px solid rgba(255,255,255,.14);background:none;border-radius:9px;color:var(--txt-dim);font-size:12.5px;padding:6px 13px;cursor:pointer;font-family:inherit;transition:all .15s;-webkit-tap-highlight-color:transparent}
-  .btn:hover{color:var(--txt);border-color:rgba(255,255,255,.3)}
-  .btn.solid{background:rgba(255,255,255,.1);border-color:transparent;color:var(--txt)}
-  .btn.solid:hover{background:rgba(255,255,255,.17)}
-  .btn.danger{color:#ff9c9c;border-color:rgba(255,120,120,.3)}
-  .btn.danger:hover{background:rgba(255,80,80,.15)}
-
-  /* ---- тонкая строка статуса привязки (не блокирует интерфейс) ---- */
-  .hintbar{
-    display:none;align-items:center;gap:9px;flex-wrap:wrap;
-    margin-top:10px;padding:8px 12px;border-radius:11px;
-    background:var(--panel);border:1px solid var(--border);
-    font-size:11.5px;color:var(--txt-dim);
+  .column-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 8px 12px;
+    border-bottom: 1px solid var(--divider);
+    margin: -4px -4px 0;
+    cursor: pointer;
+    transition: all 0.2s;
+    border-radius: 12px 12px 0 0;
+    position: relative;
   }
-  .hintbar.show{display:flex}
-  .hintbar .btn{padding:4px 10px;font-size:11.5px}
 
-  .toast{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);background:rgba(38,38,40,.94);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);border:1px solid rgba(255,255,255,.1);color:var(--txt);padding:9px 17px;border-radius:11px;font-size:12.5px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:50;max-width:92%;text-align:center;box-shadow:0 8px 28px rgba(0,0,0,.4)}
-  .toast.show{opacity:1}
+  .column-head.no-url { cursor: default; }
+  .column-head.clickable:hover { background: var(--hover-bg); }
 
-  /* ---- адаптация под iPhone ---- */
-  @media(max-width:640px){
-    body{padding:2px}
-    .grid{grid-template-columns:repeat(2,1fr);gap:9px}
-    .card .go{padding:11px 2px 11px 12px;gap:9px}
-    .card .name{font-size:13.5px}
-    .card .cnt{display:none}          /* экономим место на узком экране */
-    .plus{width:40px;height:40px;font-size:21px} /* удобнее для пальца */
-    .sheet{min-width:236px}
-    .sheet button{padding:14px 18px;font-size:14px}
+  .drag-handle {
+    width: 18px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-tertiary);
+    cursor: grab;
+    border-radius: 6px;
+    opacity: 0;
+    transition: all 0.15s;
+    flex-shrink: 0;
   }
-  @media(max-width:359px){
-    .grid{grid-template-columns:1fr}
+  .drag-handle:active { cursor: grabbing; }
+  .column:hover .drag-handle, .mp-row:hover .drag-handle, .item:hover .drag-handle { opacity: 1; }
+  .drag-handle:hover { background: var(--hover-bg); color: var(--text-secondary); }
+  .drag-handle svg { width: 12px; height: 14px; }
+
+  .column-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    color: white;
+    position: relative;
+    overflow: hidden;
   }
-  @media(prefers-reduced-motion:reduce){*{transition:none!important}}
+  .column-icon svg { width: 22px; height: 22px; }
+  .column-icon img.custom-logo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+
+  .column-title-wrap { flex: 1; min-width: 0; }
+  .column-title {
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .column-domain {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-top: 2px;
+  }
+
+  .column-menu { display: flex; gap: 2px; opacity: 0; transition: opacity 0.15s; }
+  .column:hover .column-menu { opacity: 1; }
+
+  .icon-btn {
+    width: 30px; height: 30px;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-secondary);
+    transition: all 0.15s;
+  }
+  .icon-btn:hover { background: var(--hover-bg); color: var(--text-primary); }
+  .icon-btn.delete:hover { color: var(--danger); }
+  .icon-btn svg { width: 15px; height: 15px; }
+
+  /* ─── Metrics ─── */
+  .metrics-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .metric-cell {
+    padding: 9px 11px;
+    background: var(--card-inner);
+    border: 1px solid var(--divider);
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .metric-cell .label {
+    font-size: 9.5px;
+    color: var(--text-secondary);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .metric-cell .value {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    cursor: text;
+    padding: 1px 3px;
+    margin: -1px -3px;
+    border-radius: 5px;
+    outline: none;
+    min-height: 20px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .metric-cell .value:hover, .metric-cell .value:focus { background: var(--hover-bg); }
+  .metric-cell .value.empty::before { content: '—'; color: var(--text-tertiary); }
+
+  /* ─── Marketplaces ─── */
+  .mp-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    background: var(--card-inner);
+    border: 1px solid var(--divider);
+    border-radius: 12px;
+    position: relative;
+    transition: transform 0.15s, opacity 0.15s;
+  }
+  .mp-row.dragging { opacity: 0.4; }
+  .mp-row.drag-over { border-color: var(--accent); box-shadow: inset 0 2px 0 var(--accent); }
+
+  .mp-badge {
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  }
+  .mp-badge .letter {
+    font-weight: 900; font-size: 13px; letter-spacing: -0.02em;
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .mp-badge img {
+    width: 100%; height: 100%;
+    object-fit: cover;
+    position: absolute; inset: 0;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+  .mp-badge img.loaded, .mp-badge img.custom-logo { opacity: 1; }
+
+  .mp-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    flex: 1;
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    align-items: baseline;
+  }
+  .mp-stat {
+    display: flex; flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+    white-space: nowrap; overflow: hidden;
+  }
+  .mp-stat .lbl {
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+  .mp-stat .val {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    cursor: text;
+    padding: 1px 3px;
+    margin: -1px -3px;
+    border-radius: 4px;
+    outline: none;
+    min-width: 8px;
+    display: inline-block;
+  }
+  .mp-stat .val:hover, .mp-stat .val:focus { background: var(--hover-bg); }
+  .mp-stat .val.empty::before { content: '—'; color: var(--text-tertiary); font-weight: 400; }
+
+  .mp-actions {
+    display: flex;
+    gap: 2px;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .mp-row:hover .mp-actions { opacity: 1; }
+
+  /* ─── Items ─── */
+  .items {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border-radius: 12px;
+    padding: 2px;
+    margin: -2px;
+    transition: background 0.15s, box-shadow 0.15s;
+  }
+  .items.drag-over-empty,
+  .mp-list.drag-over-empty {
+    background: rgba(0, 113, 227, 0.08);
+    box-shadow: inset 0 0 0 2px var(--accent);
+  }
+  .mp-list {
+    display: grid;
+    gap: 6px;
+    border-radius: 12px;
+    padding: 2px;
+    margin: -2px;
+    transition: background 0.15s, box-shadow 0.15s;
+  }
+
+  .item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 11px;
+    background: var(--card-inner);
+    border: 1px solid var(--divider);
+    border-radius: 12px;
+    text-decoration: none;
+    color: inherit;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s, opacity 0.2s;
+    position: relative;
+  }
+  .item:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
+    border-color: rgba(0, 0, 0, 0.1);
+  }
+  @media (prefers-color-scheme: dark) {
+    .item:hover { border-color: rgba(255, 255, 255, 0.15); }
+  }
+  .item.dragging { opacity: 0.4; }
+  .item.drag-over { border-color: var(--accent); box-shadow: inset 0 2px 0 var(--accent); }
+
+  .item-icon {
+    width: 28px; height: 28px;
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    color: white;
+    position: relative;
+    overflow: hidden;
+  }
+  .item-icon.circle { border-radius: 50%; }
+  .item-icon svg { width: 15px; height: 15px; }
+  .item-icon .lettermark { font-weight: 800; font-size: 12px; letter-spacing: -0.03em; }
+  .item-icon img { width: 100%; height: 100%; object-fit: cover; position: absolute; inset: 0; opacity: 0; transition: opacity 0.2s; }
+  .item-icon img.loaded, .item-icon img.custom-logo { opacity: 1; }
+
+  .item-info { flex: 1; min-width: 0; }
+  .item-name {
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--text-primary);
+    line-height: 1.3;
+    letter-spacing: -0.005em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .item-domain {
+    font-size: 10.5px;
+    color: var(--text-tertiary);
+    margin-top: 1px;
+  }
+
+  .item-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.15s; }
+  .item:hover .item-actions { opacity: 1; }
+
+  .item.checklist {
+    background: linear-gradient(135deg, rgba(52, 199, 89, 0.08), rgba(0, 113, 227, 0.05));
+    border: 1px dashed rgba(52, 199, 89, 0.3);
+  }
+  .item.checklist:hover {
+    background: linear-gradient(135deg, rgba(52, 199, 89, 0.12), rgba(0, 113, 227, 0.08));
+    border-style: solid;
+  }
+
+  .add-btn-inline {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px;
+    background: transparent;
+    border: 1px dashed var(--divider);
+    border-radius: 11px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: inherit;
+  }
+  .add-btn-inline:hover {
+    background: var(--hover-bg);
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
+  }
+  .add-btn-inline svg { width: 13px; height: 13px; }
+
+  /* ─── FAB "New section" ─── */
+  .fab-add {
+    position: fixed;
+    bottom: 28px;
+    right: 28px;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: white;
+    border: none;
+    cursor: pointer;
+    box-shadow: 0 10px 30px rgba(0, 113, 227, 0.35), 0 4px 12px rgba(0, 0, 0, 0.1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+    transition: all 0.2s ease;
+    font-family: inherit;
+  }
+  .fab-add:hover {
+    background: var(--accent-hover);
+    transform: translateY(-2px);
+    box-shadow: 0 14px 36px rgba(0, 113, 227, 0.45), 0 6px 16px rgba(0, 0, 0, 0.12);
+  }
+  .fab-add:active { transform: translateY(0); }
+  .fab-add svg { width: 22px; height: 22px; }
+
+  /* ─── Modal ─── */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    padding: 20px;
+    animation: fadeIn 0.2s ease;
+  }
+  .modal-overlay.active { display: flex; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes slideUp {
+    from { transform: translateY(20px) scale(0.96); opacity: 0; }
+    to { transform: translateY(0) scale(1); opacity: 1; }
+  }
+
+  .modal {
+    background: var(--card-bg);
+    backdrop-filter: blur(40px) saturate(180%);
+    -webkit-backdrop-filter: blur(40px) saturate(180%);
+    border: 1px solid var(--card-border);
+    border-radius: 22px;
+    padding: 24px;
+    width: 100%;
+    max-width: 480px;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+    animation: slideUp 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .modal h2 {
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 18px;
+    letter-spacing: -0.02em;
+  }
+
+  .form-group { margin-bottom: 14px; }
+
+  .form-group label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .form-group input {
+    width: 100%;
+    padding: 11px 14px;
+    background: var(--input-bg);
+    border: 1px solid transparent;
+    border-radius: 11px;
+    font-size: 15px;
+    color: var(--text-primary);
+    font-family: inherit;
+    transition: all 0.2s;
+    outline: none;
+  }
+  .form-group input:focus { background: rgba(0, 113, 227, 0.06); border-color: var(--accent); }
+
+  .icon-picker {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 6px;
+  }
+  .icon-option {
+    aspect-ratio: 1;
+    background: var(--input-bg);
+    border: 2px solid transparent;
+    border-radius: 10px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    transition: all 0.15s;
+    position: relative;
+    overflow: hidden;
+  }
+  .icon-option .lettermark { font-weight: 800; font-size: 13px; letter-spacing: -0.03em; }
+  .icon-option.circle-preview { border-radius: 50%; }
+  .icon-option:hover { transform: scale(1.06); }
+  .icon-option.selected { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .icon-option svg { width: 16px; height: 16px; }
+  .icon-option img { width: 100%; height: 100%; object-fit: cover; position: absolute; inset: 0; }
+
+  .icon-option.upload {
+    border: 1.5px dashed var(--text-tertiary);
+    color: var(--text-secondary);
+    background: transparent;
+  }
+  .icon-option.upload:hover { border-color: var(--accent); color: var(--accent); }
+
+  .color-picker { display: flex; gap: 8px; flex-wrap: wrap; }
+  .color-option {
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    cursor: pointer;
+    border: 3px solid transparent;
+    transition: all 0.15s;
+  }
+  .color-option:hover { transform: scale(1.1); }
+  .color-option.selected { border-color: var(--text-primary); }
+
+  .modal-actions { display: flex; gap: 8px; margin-top: 22px; }
+
+  .btn {
+    flex: 1;
+    padding: 12px;
+    border: none;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.15s;
+  }
+  .btn-secondary { background: var(--input-bg); color: var(--text-primary); }
+  .btn-secondary:hover { background: var(--hover-bg); }
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-danger { background: rgba(255, 59, 48, 0.1); color: var(--danger); flex: 0 0 auto; padding: 12px 16px; }
+  .btn-danger:hover { background: rgba(255, 59, 48, 0.2); }
+
+  .metric-edit-row {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 6px;
+    align-items: center;
+  }
+  .metric-edit-row input {
+    flex: 1;
+    padding: 9px 12px;
+    background: var(--input-bg);
+    border: 1px solid transparent;
+    border-radius: 9px;
+    font-size: 13px;
+    color: var(--text-primary);
+    font-family: inherit;
+    outline: none;
+  }
+  .metric-edit-row input:focus { border-color: var(--accent); }
+  .metric-edit-row button {
+    width: 32px; height: 32px;
+    border-radius: 9px;
+    border: none;
+    background: rgba(255, 59, 48, 0.1);
+    color: var(--danger);
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .mp-picker {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .mp-picker-btn {
+    aspect-ratio: 1;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 14px;
+    cursor: pointer;
+    border: 2px solid transparent;
+    transition: all 0.15s;
+    position: relative;
+    overflow: hidden;
+  }
+  .mp-picker-btn:hover { transform: scale(1.08); }
+  .mp-picker-btn .letter {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .mp-picker-btn img {
+    width: 100%; height: 100%; object-fit: cover;
+    position: absolute; inset: 0;
+    opacity: 0; transition: opacity 0.2s;
+  }
+  .mp-picker-btn img.loaded, .mp-picker-btn img.custom-logo { opacity: 1; }
+  .mp-picker-btn.upload {
+    border: 1.5px dashed var(--text-tertiary);
+    color: var(--text-secondary);
+    background: transparent;
+    aspect-ratio: 1;
+  }
+  .mp-picker-btn.upload:hover { border-color: var(--accent); color: var(--accent); }
 </style>
 </head>
 <body>
-<div id="wrap">
+  <div class="container">
+    <div class="board" id="board"></div>
+  </div>
 
-<div id="app">
-  <div class="grid" id="grid">
+  <!-- FAB "New section" -->
+  <button class="fab-add" onclick="openColumnModal()" title="Новый раздел">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+      <path d="M12 5v14M5 12h14"/>
+    </svg>
+  </button>
 
-    <div class="col" data-col="drive">
-      <div class="card c-drive">
-        <a class="go" href="https://drive.google.com/drive/my-drive" target="_blank" rel="noopener" data-type="drive">
-          <span class="ic"><svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M8.5 3.5h7l-7 12H2l6.5-12z" fill="#8ab4f8"/><path d="M15.5 3.5 22 15h-7l-6.5-11.5h7z" fill="#fdd663"/><path d="M8.5 15.5H22L18.5 21h-13l3-5.5z" fill="#81c995"/></svg></span>
-          <span class="meta"><span class="name">Drive</span><span class="sub">Папка задачи</span></span>
-          <span class="cnt" data-cnt="drive">0</span>
-        </a>
-        <span class="side"><button class="iconbtn chev" data-chev="drive" title="Свернуть файлы" aria-label="Свернуть файлы Drive"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m6 9 6 6 6-6"/></svg></button></span>
+  <!-- Item modal -->
+  <div class="modal-overlay" id="itemModal">
+    <div class="modal">
+      <h2 id="itemModalTitle">Новая ссылка</h2>
+      <div class="form-group">
+        <label for="itemName">Название</label>
+        <input type="text" id="itemName" placeholder="Например: Логистика" autocomplete="off">
       </div>
-    </div>
-
-    <div class="col" data-col="docs">
-      <div class="card c-docs">
-        <a class="go" href="https://docs.new" target="_blank" rel="noopener" data-type="docs">
-          <span class="ic"><svg width="20" height="25" viewBox="0 0 20 24" fill="none"><path d="M2 1h11l5 5v16a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" fill="#4285f4"/><path d="M13 1v5h5l-5-5z" fill="#a8c7fa"/><path d="M5 11h10M5 14.5h10M5 18h7" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/></svg></span>
-          <span class="meta"><span class="name">Docs</span><span class="sub">Документы</span></span>
-          <span class="cnt" data-cnt="docs">0</span>
-        </a>
-        <span class="side"><button class="iconbtn chev" data-chev="docs" title="Свернуть файлы" aria-label="Свернуть файлы Docs"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m6 9 6 6 6-6"/></svg></button></span>
+      <div class="form-group">
+        <label for="itemUrl">Ссылка</label>
+        <input type="url" id="itemUrl" placeholder="https://..." autocomplete="off">
       </div>
-    </div>
-
-    <div class="col" data-col="sheets">
-      <div class="card c-sheets">
-        <a class="go" href="https://sheets.new" target="_blank" rel="noopener" data-type="sheets">
-          <span class="ic"><svg width="20" height="25" viewBox="0 0 20 24" fill="none"><path d="M2 1h11l5 5v16a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" fill="#34a853"/><path d="M13 1v5h5l-5-5z" fill="#a5d6b7"/><path d="M5 11h10v8H5v-8zm0 2.7h10M5 16.3h10M10 11v8" stroke="#fff" stroke-width="1.3"/></svg></span>
-          <span class="meta"><span class="name">Sheets</span><span class="sub">Таблицы</span></span>
-          <span class="cnt" data-cnt="sheets">0</span>
-        </a>
-        <span class="side"><button class="iconbtn chev" data-chev="sheets" title="Свернуть файлы" aria-label="Свернуть файлы Sheets"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m6 9 6 6 6-6"/></svg></button></span>
+      <div class="form-group">
+        <label>Иконка</label>
+        <div class="icon-picker" id="itemIconPicker"></div>
+        <input type="file" id="itemLogoInput" accept="image/*" style="display:none">
       </div>
-    </div>
-
-    <div class="col" data-col="slides">
-      <div class="card c-slides">
-        <a class="go" href="https://slides.new" target="_blank" rel="noopener" data-type="slides">
-          <span class="ic"><svg width="20" height="25" viewBox="0 0 20 24" fill="none"><path d="M2 1h11l5 5v16a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" fill="#fbbc04"/><path d="M13 1v5h5l-5-5z" fill="#fde293"/><rect x="5" y="11" width="10" height="7" rx="1" stroke="#fff" stroke-width="1.4" fill="none"/></svg></span>
-          <span class="meta"><span class="name">Slides</span><span class="sub">Презентации</span></span>
-          <span class="cnt" data-cnt="slides">0</span>
-        </a>
-        <span class="side"><button class="iconbtn chev" data-chev="slides" title="Свернуть файлы" aria-label="Свернуть файлы Slides"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m6 9 6 6 6-6"/></svg></button></span>
+      <div class="form-group">
+        <label>Цвет</label>
+        <div class="color-picker" id="itemColorPicker"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeItemModal()">Отмена</button>
+        <button class="btn btn-primary" onclick="saveItem()">Сохранить</button>
       </div>
     </div>
   </div>
 
-  <!-- строка статуса привязки: появляется только если есть несохранённые файлы,
-       никогда не блокирует интерфейс -->
-  <div class="hintbar" id="bindHint">
-    <span id="bindHintText">Привязываю файлы к задаче…</span>
-    <button class="btn" id="bindHintBtn">Привязать вручную</button>
-  </div>
-
-  <div class="plus-wrap">
-    <button class="plus" id="plusBtn" title="Добавить" aria-label="Добавить файл">＋</button>
-    <div class="sheet" id="sheet">
-      <button id="shLink"><span class="sicon">🔗</span>Добавить ссылку</button>
-      <div class="sep"></div>
-      <button id="shFile"><span class="sicon">📎</span>Файл с компьютера</button>
-      <div class="sep"></div>
-      <button id="shSettings" class="muted"><span class="sicon">⚙︎</span>Настройки</button>
+  <!-- Column modal -->
+  <div class="modal-overlay" id="columnModal">
+    <div class="modal">
+      <h2 id="columnModalTitle">Новый раздел</h2>
+      <div class="form-group">
+        <label for="columnTitle">Название</label>
+        <input type="text" id="columnTitle" placeholder="Например: Финансовый результат" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label for="columnUrl">Основная ссылка (открывается по клику на заголовок)</label>
+        <input type="url" id="columnUrl" placeholder="https://docs.google.com/..." autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label>Иконка</label>
+        <div class="icon-picker" id="columnIconPicker"></div>
+        <input type="file" id="columnLogoInput" accept="image/*" style="display:none">
+      </div>
+      <div class="form-group">
+        <label>Цвет</label>
+        <div class="color-picker" id="columnColorPicker"></div>
+      </div>
+      <div class="form-group">
+        <label>Метрики</label>
+        <div id="metricsEditor"></div>
+        <button class="add-btn-inline" style="margin-top: 6px; width: 100%;" onclick="addMetricRow()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          Метрика
+        </button>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-danger" id="deleteColumnBtn" onclick="deleteColumn()" style="display:none;">Удалить</button>
+        <button class="btn btn-secondary" onclick="closeColumnModal()">Отмена</button>
+        <button class="btn btn-primary" onclick="saveColumn()">Сохранить</button>
+      </div>
     </div>
   </div>
-  <input type="file" id="fileInput" multiple>
 
-  <div class="panel" id="addForm">
-    <div class="hint" id="formHint">Вставьте ссылку — Google, Word, Excel, OneDrive. Тип определится автоматически.</div>
-    <div class="row"><input id="fUrl" type="text" placeholder="Ссылка на файл" inputmode="url"></div>
-    <div class="row"><input id="fName" type="text" placeholder="Название файла"></div>
-    <div class="chips" id="typeChips">
-      <span class="chip" data-t="docs">Google Docs</span>
-      <span class="chip" data-t="sheets">Google Sheets</span>
-      <span class="chip" data-t="slides">Google Slides</span>
-      <span class="chip" data-t="word">Word</span>
-      <span class="chip" data-t="excel">Excel</span>
-      <span class="chip" data-t="ppt">PowerPoint</span>
-      <span class="chip" data-t="drive">Drive / другое</span>
-    </div>
-    <div class="actions">
-      <button class="btn" id="cancelBtn">Отмена</button>
-      <button class="btn solid" id="saveBtn">Сохранить</button>
+  <!-- Marketplace modal -->
+  <div class="modal-overlay" id="mpModal">
+    <div class="modal">
+      <h2>Добавить маркетплейс</h2>
+      <div class="form-group">
+        <label>Бренд (или загрузить свой логотип)</label>
+        <div class="mp-picker" id="mpPicker"></div>
+        <input type="file" id="mpLogoInput" accept="image/*" style="display:none">
+      </div>
+      <div class="form-group">
+        <label for="mpName">Название</label>
+        <input type="text" id="mpName" placeholder="OZON" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label for="mpUrl">Ссылка (необязательно)</label>
+        <input type="url" id="mpUrl" placeholder="https://..." autocomplete="off">
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeMpModal()">Отмена</button>
+        <button class="btn btn-primary" onclick="saveMp()">Добавить</button>
+      </div>
     </div>
   </div>
-
-  <div class="panel" id="settingsPanel">
-    <div class="hint">Версия виджета: <span id="verLabel">—</span></div>
-    <div class="hint">Задача: <span id="taskIdLabel">—</span></div>
-    <div class="hint">Связь с Apps Script: <span id="netStatus">проверяю…</span></div>
-    <div class="hint" style="margin-top:6px">Ручная привязка (если автоматическая не сработала). Введите название задачи:</div>
-    <div class="row">
-      <input id="bindInput" type="text" placeholder="Название задачи, например: Запуск FBO">
-      <button class="btn solid" id="bindBtn">Привязать</button>
-    </div>
-    <div class="row" id="bindResult" style="display:none">
-      <input id="bindUrl" type="text" readonly>
-      <button class="btn solid" id="bindCopyBtn">Скопировать</button>
-    </div>
-    <div class="hint" id="bindNote" style="display:none">Ссылка скопирована. Вставьте её в URL этого блока (клик по блоку → ⋯ → «Replace» / «Заменить») — тогда привязка сохранится навсегда.</div>
-    <div class="hint" style="margin-top:6px">URL веб-приложения Apps Script:</div>
-    <div class="row">
-      <input id="gasUrl" type="text" placeholder="https://script.google.com/macros/s/…/exec" inputmode="url">
-      <button class="btn" id="gasSaveBtn">Сохранить</button>
-      <button class="btn" id="gasTestBtn">Проверить связь</button>
-    </div>
-    <div class="row" style="margin-top:4px">
-      <button class="btn" id="rebindBtn">Перепривязать</button>
-      <button class="btn danger" id="clearBtn">Очистить файлы задачи</button>
-      <span style="flex:1"></span>
-      <button class="btn" id="settingsCloseBtn">Закрыть</button>
-    </div>
-  </div>
-</div>
-
-</div><!-- /wrap -->
-<div class="toast" id="toast"></div>
 
 <script>
-(function(){
-  'use strict';
+  const STORAGE_KEY = 'finance_board_v6';
 
-  var VERSION = 'v20';
-
-  /* ============ storage ============ */
-  var mem = {};
-  var store;
-  try {
-    localStorage.setItem('__gw_t','1'); localStorage.removeItem('__gw_t');
-    store = localStorage;
-  } catch(e) {
-    store = {
-      getItem:function(k){return mem[k]||null;},
-      setItem:function(k,v){mem[k]=String(v);},
-      removeItem:function(k){delete mem[k];}
-    };
-  }
-  var persistent = (store === localStorage);
-  /* сколько байт файла держим в localStorage (для мгновенного скачивания и офлайна) */
-  var LOCAL_KEEP = 2.5*1024*1024;
-  /* байты файлов на текущую сессию (не переживают перезагрузку, зато без лимита хранилища) */
-  var sessionData = {};
-  /* ---- IndexedDB: постоянные локальные копии файлов без лимита localStorage.
-     Благодаря им скачивание всегда мгновенное и не зависит от Apps Script ---- */
-  var idb = null, idbFailed = false;
-  function idbOpen(cb){
-    if (idb){ cb(idb); return; }
-    if (idbFailed || typeof indexedDB === 'undefined'){ cb(null); return; }
-    try{
-      var req = indexedDB.open('gw_files_db', 1);
-      req.onupgradeneeded = function(){ req.result.createObjectStore('bytes'); };
-      req.onsuccess = function(){ idb = req.result; cb(idb); };
-      req.onerror = function(){ idbFailed = true; cb(null); };
-    }catch(e){ idbFailed = true; cb(null); }
-  }
-  function idbPut(id, blob){
-    idbOpen(function(db){
-      if (!db) return;
-      try{ db.transaction('bytes','readwrite').objectStore('bytes').put(blob, id); }catch(e){}
-    });
-  }
-  function idbGet(id, cb){
-    idbOpen(function(db){
-      if (!db){ cb(null); return; }
-      try{
-        var rq = db.transaction('bytes').objectStore('bytes').get(id);
-        rq.onsuccess = function(){ cb(rq.result || null); };
-        rq.onerror = function(){ cb(null); };
-      }catch(e){ cb(null); }
-    });
-  }
-  function idbDel(id){
-    idbOpen(function(db){
-      if (!db) return;
-      try{ db.transaction('bytes','readwrite').objectStore('bytes').delete(id); }catch(e){}
-    });
-  }
-
-  /* ============ окружение ============ */
-  var $ = function(id){ return document.getElementById(id); };
-  var SELF_URL = location.origin + location.pathname;
-  var FRAMED = (function(){ try{ return window.self !== window.top; }catch(e){ return true; } })();
-  /* десктопное приложение Notion (Electron): всплывающие окна уходят во внешний
-     браузер, поэтому blob туда не передать — качаем по прямой ссылке Drive */
-  var NOTION_APP = /Electron/i.test(navigator.userAgent) && /Notion/i.test(navigator.userAgent);
-
-  /* ============ идентификация задачи ============ */
-  /* Виджет НИКОГДА не ждёт определения страницы: интерфейс рисуется сразу.
-     Если в URL блока есть метка #task= — файлы этой задачи показываются мгновенно.
-     Если метки нет — это новая задача: список пуст, всё работает, а привязка
-     происходит в фоне (и обязательно — при сохранении первого файла). */
-  function extractNotionId(s){
-    if(!s) return null;
-    var clean = s.replace(/[-–]/g,'');
-    var m = clean.match(/([0-9a-f]{32})/i);
-    return m ? m[1].toLowerCase() : null;
-  }
-  function taskKeyFromLabel(v){
-    /* если метка — это 32-символьный ID страницы Notion, ключ совпадает
-       с ключом из referrer: данные не раздваиваются между 't_' и 'p_' */
-    var nid = extractNotionId(v);
-    return nid ? 'p_'+nid : 't_'+v;
-  }
-  function resolveTaskKey(){
-    /* 1) явная метка в URL блока: ...html#task=Название или ?task= */
-    try{
-      var sp = new URLSearchParams(location.search);
-      if (sp.get('task')) return taskKeyFromLabel(decodeURIComponent(sp.get('task')));
-      var hm = (location.hash||'').match(/task=([^&#\s]+)/);
-      if (hm) return taskKeyFromLabel(decodeURIComponent(hm[1]));
-    }catch(e){}
-    /* 2) настоящий ID страницы из referrer (если браузер его отдал) */
-    var fromRef = extractNotionId(document.referrer);
-    if (fromRef) return 'p_'+fromRef;
-    /* 3) метки нет — новая задача; ключ появится при первом сохранении файла */
-    return null;
-  }
-
-  var TASK = resolveTaskKey();
-
-  /* ============ режим «маяка» ============ */
-  /* Виджет в задаче живёт внутри synced-блока — у всех задач одинаковый URL,
-     и сам по себе iframe не знает, на какой он странице. Поэтому Apps Script
-     добавляет в конец страницы задачи крошечный НЕ-synced блок-маяк:
-     тот же файл с ?beacon=1#task=<id>. Маяк ничего не рисует (прозрачный),
-     а только сообщает соседним фреймам этой страницы ключ задачи. */
-  if (/[?&]beacon=1/.test(location.search)){
-    document.documentElement.style.colorScheme = 'normal';
-    document.documentElement.style.background = 'transparent';
-    document.body.style.background = 'transparent';
-    document.body.innerHTML = '';
-    var beaconKey = TASK ? String(TASK) : '';
-    var announce = function(){
-      try{
-        var n = parent.frames.length;
-        for (var i = 0; i < n; i++){
-          if (parent.frames[i] === window) continue;
-          try{ parent.frames[i].postMessage({gw_beacon: beaconKey}, '*'); }catch(e){}
-        }
-      }catch(e){}
-    };
-    window.addEventListener('message', function(ev){
-      if (ev.origin !== location.origin) return;
-      if (ev.data && ev.data.gw_who) announce();
-    });
-    /* повторяем: виджет мог загрузиться позже маяка и наоборот */
-    [0, 250, 800, 2000, 5000, 12000].forEach(function(ms){ setTimeout(announce, ms); });
-    return; /* интерфейс маяку не нужен */
-  }
-
-  /* временный ключ новой задачи: создаётся при первом сохранении файла и
-     превращается в постоянный, как только определилась задача */
-  var provKey = null;
-
-  function activeKey(){ return TASK || provKey; }
-  function filesKeyName(key){ return 'gw_files__'+key; }
-  function rawFiles(key){
-    try{ return JSON.parse(store.getItem(filesKeyName(key))||'[]'); }catch(e){ return []; }
-  }
-  function loadFiles(){
-    var k = activeKey();
-    return k ? rawFiles(k) : [];
-  }
-  function saveFiles(arr){
-    var k = activeKey();
-    if (!k) return false;
-    try{ store.setItem(filesKeyName(k), JSON.stringify(arr)); return true; }
-    catch(e){ toast('Хранилище переполнено — удалите крупные файлы или используйте ссылки'); return false; }
-  }
-  function ensureKey(){
-    if (TASK) return TASK;
-    if (!provKey){
-      provKey = 'n_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
-      registerPending(provKey);
-      bindKick(); /* файл сохраняется — самое время привязать блок к задаче */
-    }
-    return provKey;
-  }
-
-  /* ---- реестр «ничейных» наборов файлов: спасает файлы, сохранённые до того,
-     как Notion применил метку к блоку (после применения блок перезагружается) ---- */
-  var PENDING_KEY = 'gw_pending';
-  function loadPending(){
-    try{ return JSON.parse(store.getItem(PENDING_KEY)||'[]'); }catch(e){ return []; }
-  }
-  function savePending(arr){
-    try{ store.setItem(PENDING_KEY, JSON.stringify(arr)); }catch(e){}
-  }
-  function registerPending(key){
-    var p = loadPending().filter(function(x){ return x.key!==key; });
-    p.push({key:key, ts:Date.now()});
-    savePending(p);
-  }
-  function unregisterPending(key){
-    savePending(loadPending().filter(function(x){ return x.key!==key; }));
-  }
-  function mergeFilesInto(fromKey, toKey){
-    var src = rawFiles(fromKey);
-    if (!src.length){ store.removeItem(filesKeyName(fromKey)); return; }
-    var dst = rawFiles(toKey);
-    var seen = {};
-    dst.forEach(function(f){ seen[f.id]=1; });
-    src.forEach(function(f){ if(!seen[f.id]) dst.push(f); });
-    try{ store.setItem(filesKeyName(toKey), JSON.stringify(dst)); }catch(e){ return; }
-    store.removeItem(filesKeyName(fromKey));
-  }
-  function adoptPendingIfNeeded(){
-    if (!TASK) return;
-    var pend = loadPending();
-    if (!pend.length) return;
-    var rest = [];
-    pend.forEach(function(p){
-      if (p.key===TASK) return;                          /* метка применилась — запись отработала */
-      if (Date.now()-p.ts > 48*3600*1000){               /* старьё вычищаем вместе с данными */
-        store.removeItem(filesKeyName(p.key)); return;
-      }
-      rest.push(p);
-    });
-    if (!rawFiles(TASK).length){
-      /* задача ещё пуста, а в реестре лежат свежие «ничейные» файлы — это то,
-         что сохранили до срабатывания привязки (возможно, за несколько визитов).
-         Забираем всё: с быстрой привязкой такие наборы копятся только у одной
-         задачи, а видимый лишний файл проще удалить, чем искать пропавший */
-      var adopted = {};
-      rest.forEach(function(p){
-        if (rawFiles(p.key).length){ mergeFilesInto(p.key, TASK); adopted[p.key]=1; }
-      });
-      rest = rest.filter(function(p){ return !adopted[p.key]; });
-    }
-    savePending(rest);
-  }
-  /* переключаемся на постоянный ключ задачи, перенося уже сохранённые файлы */
-  function adoptKey(newKey){
-    if (!newKey || newKey===TASK) return;
-    var oldKey = activeKey();
-    if (oldKey && oldKey!==newKey) mergeFilesInto(oldKey, newKey);
-    if (provKey){ unregisterPending(provKey); provKey = null; }
-    TASK = newKey;
-    try{
-      var label = newKey.replace(/^p_/,'').replace(/^t_/,'');
-      history.replaceState(null,'','#task='+encodeURIComponent(label));
-    }catch(e){}
-    /* привязка могла случиться позже сохранения (и даже в другом визите) —
-       подбираем файлы, оставшиеся под временными ключами */
-    adoptPendingIfNeeded();
-    var tl = $('taskIdLabel'); if (tl) tl.textContent = TASK;
-    hideBindHint();
-    render();
-  }
-
-  /* ============ типы ============ */
-  var TYPE_META = {
-    docs:  {label:'Google Docs',   group:'docs'},
-    sheets:{label:'Google Sheets', group:'sheets'},
-    slides:{label:'Google Slides', group:'slides'},
-    word:  {label:'Word',          group:'docs'},
-    excel: {label:'Excel',         group:'sheets'},
-    ppt:   {label:'PowerPoint',    group:'slides'},
-    drive: {label:'Файл',          group:'drive'}
+  // ─── Regular icons ─────────────────────────────
+  const ICONS = {
+    chart:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>',
+    bars:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>',
+    calendar:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>',
+    money:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>',
+    wallet:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/></svg>',
+    package:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>',
+    truck:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>',
+    briefcase: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>',
+    home:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>',
+    user:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+    bolt:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
+    star:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
+    sheet:     '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11zM8 12h2v6H8zm3 0h2v6h-2zm3 0h2v6h-2z"/></svg>',
+    excel:     '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm4 18H6V4h7v5h5v11zM8.5 11l1.75 2.5L8.5 16h1.75l1-1.5 1 1.5H14l-1.75-2.5L14 11h-1.75l-1 1.5-1-1.5H8.5z"/></svg>',
+    notion:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/></svg>',
+    checklist: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>',
+    link:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>'
   };
-  function detectTypeByUrl(url){
-    var u = (url||'').toLowerCase();
-    if (u.indexOf('docs.google.com/document')>-1)      return 'docs';
-    if (u.indexOf('docs.google.com/spreadsheets')>-1)  return 'sheets';
-    if (u.indexOf('docs.google.com/presentation')>-1)  return 'slides';
-    if (/\.docx?([?#]|$)/.test(u) || u.indexOf('/:w:/')>-1) return 'word';
-    if (/\.(xlsx?|xlsm|csv)([?#]|$)/.test(u) || u.indexOf('/:x:/')>-1) return 'excel';
-    if (/\.pptx?([?#]|$)/.test(u) || u.indexOf('/:p:/')>-1) return 'ppt';
-    if (u.indexOf('drive.google.com')>-1)              return 'drive';
-    return 'drive';
-  }
-  function detectTypeByName(name){
-    var n = (name||'').toLowerCase();
-    if (/\.docx?$/.test(n)) return 'word';
-    if (/\.(xlsx?|xlsm|csv)$/.test(n)) return 'excel';
-    if (/\.pptx?$/.test(n)) return 'ppt';
-    return 'drive';
-  }
-  function detectTypeByMime(mime){
-    if (!mime) return null;
-    if (mime==='application/vnd.google-apps.document') return 'docs';
-    if (mime==='application/vnd.google-apps.spreadsheet') return 'sheets';
-    if (mime==='application/vnd.google-apps.presentation') return 'slides';
-    return null;
-  }
-  function fileIcon(t){
-    switch(t){
-      case 'docs':   return '<svg width="18" height="21" viewBox="0 0 20 24"><path d="M2 1h11l5 5v16a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" fill="#4285f4"/><path d="M5 11h10M5 14.5h10M5 18h7" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/></svg>';
-      case 'sheets': return '<svg width="18" height="21" viewBox="0 0 20 24"><path d="M2 1h11l5 5v16a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" fill="#34a853"/><path d="M5 11h10v8H5v-8zm0 2.7h10M5 16.3h10M10 11v8" stroke="#fff" stroke-width="1.3" fill="none"/></svg>';
-      case 'slides': return '<svg width="18" height="21" viewBox="0 0 20 24"><path d="M2 1h11l5 5v16a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" fill="#fbbc04"/><rect x="5" y="11" width="10" height="7" rx="1" stroke="#fff" stroke-width="1.4" fill="none"/></svg>';
-      case 'word':   return '<svg width="18" height="21" viewBox="0 0 20 24"><rect x="1" y="1" width="18" height="22" rx="2" fill="#4a90d9"/><text x="10" y="16.5" font-size="11" font-weight="700" fill="#fff" text-anchor="middle" font-family="Arial">W</text></svg>';
-      case 'excel':  return '<svg width="18" height="21" viewBox="0 0 20 24"><rect x="1" y="1" width="18" height="22" rx="2" fill="#3fae7a"/><text x="10" y="16.5" font-size="11" font-weight="700" fill="#fff" text-anchor="middle" font-family="Arial">X</text></svg>';
-      case 'ppt':    return '<svg width="18" height="21" viewBox="0 0 20 24"><rect x="1" y="1" width="18" height="22" rx="2" fill="#d9764a"/><text x="10" y="16.5" font-size="11" font-weight="700" fill="#fff" text-anchor="middle" font-family="Arial">P</text></svg>';
-      default:       return '<svg width="16" height="16" viewBox="0 0 24 24"><path d="M8.5 3.5h7L22 15l-3.5 6h-13L2 15 8.5 3.5z" fill="none" stroke="#c8c8c8" stroke-width="1.8"/></svg>';
-    }
+
+  const COLORS = {
+    green:    'linear-gradient(135deg, #34c759, #0f9d58)',
+    blue:     'linear-gradient(135deg, #0a84ff, #0055c4)',
+    orange:   'linear-gradient(135deg, #ff9500, #ff6a00)',
+    purple:   'linear-gradient(135deg, #af52de, #7c3aed)',
+    red:      'linear-gradient(135deg, #ff3b30, #c9182a)',
+    teal:     'linear-gradient(135deg, #5ac8fa, #007aff)',
+    pink:     'linear-gradient(135deg, #ff2d55, #ff375f)',
+    yellow:   'linear-gradient(135deg, #ffcc00, #ff9500)',
+    graphite: 'linear-gradient(135deg, #8e8e93, #48484a)'
+  };
+
+  const MARKETPLACES = {
+    ozon:      { name: 'OZON',          letter: 'O', bg: '#005BFF',                                  color: '#fff', domain: 'ozon.ru' },
+    wb:        { name: 'Wildberries',   letter: 'W', bg: 'linear-gradient(135deg,#a020f0,#cb11ab)',  color: '#fff', domain: 'wildberries.ru' },
+    yandex:    { name: 'Яндекс Маркет', letter: 'Я', bg: '#FCE000',                                  color: '#000', domain: 'market.yandex.ru' },
+    lemana:    { name: 'Лемана Про',    letter: 'L', bg: 'linear-gradient(135deg,#78BE20,#4a8c1a)',  color: '#fff', domain: 'lemanapro.ru' },
+    petrovich: { name: 'Петрович',      letter: 'П', bg: '#E30613',                                  color: '#fff', domain: 'petrovich.ru' }
+  };
+
+  function primaryLogoUrl(domain) { return `https://icons.duckduckgo.com/ip3/${domain}.ico`; }
+  function fallbackLogoUrl(domain) { return `https://logo.clearbit.com/${domain}`; }
+  function logoImgHtml(m) {
+    return `<img
+      src="${primaryLogoUrl(m.domain)}"
+      alt="${m.letter}"
+      loading="lazy"
+      onload="this.classList.add('loaded')"
+      onerror="this.onerror=null; this.src='${fallbackLogoUrl(m.domain)}';">`;
   }
 
-  /* ============ boot ============ */
-  /* ВАЖНО для скорости: интерфейс рисуется сразу и целиком из localStorage.
-     До события load — ни одного сетевого запроса: Notion держит спиннер,
-     пока iframe не сообщит load, а запросы к script.google.com тянут секунды. */
-  function pruneDead(){
-    /* записи прошлых сессий, у которых не осталось ни ссылки, ни данных */
-    var files = loadFiles();
-    if (!files.length) return;
-    var changed = false;
-    var keep = files.filter(function(f){ return f.url || f.data || f.dl || f.idb || sessionData[f.id]; });
-    if (keep.length !== files.length) changed = true;
-    keep.forEach(function(f){
-      /* загрузка прошлой сессии уже не идёт — файл остался локальным */
-      if (f.uploading && !sessionData[f.id]){ delete f.uploading; changed = true; }
-    });
-    if (changed) saveFiles(keep);
-  }
-  function boot(){
-    $('verLabel').textContent = VERSION;
-    $('taskIdLabel').textContent = TASK || 'новая — привяжется при первом файле';
-    $('gasUrl').value = store.getItem('gw_gas_url') || DEFAULT_GAS_URL;
-    adoptPendingIfNeeded();
-    pruneDead();
-    render();
-    if(!persistent) toast('⚠️ Хранилище недоступно — файлы не сохранятся после перезагрузки');
-    afterLoad(function(){
-      warmGas();                       /* будим Apps Script к первой операции */
-      /* даём маяку пару секунд ответить; если его нет — просим Apps Script */
-      if (!TASK) setTimeout(bindKick, 2500);
-      setTimeout(retryUploads, 2500);  /* дозагружаем в Drive то, что не успело */
-    });
-  }
-  function afterLoad(fn){
-    if (document.readyState === 'complete') setTimeout(fn, 300);
-    else window.addEventListener('load', function(){ setTimeout(fn, 300); });
-  }
-  /* будим Apps Script заранее: к моменту реальной операции он уже тёплый */
-  function warmGas(){
-    try{
-      fetch(gasUrl()+'?after=0&key='+encodeURIComponent(WIDGET_KEY)).catch(function(){});
-    }catch(e){}
-  }
-
-  /* ============ определение задачи через маяк ============ */
-  /* Главный путь для synced-виджета: на странице задачи рядом живёт блок-маяк
-     (см. режим ?beacon=1 выше) с меткой задачи. Спрашиваем соседние фреймы
-     страницы и принимаем ответ маяка — мгновенно и без сети. */
-  window.addEventListener('message', function(ev){
-    if (ev.origin !== location.origin) return;
-    var k = ev.data && ev.data.gw_beacon;
-    if (!k || typeof k !== 'string' || !/^[ptn]_[\w-]{1,120}$/.test(k)) return;
-    if (TASK) return; /* уже определились — первый ответ побеждает */
-    adoptKey(k);
-  });
-  function askBeacons(){
-    if (TASK) return;
-    try{
-      var n = parent.frames.length;
-      for (var i = 0; i < n; i++){
-        if (parent.frames[i] === window) continue;
-        try{ parent.frames[i].postMessage({gw_who: 1}, '*'); }catch(e){}
+  // ─── Defaults (new order: План-факт, Ежедневный отчёт, Финансовый результат) ─
+  const DEFAULT_STATE = {
+    columns: [
+      {
+        id: 'col-plan',
+        title: 'План-факт',
+        primaryUrl: 'https://docs.google.com/spreadsheets/d/18N5BTp5pucflEkjfxN42XW3TVD7ijRooooLENDSyCNw/edit?gid=1471308300#gid=1471308300',
+        icon: 'bars',
+        color: 'blue',
+        customLogo: null,
+        metrics: [
+          { label: 'Товарооборот',   value: '' },
+          { label: 'Рентабельность', value: '' },
+          { label: 'Прибыль',        value: '' }
+        ],
+        marketplaces: [
+          { id: 'mp-ozon', key: 'ozon',      name: 'OZON',          url: '', customLogo: null, turnover: '', margin: '', profit: '' },
+          { id: 'mp-wb',   key: 'wb',        name: 'Wildberries',   url: '', customLogo: null, turnover: '', margin: '', profit: '' },
+          { id: 'mp-yx',   key: 'yandex',    name: 'Яндекс Маркет', url: '', customLogo: null, turnover: '', margin: '', profit: '' },
+          { id: 'mp-lm',   key: 'lemana',    name: 'Лемана Про',    url: '', customLogo: null, turnover: '', margin: '', profit: '' },
+          { id: 'mp-pt',   key: 'petrovich', name: 'Петрович',      url: '', customLogo: null, turnover: '', margin: '', profit: '' }
+        ],
+        items: [
+          { id: 'i-sg',  name: 'Сургут план-факт', url: 'https://docs.google.com/spreadsheets/d/1GM5yj02rdMn8Awb8c2cHI3E88FqExABRQnBP5gcJDzA/edit?gid=1140550675#gid=1140550675', icon: 'sheet', color: 'teal',   shape: 'square', customLogo: null },
+          { id: 'i-pl',  name: 'Личный план-факт', url: 'https://docs.google.com/spreadsheets/d/1JgNrNaiV_BImoZe3hkLdrz3NKvNjbrgxewray9YAdkc/edit?usp=drive_web&ouid=110674916578572419155', icon: 'sheet', color: 'purple', shape: 'square', customLogo: null }
+        ]
+      },
+      {
+        id: 'col-daily',
+        title: 'Ежедневный отчёт',
+        primaryUrl: 'https://docs.google.com/spreadsheets/d/1i_33Y3iFeQZhYq_AgWKPqkzF_rRJBoPgaLgI84QVBII/edit?gid=2137022750#gid=2137022750',
+        icon: 'calendar',
+        color: 'orange',
+        customLogo: null,
+        metrics: [
+          { label: 'Заказы',         value: '' },
+          { label: 'Рентабельность', value: '' },
+          { label: 'Прибыль',        value: '' }
+        ],
+        marketplaces: [],
+        items: [
+          { id: 'i-yn',  name: 'Юнитка',   url: 'https://docs.google.com/spreadsheets/d/1qBufATbMpZOdqeiWn8699t2AIIRTNbpNRtyD4_Qgn2E/edit?gid=0#gid=0', icon: 'sheet', color: 'orange', shape: 'square', customLogo: null },
+          { id: 'i-sz',  name: 'Зарплаты', url: '', icon: 'excel', color: 'green', shape: 'square', customLogo: null }
+        ]
+      },
+      {
+        id: 'col-fin',
+        title: 'Финансовый результат',
+        primaryUrl: 'https://docs.google.com/spreadsheets/d/1roXoFuYj0i0beuAgXDtY2_KSoPdNsHEH9n5rCHwGysY/edit?gid=2135708165#gid=2135708165',
+        icon: 'chart',
+        color: 'green',
+        customLogo: null,
+        hideMarketplaces: true,
+        metrics: [],
+        marketplaces: [],
+        items: [
+          { id: 'i-cl', name: 'Чек-лист проверки', url: '', icon: 'checklist', color: 'green', shape: 'square', customLogo: null }
+        ]
       }
-    }catch(e){}
-  }
-  [80, 400, 1200, 3000, 8000, 20000].forEach(function(ms){ setTimeout(askBeacons, ms); });
+    ]
+  };
 
-  /* ============ фоновая привязка через Apps Script ============ */
-  /* Резерв на случай, когда маяка на странице ещё нет (первое открытие новой
-     задачи): Apps Script находит страницу через Notion API, создаёт на ней
-     маяк (или дописывает метку обычному embed-блоку) и возвращает id страницы,
-     поэтому виджет переключается на постоянный ключ сразу. Интерфейс всё это
-     время полностью работает. */
-  var bindBusy = false, bindFails = 0, bindTimer = null;
-  function bindKick(){
-    if (TASK) return;
-    bindNow();
-    clearTimeout(bindTimer);
-    bindTimer = setTimeout(function(){ if(!TASK) bindNow(); }, 18000);
-  }
-  function bindNow(){
-    if (TASK || bindBusy) return;
-    bindBusy = true;
-    gasRequest('action=tag&self='+encodeURIComponent(SELF_URL), function(err, res){
-      bindBusy = false;
-      if (TASK) return;
-      if (err || !res || Array.isArray(res) || res.error || !res.ok){
-        bindFails++;
-        maybeShowBindHint(err ? 'нет связи с Apps Script'
-          : (res && res.error) ? String(res.error)
-          : Array.isArray(res) ? 'Apps Script отвечает старой версией кода — переразверните его'
-          : 'блок пока не найден');
-        return;
-      }
-      var ids = res.pages || [];
-      if (ids.length === 1){
-        /* нашли ровно один свежепомеченный блок — это мы */
-        adoptKey('p_'+String(ids[0]).replace(/-/g,'').toLowerCase());
-        return;
-      }
-      /* старый Apps Script без списка pages или несколько блоков сразу:
-         Notion перезагрузит блок с меткой, файлы подберёт adoptPending */
-      if (!res.tagged){
-        bindFails++;
-        maybeShowBindHint('задача пока не найдена — проверьте NOTION_TOKEN и доступ интеграции');
-      }
-    });
-  }
-  function maybeShowBindHint(reason){
-    /* показываем строку статуса только когда есть что терять */
-    if (TASK || !provKey || !loadFiles().length) return;
-    if (bindFails < 2) return;
-    $('bindHintText').textContent = '⚠️ Файлы пока не привязаны к задаче ('+reason+'). Они сохранены локально, но могут не найтись после перезагрузки.';
-    $('bindHint').classList.add('show');
-    broadcastHeight();
-  }
-  function hideBindHint(){
-    $('bindHint').classList.remove('show');
-    broadcastHeight();
-  }
-  $('bindHintBtn').addEventListener('click', function(){
-    hidePanels();
-    $('settingsPanel').classList.add('show');
-    $('bindInput').focus();
-    broadcastHeight();
-  });
+  // ─── State ──────────────────────────────────────
+  let state = { columns: [] };
+  let itemCtx = null, itemDraft = null;
+  let colCtx = null,  colDraft = null;
+  let mpCtx = null,   mpDraft = null;
 
-  /* ---- ручная привязка (в Настройках; нужна только если авто не сработала) ---- */
-  $('bindBtn').addEventListener('click', doBind);
-  $('bindInput').addEventListener('keydown', function(e){ if(e.key==='Enter') doBind(); });
-  function doBind(){
-    var v = $('bindInput').value.trim();
-    if(!v){ toast('Введите название задачи'); return; }
-    adoptKey(taskKeyFromLabel(v));
-    var url = SELF_URL + '#task=' + encodeURIComponent(v);
-    $('bindUrl').value = url;
-    $('bindResult').style.display = '';
-    $('bindNote').style.display = '';
-    copyText(url);
-    toast('Привязано. Ссылка скопирована — замените ею URL блока');
-  }
-  $('bindCopyBtn').addEventListener('click', function(){ copyText($('bindUrl').value); toast('Скопировано'); });
-  function copyText(text){
-    if (navigator.clipboard && navigator.clipboard.writeText){
-      navigator.clipboard.writeText(text).catch(function(){ legacyCopy(text); });
-    } else legacyCopy(text);
-  }
-  function legacyCopy(text){
-    var inp = $('bindUrl');
-    inp.value = text;
-    inp.focus(); inp.select();
-    try{ document.execCommand('copy'); }catch(e){}
-  }
+  // Drag state
+  let dragKind = null;   // 'column' | 'item' | 'mp'
+  let dragSrc  = null;   // { colId, itemId?, mpId? }
 
-  /* ============ лаунчеры ============ */
-  document.querySelectorAll('.go[data-type]').forEach(function(a){
-    a.addEventListener('click', function(){
-      startWatch(a.dataset.type);
-    });
-  });
-  document.querySelectorAll('.chev').forEach(function(ch){
-    ch.addEventListener('click', function(){
-      var col = document.querySelector('.col[data-col="'+ch.dataset.chev+'"]');
-      if (col) col.classList.toggle('collapsed');
-    });
-  });
-
-  /* ============ авто-добавление созданного файла ============ */
-  /* Путь 1 (без настройки): после создания скопируйте ссылку и нажмите Ctrl/Cmd+V
-     в любом месте виджета — файл добавится сам.
-     Путь 2 (полный автомат): веб-приложение Apps Script возвращает последние
-     созданные файлы Google; виджет опрашивает его ~2 минуты после клика. */
-  var watchTimer = null, watchUntil = 0, watchStartTs = 0;
-  /* URL вшит по умолчанию, в Настройках можно заменить */
-  var DEFAULT_GAS_URL = 'https://script.google.com/macros/s/AKfycbyvpZSDEocqIMvok-Uu_HDwrRJ1PQaQflyRM8HSs_KCGtsrxk44B15PUwV1wloJKPt4/exec';
-  var WIDGET_KEY = 'Mbg8jvthj931bwqgdYZXwyCWpfBTEXOo'; /* должен совпадать с SECRET в Apps Script */
-  function gasUrl(){
-    var v = (store.getItem('gw_gas_url')||'').trim();
-    /* миграция со старого развёртывания */
-    if (v.indexOf('AKfycbxjizl_jhWzSDzrkENr09') > -1 || v.indexOf('AKfycbw9I_BCPMjS5kS5VL5g') > -1){
-      store.removeItem('gw_gas_url');
-      v = '';
-    }
-    return v || DEFAULT_GAS_URL;
-  }
-  /* Транспорт: сначала fetch (не задерживает событие load и быстрее),
-     при неудаче — JSONP (переживает блокировку CORS в песочнице). */
-  var jsonpSeq = 0;
-  function gasRequest(params, cb){
-    var url = gasUrl();
-    if (!url){ cb(new Error('URL не задан')); return; }
-    params += '&key=' + encodeURIComponent(WIDGET_KEY);
-    var full = url + (url.indexOf('?')>-1?'&':'?') + params;
-    var settled = false;
-    function settle(err, data){ if (settled) return; settled = true; cb(err, data); }
-    var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-    /* холодный старт Apps Script иногда занимает 15-20 секунд — ждём дольше,
-       чем раньше, чтобы не принимать медленный ответ за отсутствие связи */
-    var ft = setTimeout(function(){ if (ctrl) ctrl.abort(); }, 20000);
-    fetch(full, ctrl ? {signal:ctrl.signal} : {})
-      .then(function(r){ return r.json(); })
-      .then(function(d){ clearTimeout(ft); settle(null, d); })
-      .catch(function(){ clearTimeout(ft); tryJsonp(); });
-    function tryJsonp(){
-      if (settled) return;
-      var cbName = '__gwcb' + (++jsonpSeq) + Math.random().toString(36).slice(2,6);
-      var sc = document.createElement('script');
-      var jt = setTimeout(function(){ cleanup(); settle(new Error('нет ответа от Apps Script')); }, 20000);
-      function cleanup(){
-        clearTimeout(jt);
-        try{ delete window[cbName]; }catch(e){ window[cbName]=undefined; }
-        if (sc.parentNode) sc.parentNode.removeChild(sc);
-      }
-      window[cbName] = function(data){ cleanup(); settle(null, data); };
-      sc.onerror = function(){ cleanup(); settle(new Error('ошибка сети')); };
-      sc.src = full + '&callback=' + cbName;
-      document.head.appendChild(sc);
-    }
-  }
-  function checkNet(cb){
-    var el = $('netStatus');
-    var t0 = Date.now();
-    gasRequest('after=0', function(err, d){
-      if (el) el.textContent = err
-        ? '❌ нет связи: '+(err.message||'ошибка')
-        : (Array.isArray(d) ? '✅ работает ('+(Date.now()-t0)+' мс)' : '⚠️ неожиданный ответ — проверьте деплой');
-      cb && cb();
-    });
-  }
-  function startWatch(type){
-    watchStartTs = Date.now();
-    watchUntil = watchStartTs + 120*1000;
-    if (watchTimer) clearInterval(watchTimer);
-    watchTimer = setInterval(pollGas, 3000);
-    setTimeout(pollGas, 1500);
-    toast('Жду создания файла — добавлю автоматически…');
-  }
-  function pollGas(){
-    if (Date.now() > watchUntil){ clearInterval(watchTimer); watchTimer=null; return; }
-    gasRequest('after='+watchStartTs, function(err, list){
-      if (err || !Array.isArray(list)) return;
-      var files = loadFiles();
-      var byUrl = {};
-      files.forEach(function(f){ if(f.url) byUrl[f.url]=f; });
-      var changed = false;
-      list.forEach(function(item){
-        if (!item.url) return;
-        var existing = byUrl[item.url];
-        if (existing){
-          /* файл уже добавлен — но пользователь мог переименовать его в Google */
-          if (item.name && item.name !== existing.name){
-            existing.name = item.name;
-            changed = true;
-          }
-          return;
+  function load() {
+    try {
+      let stored = localStorage.getItem(STORAGE_KEY);
+      if (!stored) {
+        for (const legacy of ['finance_board_v5', 'finance_board_v4']) {
+          const s = localStorage.getItem(legacy);
+          if (s) { stored = s; break; }
         }
-        var t = detectTypeByMime(item.mimeType) || detectTypeByUrl(item.url);
-        addFile({ kind:'link', name:item.name||'Без названия', url:item.url, type:t }, true);
-        toast('«'+(item.name||'файл')+'» добавлен автоматически');
+      }
+      state = stored ? JSON.parse(stored) : structuredClone(DEFAULT_STATE);
+      // migrations
+      state.columns.forEach(c => {
+        if (!c.marketplaces) c.marketplaces = [];
+        if (c.primaryUrl == null) c.primaryUrl = '';
+        if (c.customLogo === undefined) c.customLogo = null;
+        if (c.hideMarketplaces === undefined) c.hideMarketplaces = (c.id === 'col-fin' || c.title === 'Финансовый результат');
+        c.marketplaces.forEach(mp => {
+          if (mp.url == null) mp.url = '';
+          if (mp.customLogo === undefined) mp.customLogo = null;
+        });
+        (c.metrics || []).forEach(m => {
+          if (m.label === 'Заказов сегодня') m.label = 'Заказы';
+        });
+        c.items.forEach(i => {
+          if (!i.icon) i.icon = i.type || 'sheet';
+          if (!i.color) i.color = c.color || 'blue';
+          if (!i.shape) i.shape = MARKETPLACES[i.icon] ? 'circle' : 'square';
+          if (i.customLogo === undefined) i.customLogo = null;
+        });
       });
-      if (changed){ saveFiles(files); render(); }
-    });
+    } catch { state = structuredClone(DEFAULT_STATE); }
+    render();
   }
-  /* вернулись в Notion из вкладки Google — проверяем сразу же */
-  ['focus','visibilitychange'].forEach(function(ev){
-    (ev==='focus'?window:document).addEventListener(ev, function(){
-      if (watchTimer && !document.hidden) pollGas();
-    });
-  });
 
-  /* Ctrl+V где угодно на виджете */
-  document.addEventListener('paste', function(e){
-    if (e.target && (e.target.tagName==='INPUT' || e.target.tagName==='TEXTAREA')) return;
-    var text = (e.clipboardData||window.clipboardData).getData('text').trim();
-    if (!/^https?:\/\/\S+$/i.test(text)) return;
+  function save() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    render();
+  }
+
+  function uid() { return 'x-' + Math.random().toString(36).slice(2, 9); }
+
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function escapeAttr(s) { return escapeHtml(s); }
+
+  function getDomain(url) {
+    if (!url) return '';
+    try { return new URL(url).hostname.replace('www.', ''); }
+    catch { return url; }
+  }
+
+  function formatMetric(val) {
+    if (!val && val !== 0) return '';
+    const raw = String(val).trim();
+    const suffix = raw.match(/[₽$€%a-zа-я]+\s*$/i)?.[0] || '';
+    const numPart = raw.replace(/[₽$€%a-zа-я]+\s*$/i, '').trim().replace(/\s/g, '').replace(',', '.');
+    const num = parseFloat(numPart);
+    if (isNaN(num)) return raw;
+    const formatted = num.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+    return suffix ? `${formatted} ${suffix.trim()}` : formatted;
+  }
+
+  function iconBg(key, colorKey) {
+    if (MARKETPLACES[key]) return MARKETPLACES[key].bg;
+    return COLORS[colorKey] || COLORS.blue;
+  }
+
+  function iconContentHtml(key, colorKey, customLogo) {
+    if (customLogo) {
+      return `<img class="custom-logo" src="${customLogo}" alt="">`;
+    }
+    const m = MARKETPLACES[key];
+    if (m) {
+      return `<span class="lettermark" style="color:${m.color}">${m.letter}</span>${logoImgHtml(m)}`;
+    }
+    return ICONS[key] || ICONS.link;
+  }
+
+  function iconShape(key, storedShape, customLogo) {
+    if (customLogo) return storedShape || 'circle';
+    if (MARKETPLACES[key]) return 'circle';
+    return storedShape || 'square';
+  }
+
+  const DRAG_ICON = '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="15" cy="18" r="1.5"/></svg>';
+
+  const GEAR_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="3"/>
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+  </svg>`;
+
+  const EDIT_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
+  const TRASH_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>`;
+
+  // ─── Render ─────────────────────────────────────
+  function render() {
+    const board = document.getElementById('board');
+    board.innerHTML = state.columns.map(col => renderColumn(col)).join('');
+  }
+
+  function renderColumn(col) {
+    const gradient = COLORS[col.color] || COLORS.blue;
+    const iconContent = col.customLogo
+      ? `<img class="custom-logo" src="${col.customLogo}" alt="">`
+      : (ICONS[col.icon] || ICONS.star);
+    const iconBgStyle = col.customLogo ? 'background: #fff' : `background: ${gradient}`;
+    const hasUrl   = !!col.primaryUrl;
+
+    const metricsHtml = col.metrics && col.metrics.length ? `
+      <div class="metrics-row">
+        ${col.metrics.map((m, i) => `
+          <div class="metric-cell">
+            <span class="label">${escapeHtml(m.label)}</span>
+            <span class="value ${!m.value ? 'empty' : ''}"
+                  contenteditable="true"
+                  data-col="${col.id}"
+                  data-idx="${i}"
+                  onblur="updateMetric(event)"
+                  onkeydown="if(event.key==='Enter'){event.preventDefault();event.target.blur()}"
+              >${m.value ? escapeHtml(formatMetric(m.value)) : ''}</span>
+          </div>
+        `).join('')}
+      </div>
+    ` : '';
+
+    const mpsHtml = col.hideMarketplaces ? '' : `
+      <div class="mp-list"
+           ondragover="onMpDragOver(event, '${col.id}', null)"
+           ondrop="onMpDrop(event, '${col.id}', null)">
+        ${(col.marketplaces || []).map(mp => renderMp(mp, col.id)).join('')}
+      </div>
+      <button class="add-btn-inline" onclick="openMpModal('${col.id}')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        Маркетплейс
+      </button>
+    `;
+
+    const itemsHtml = `
+      <div class="items"
+           ondragover="onItemDragOver(event, '${col.id}', null)"
+           ondrop="onItemDrop(event, '${col.id}', null)">
+        ${(col.items || []).map(item => renderItem(item, col.id)).join('')}
+        <button class="add-btn-inline" onclick="openItemModal('${col.id}')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          Ссылка
+        </button>
+      </div>
+    `;
+
+    const headClass = hasUrl ? 'clickable' : 'no-url';
+    const domainStr = hasUrl ? getDomain(col.primaryUrl) : 'основная ссылка не задана';
+
+    return `
+      <div class="column"
+           data-col-id="${col.id}"
+           ondragover="onColDragOver(event, '${col.id}')"
+           ondrop="onColDrop(event, '${col.id}')"
+           ondragleave="onColDragLeave(event)">
+        <div class="column-head ${headClass}" onclick="handleColumnClick(event, '${col.id}')">
+          <div class="drag-handle"
+               draggable="true"
+               title="Перетащить"
+               onclick="event.stopPropagation()"
+               ondragstart="onColDragStart(event, '${col.id}')"
+               ondragend="onDragEnd(event)">${DRAG_ICON}</div>
+          <div class="column-icon" style="${iconBgStyle}">${iconContent}</div>
+          <div class="column-title-wrap">
+            <div class="column-title">${escapeHtml(col.title)}</div>
+            <div class="column-domain">${escapeHtml(domainStr)}</div>
+          </div>
+          <div class="column-menu">
+            <button class="icon-btn" onclick="event.stopPropagation(); openColumnModal('${col.id}')" title="Настройки">${GEAR_ICON}</button>
+          </div>
+        </div>
+        ${metricsHtml}
+        ${mpsHtml}
+        ${itemsHtml}
+      </div>
+    `;
+  }
+
+  function renderMp(mp, colId) {
+    const m = MARKETPLACES[mp.key] || { bg: '#8e8e93', color: '#fff', letter: '?', domain: '', name: '?' };
+    const useCustom = !!mp.customLogo;
+    const badge = `
+      <div class="mp-badge" style="background: ${useCustom ? '#fff' : m.bg}" title="${escapeAttr(mp.name || m.name)}">
+        ${useCustom
+          ? `<img class="custom-logo" src="${mp.customLogo}" alt="">`
+          : `<span class="letter" style="color:${m.color}">${m.letter}</span>${m.domain ? logoImgHtml(m) : ''}`
+        }
+      </div>
+    `;
+    const clickable = !!mp.url;
+
+    return `
+      <div class="mp-row"
+           data-mp-id="${mp.id}"
+           ${clickable ? `onclick="handleMpClick(event, '${mp.url}')"` : ''}
+           style="${clickable ? 'cursor:pointer' : ''}"
+           ondragover="onMpDragOver(event, '${colId}', '${mp.id}')"
+           ondrop="onMpDrop(event, '${colId}', '${mp.id}')"
+           ondragleave="onDragLeave(event)">
+        <div class="drag-handle"
+             draggable="true"
+             title="Перетащить"
+             onclick="event.stopPropagation()"
+             ondragstart="onMpDragStart(event, '${colId}', '${mp.id}')"
+             ondragend="onDragEnd(event)">${DRAG_ICON}</div>
+        ${badge}
+        <div class="mp-stats" onclick="event.stopPropagation()">
+          ${['turnover','margin','profit'].map(field => `
+            <span class="mp-stat">
+              <span class="lbl">${field==='turnover'?'ТО':field==='margin'?'Рент':'Прибыль'}</span>
+              <span class="val ${!mp[field] ? 'empty' : ''}"
+                    contenteditable="true"
+                    data-col="${colId}" data-mp="${mp.id}" data-field="${field}"
+                    onblur="updateMpValue(event)"
+                    onkeydown="if(event.key==='Enter'){event.preventDefault();event.target.blur()}"
+                >${mp[field] ? escapeHtml(formatMetric(mp[field])) : ''}</span>
+            </span>
+          `).join('')}
+        </div>
+        <div class="mp-actions" onclick="event.stopPropagation()">
+          <button class="icon-btn" onclick="editMp('${colId}', '${mp.id}')" title="Изменить">${EDIT_ICON}</button>
+          <button class="icon-btn delete" onclick="deleteMp('${colId}', '${mp.id}')" title="Удалить">${TRASH_ICON}</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderItem(item, colId) {
+    const bg = item.customLogo ? '#fff' : iconBg(item.icon, item.color);
+    const shape = iconShape(item.icon, item.shape, item.customLogo);
+    const content = iconContentHtml(item.icon, item.color, item.customLogo);
+    const domain = item.url ? getDomain(item.url) : '';
+    const empty = !item.url;
+    const isChecklist = item.icon === 'checklist';
+    return `
+      <div class="item ${isChecklist ? 'checklist' : ''}"
+           data-item-id="${item.id}"
+           onclick="openItem('${item.url}', event)"
+           style="${empty ? 'opacity: 0.65;' : ''}"
+           ondragover="onItemDragOver(event, '${colId}', '${item.id}')"
+           ondrop="onItemDrop(event, '${colId}', '${item.id}')"
+           ondragleave="onDragLeave(event)">
+        <div class="drag-handle"
+             draggable="true"
+             title="Перетащить"
+             onclick="event.stopPropagation()"
+             ondragstart="onItemDragStart(event, '${colId}', '${item.id}')"
+             ondragend="onDragEnd(event)">${DRAG_ICON}</div>
+        <div class="item-icon ${shape === 'circle' ? 'circle' : ''}" style="background: ${bg}">${content}</div>
+        <div class="item-info">
+          <div class="item-name">${escapeHtml(item.name)}</div>
+          <div class="item-domain">${empty ? '<em>ссылка не задана</em>' : escapeHtml(domain)}</div>
+        </div>
+        <div class="item-actions" onclick="event.stopPropagation()">
+          <button class="icon-btn" onclick="editItem('${colId}', '${item.id}')" title="Изменить">${EDIT_ICON}</button>
+          <button class="icon-btn delete" onclick="deleteItem('${colId}', '${item.id}')" title="Удалить">${TRASH_ICON}</button>
+        </div>
+      </div>
+    `;
+  }
+
+  // ─── Click handlers ─────────────────────────────
+  function handleColumnClick(e, colId) {
+    if (e.target.closest('.column-menu, .drag-handle')) return;
+    const col = state.columns.find(c => c.id === colId);
+    if (col.primaryUrl) window.open(col.primaryUrl, '_blank');
+  }
+
+  function handleMpClick(e, url) {
+    if (e.target.closest('.mp-stats, .mp-actions, .drag-handle')) return;
+    if (url) window.open(url, '_blank');
+  }
+
+  function openItem(url, e) {
+    if (!url) return;
+    if (e.target.closest('.item-actions, .drag-handle')) return;
+    window.open(url, '_blank');
+  }
+
+  // ─── Drag & Drop ────────────────────────────────
+  function onColDragStart(e, colId) {
+    dragKind = 'column';
+    dragSrc = { colId };
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', colId);
+    const col = e.target.closest('.column');
+    setTimeout(() => col && col.classList.add('dragging'), 0);
+    e.stopPropagation();
+  }
+
+  function onColDragOver(e, colId) {
+    if (dragKind !== 'column') return;
     e.preventDefault();
-    var t = detectTypeByUrl(text);
-    openForm(t);
-    $('fUrl').value = text;
-    $('fName').focus();
-    $('formHint').textContent = 'Ссылка вставлена — осталось дать название (или сохранить как есть).';
-  });
-
-  /* ============ "+" и action sheet ============ */
-  var sheetOpen = false;
-  function positionSheet(){
-    var sh = $('sheet');
-    var pb = $('plusBtn').getBoundingClientRect();
-    /* измеряем скрыто */
-    sh.style.visibility = 'hidden';
-    sh.classList.add('show');
-    var r = sh.getBoundingClientRect();
-    sh.classList.remove('show');
-    sh.style.visibility = '';
-    var vw = window.innerWidth, vh = window.innerHeight;
-    var left = Math.min(Math.max(8, pb.left + pb.width/2 - r.width/2), vw - r.width - 8);
-    var top = pb.top - r.height - 8;                 /* пробуем вверх */
-    if (top < 8) top = pb.bottom + 8;                /* не влезло — вниз */
-    if (top + r.height > vh - 8) top = Math.max(8, vh - r.height - 8); /* и в край не упираемся */
-    sh.style.left = left + 'px';
-    sh.style.top = top + 'px';
-  }
-  function toggleSheet(force){
-    sheetOpen = (typeof force==='boolean') ? force : !sheetOpen;
-    if (sheetOpen) positionSheet();
-    $('sheet').classList.toggle('show', sheetOpen);
-    $('plusBtn').classList.toggle('open', sheetOpen);
-  }
-  $('plusBtn').addEventListener('click', function(e){ e.stopPropagation(); toggleSheet(); });
-  document.addEventListener('click', function(e){
-    if (sheetOpen && !e.target.closest('.sheet')) toggleSheet(false);
-  });
-  $('shLink').addEventListener('click', function(){ toggleSheet(false); hidePanels(); openForm(); });
-  $('shFile').addEventListener('click', function(){ toggleSheet(false); $('fileInput').click(); });
-  $('shSettings').addEventListener('click', function(){
-    toggleSheet(false); hidePanels();
-    $('settingsPanel').classList.add('show');
-    $('netStatus').textContent = 'проверяю…';
-    checkNet();
-    broadcastHeight();
-  });
-
-  function hidePanels(){
-    $('addForm').classList.remove('show');
-    $('settingsPanel').classList.remove('show');
-    broadcastHeight();
+    e.dataTransfer.dropEffect = 'move';
+    document.querySelectorAll('.column.drag-over').forEach(el => el.classList.remove('drag-over'));
+    const col = document.querySelector(`.column[data-col-id="${colId}"]`);
+    if (col && dragSrc && dragSrc.colId !== colId) col.classList.add('drag-over');
   }
 
-  /* ============ настройки ============ */
-  $('settingsCloseBtn').addEventListener('click', function(){ $('settingsPanel').classList.remove('show'); broadcastHeight(); });
-  $('gasSaveBtn').addEventListener('click', function(){
-    var v = $('gasUrl').value.trim();
-    if (v && !/^https:\/\/script\.google\.com\//.test(v)){
-      toast('Это не похоже на URL Apps Script'); return;
+  function onColDragLeave(e) {
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+      e.currentTarget.classList.remove('drag-over');
     }
-    if (v) store.setItem('gw_gas_url', v); else store.removeItem('gw_gas_url');
-    toast(v ? 'URL Apps Script сохранён' : 'URL Apps Script сброшен');
-  });
-  $('gasTestBtn').addEventListener('click', function(){
-    toast('Проверяю связь с Apps Script…');
-    var t0 = Date.now();
-    gasRequest('after=0', function(err, list){
-      if (err){ toast('Нет связи: '+(err.message||'ошибка сети/CORS')); return; }
-      if (!Array.isArray(list)){ toast('Ответ не JSON — проверьте деплой (доступ: Anyone)'); return; }
-      toast('Связь OK ('+(Date.now()-t0)+' мс). Файлов за 15 мин: '+list.length);
-    });
-  });
-  $('rebindBtn').addEventListener('click', function(){
-    try{ history.replaceState(null,'', location.pathname); }catch(e){}
-    TASK = null; provKey = null; bindFails = 0;
-    $('taskIdLabel').textContent = 'новая — привяжется при первом файле';
-    $('bindResult').style.display='none';
-    $('bindNote').style.display='none';
-    $('bindInput').value='';
-    render();
-    toast('Отвязано. Файлы появятся при новой привязке');
-  });
-  var clearArmed = false, clearTimer;
-  $('clearBtn').addEventListener('click', function(){
-    if (!clearArmed){
-      clearArmed = true;
-      $('clearBtn').textContent = 'Точно удалить всё?';
-      clearTimeout(clearTimer);
-      clearTimer = setTimeout(function(){
-        clearArmed = false;
-        $('clearBtn').textContent = 'Очистить файлы задачи';
-      }, 3500);
+  }
+
+  function onColDrop(e, colId) {
+    if (dragKind !== 'column') return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (!dragSrc || dragSrc.colId === colId) return;
+    const srcIdx = state.columns.findIndex(c => c.id === dragSrc.colId);
+    const dstIdx = state.columns.findIndex(c => c.id === colId);
+    if (srcIdx < 0 || dstIdx < 0) return;
+    const [moved] = state.columns.splice(srcIdx, 1);
+    state.columns.splice(dstIdx, 0, moved);
+    save();
+  }
+
+  function onItemDragStart(e, colId, itemId) {
+    dragKind = 'item';
+    dragSrc = { colId, itemId };
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', itemId);
+    const item = e.target.closest('.item');
+    setTimeout(() => item && item.classList.add('dragging'), 0);
+    e.stopPropagation();
+  }
+
+  function onItemDragOver(e, colId, itemId) {
+    if (dragKind !== 'item') return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    document.querySelectorAll('.item.drag-over').forEach(el => el.classList.remove('drag-over'));
+    document.querySelectorAll('.items.drag-over-empty').forEach(el => el.classList.remove('drag-over-empty'));
+    if (itemId && dragSrc.itemId !== itemId) {
+      const el = document.querySelector(`.item[data-item-id="${itemId}"]`);
+      if (el) el.classList.add('drag-over');
+    } else if (!itemId) {
+      const cont = e.currentTarget.closest('.items');
+      if (cont) cont.classList.add('drag-over-empty');
+    }
+  }
+
+  function onItemDrop(e, colId, itemId) {
+    if (dragKind !== 'item') return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (!dragSrc) return;
+    const srcCol = state.columns.find(c => c.id === dragSrc.colId);
+    const dstCol = state.columns.find(c => c.id === colId);
+    if (!srcCol || !dstCol) return;
+    const srcIdx = srcCol.items.findIndex(i => i.id === dragSrc.itemId);
+    if (srcIdx < 0) return;
+    if (srcCol === dstCol && itemId === dragSrc.itemId) return;
+    const [moved] = srcCol.items.splice(srcIdx, 1);
+    let dstIdx;
+    if (itemId) {
+      dstIdx = dstCol.items.findIndex(i => i.id === itemId);
+      if (dstIdx < 0) dstIdx = dstCol.items.length;
     } else {
-      clearArmed = false;
-      clearTimeout(clearTimer);
-      $('clearBtn').textContent = 'Очистить файлы задачи';
-      loadFiles().forEach(function(x){ idbDel(x.id); });
-      saveFiles([]);
-      render();
-      toast('Список очищен');
+      dstIdx = dstCol.items.length;
     }
-  });
-
-  /* ============ форма ссылки ============ */
-  var selectedType = null;
-  function openForm(prefType){
-    hidePanels();
-    $('addForm').classList.add('show');
-    selectType(prefType || null);
-    $('fUrl').focus();
-    broadcastHeight();
-  }
-  function closeForm(){
-    $('addForm').classList.remove('show');
-    $('formHint').textContent = 'Вставьте ссылку — Google, Word, Excel, OneDrive. Тип определится автоматически.';
-    $('fUrl').value=''; $('fName').value='';
-    selectType(null);
-    broadcastHeight();
-  }
-  function selectType(t){
-    selectedType = t;
-    document.querySelectorAll('.chip').forEach(function(c){
-      c.classList.toggle('on', c.dataset.t===t);
-    });
-  }
-  document.querySelectorAll('.chip').forEach(function(c){
-    c.addEventListener('click', function(){ selectType(c.dataset.t); });
-  });
-  $('fUrl').addEventListener('input', function(){
-    var v = $('fUrl').value.trim();
-    if (v) selectType(detectTypeByUrl(v));
-  });
-  $('cancelBtn').addEventListener('click', closeForm);
-  $('saveBtn').addEventListener('click', saveLink);
-  [$('fUrl'),$('fName')].forEach(function(inp){
-    inp.addEventListener('keydown', function(e){ if(e.key==='Enter') saveLink(); });
-  });
-  function saveLink(){
-    var url = $('fUrl').value.trim();
-    var name = $('fName').value.trim();
-    if (!url){ toast('Нужна ссылка на файл'); return; }
-    if (!/^https?:\/\//i.test(url)) url = 'https://'+url;
-    var type = selectedType || detectTypeByUrl(url);
-    if (!name) name = TYPE_META[type].label + ' от ' + fmtDate(Date.now());
-    addFile({ kind:'link', name:name, url:url, type:type });
-    closeForm();
+    dstCol.items.splice(dstIdx, 0, moved);
+    save();
   }
 
-  /* ============ загрузка с ПК ============ */
-  $('fileInput').addEventListener('change', function(){
-    handleFiles(this.files);
-    this.value = '';
-  });
-  ['dragenter','dragover'].forEach(function(ev){
-    document.body.addEventListener(ev, function(e){
-      e.preventDefault(); document.body.classList.add('dragover');
-    });
-  });
-  ['dragleave','drop'].forEach(function(ev){
-    document.body.addEventListener(ev, function(e){
-      e.preventDefault(); document.body.classList.remove('dragover');
-      if (ev==='drop' && e.dataTransfer && e.dataTransfer.files.length){
-        handleFiles(e.dataTransfer.files);
-      }
-    });
-  });
-  var MAX_DRIVE_UPLOAD = 15*1024*1024; /* 15 МБ через Apps Script */
-  function handleFiles(fileList){
-    Array.prototype.forEach.call(fileList, function(f){
-      if (f.size > MAX_DRIVE_UPLOAD){
-        toast('«'+f.name+'» больше 15 МБ — загрузите в облако вручную и добавьте ссылкой');
-        return;
-      }
-      var reader = new FileReader();
-      reader.onload = function(){
-        var dataUrl = String(reader.result);
-        /* карточка появляется сразу; байты остаются у нас, поэтому
-           скачивание работает мгновенно, не дожидаясь Drive */
-        var rec = {
-          kind:'upload', name:f.name, mime:f.type||'application/octet-stream',
-          type:detectTypeByName(f.name), uploading:true,
-          idb:(!idbFailed && typeof indexedDB !== 'undefined')
-        };
-        if (f.size <= LOCAL_KEEP) rec.data = dataUrl; /* мелкие — дублируем и в localStorage */
-        addFile(rec, true);
-        sessionData[rec.id] = dataUrl;
-        idbPut(rec.id, f); /* постоянная локальная копия: скачивание всегда мгновенное */
-        toast('«'+f.name+'» добавлен — загружаю в Drive в фоне');
-        uploadToDrive(rec, f.name, dataUrl);
-      };
-      reader.onerror = function(){ toast('Не удалось прочитать «'+f.name+'»'); };
-      reader.readAsDataURL(f);
-    });
+  function onMpDragStart(e, colId, mpId) {
+    dragKind = 'mp';
+    dragSrc = { colId, mpId };
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', mpId);
+    const el = e.target.closest('.mp-row');
+    setTimeout(() => el && el.classList.add('dragging'), 0);
+    e.stopPropagation();
   }
-  /* Загрузка в Google Drive через Apps Script идёт в фоне; когда закончится,
-     карточка получает ссылку на Drive. Скачивание всё это время уже работает. */
-  function uploadToDrive(rec, name, dataUrl, done, silent){
-    var b64 = dataUrl.split(',')[1] || '';
-    fetch(gasUrl(), {
-      method:'POST',
-      headers:{'Content-Type':'text/plain;charset=utf-8'}, /* без preflight */
-      body: JSON.stringify({
-        action:'upload', key:WIDGET_KEY, task:String(activeKey()||''), name:name,
-        mime:rec.mime, data:b64
-      })
-    })
-    .then(function(r){ return r.json(); })
-    .then(function(res){
-      if (!(res && res.ok && res.url)) throw new Error(res && res.error || 'upload failed');
-      updateFile(rec.id, function(x){
-        x.kind = 'drive';
-        x.url = res.url;                      /* просмотр в Drive */
-        x.driveId = res.id || null;           /* для скачивания оригинала через GAS */
-        x.dl = res.id ? 'https://drive.google.com/uc?export=download&id='+res.id : null;
-        delete x.uploading;
-        delete x.data;                        /* байты теперь в Drive; локальная копия в IndexedDB остаётся */
-      });
-      if (!silent) toast('«'+name+'» загружен в Drive');
-      done && done(true);
-    })
-    .catch(function(){
-      updateFile(rec.id, function(x){ delete x.uploading; });
-      if (!silent){
-        toast('Drive недоступен — «'+name+'» сохранён локально, скачивание работает. Повторю загрузку позже');
-      }
-      done && done(false);
-    });
-  }
-  /* дозагрузка в Drive файлов, у которых прошлая попытка не удалась
-     (например, закрыли страницу раньше времени или Apps Script был недоступен) */
-  var retryBusy = false;
-  function retryUploads(){
-    if (retryBusy) return;
-    var files = loadFiles();
-    var f = null;
-    for (var i=0;i<files.length;i++){
-      if (files[i].kind==='upload' && !files[i].url && !files[i].uploading){ f = files[i]; break; }
+
+  function onMpDragOver(e, colId, mpId) {
+    if (dragKind !== 'mp') return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    document.querySelectorAll('.mp-row.drag-over').forEach(el => el.classList.remove('drag-over'));
+    document.querySelectorAll('.mp-list.drag-over-empty').forEach(el => el.classList.remove('drag-over-empty'));
+    if (mpId && dragSrc.mpId !== mpId) {
+      const el = document.querySelector(`.mp-row[data-mp-id="${mpId}"]`);
+      if (el) el.classList.add('drag-over');
+    } else if (!mpId) {
+      const cont = e.currentTarget.closest('.mp-list');
+      if (cont) cont.classList.add('drag-over-empty');
     }
-    if (!f) return;
-    var next = function(){ retryBusy = false; setTimeout(retryUploads, 1500); };
-    var go = function(dataUrl){
-      updateFile(f.id, function(x){ x.uploading = true; });
-      uploadToDrive(f, f.name, dataUrl, next, true);
+  }
+
+  function onMpDrop(e, colId, mpId) {
+    if (dragKind !== 'mp') return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (!dragSrc) return;
+    const srcCol = state.columns.find(c => c.id === dragSrc.colId);
+    const dstCol = state.columns.find(c => c.id === colId);
+    if (!srcCol || !dstCol) return;
+    const srcIdx = srcCol.marketplaces.findIndex(m => m.id === dragSrc.mpId);
+    if (srcIdx < 0) return;
+    if (srcCol === dstCol && mpId === dragSrc.mpId) return;
+    const [moved] = srcCol.marketplaces.splice(srcIdx, 1);
+    let dstIdx;
+    if (mpId) {
+      dstIdx = dstCol.marketplaces.findIndex(m => m.id === mpId);
+      if (dstIdx < 0) dstIdx = dstCol.marketplaces.length;
+    } else {
+      dstIdx = dstCol.marketplaces.length;
+    }
+    dstCol.marketplaces.splice(dstIdx, 0, moved);
+    save();
+  }
+
+  function onDragEnd() {
+    document.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging'));
+    document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+    dragKind = null;
+    dragSrc = null;
+  }
+
+  function onDragLeave(e) {
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+      e.currentTarget.classList.remove('drag-over');
+    }
+  }
+
+  // ─── Item modal ─────────────────────────────────
+  function openItemModal(colId, itemId = null) {
+    const col = state.columns.find(c => c.id === colId);
+    const item = itemId ? col.items.find(i => i.id === itemId) : null;
+
+    itemCtx = { colId, itemId };
+    itemDraft = item
+      ? { icon: item.icon, color: item.color, shape: item.shape, customLogo: item.customLogo }
+      : { icon: 'sheet', color: 'green', shape: 'square', customLogo: null };
+
+    document.getElementById('itemModalTitle').textContent = item ? 'Редактировать ссылку' : 'Новая ссылка';
+    document.getElementById('itemName').value = item ? item.name : '';
+    document.getElementById('itemUrl').value = item ? item.url : '';
+
+    const fileInput = document.getElementById('itemLogoInput');
+    fileInput.value = '';
+    fileInput.onchange = e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = ev => { itemDraft.customLogo = ev.target.result; itemDraft.shape = 'circle'; renderItemIconPicker(); };
+      reader.readAsDataURL(file);
     };
-    retryBusy = true;
-    var src = f.data || sessionData[f.id];
-    if (src){ go(src); return; }
-    idbGet(f.id, function(blob){
-      if (!blob){ retryBusy = false; return; } /* байтов нет — дозагружать нечего */
-      var fr = new FileReader();
-      fr.onload = function(){ sessionData[f.id] = String(fr.result); go(String(fr.result)); };
-      fr.onerror = function(){ retryBusy = false; };
-      fr.readAsDataURL(blob);
-    });
+
+    renderItemIconPicker();
+    renderItemColorPicker();
+    document.getElementById('itemModal').classList.add('active');
+    setTimeout(() => document.getElementById('itemName').focus(), 100);
   }
 
-  /* ============ данные ============ */
-  function addFile(rec, silent){
-    ensureKey(); /* новая задача получает ключ в момент первого сохранения */
-    var files = loadFiles();
-    if (rec.url && files.some(function(f){ return f.url===rec.url; })){
-      if (!silent) toast('Этот файл уже добавлен');
-      return;
-    }
-    rec.id = Date.now().toString(36)+Math.random().toString(36).slice(2,6);
-    rec.added = Date.now();
-    files.unshift(rec);
-    var ok = saveFiles(files);
-    if (!ok && rec.data){
-      /* байты не влезли в хранилище — оставляем их только на сессию */
-      delete rec.data;
-      ok = saveFiles(files);
-    }
-    if (ok){ render(); if(!silent) toast('Файл добавлен'); }
-  }
-  function updateFile(id, fn){
-    var files = loadFiles();
-    for (var i=0;i<files.length;i++){
-      if (files[i].id===id){ fn(files[i]); break; }
-    }
-    saveFiles(files);
-    render();
+  function renderItemIconPicker() {
+    const container = document.getElementById('itemIconPicker');
+    const regular = Object.entries(ICONS).map(([k, svg]) => {
+      const bg = COLORS[itemDraft.color] || COLORS.blue;
+      const sel = (!itemDraft.customLogo && itemDraft.icon === k) ? 'selected' : '';
+      return `<div class="icon-option ${sel}" style="background:${bg}" onclick="selectItemIcon('${k}', 'square')">${svg}</div>`;
+    }).join('');
+    const brand = Object.entries(MARKETPLACES).map(([k, m]) => {
+      const sel = (!itemDraft.customLogo && itemDraft.icon === k) ? 'selected' : '';
+      return `<div class="icon-option circle-preview ${sel}" style="background:${m.bg}" onclick="selectItemIcon('${k}', 'circle')" title="${m.name}">
+                <span class="lettermark" style="color:${m.color}">${m.letter}</span>
+                ${logoImgHtml(m)}
+              </div>`;
+    }).join('');
+    const custom = itemDraft.customLogo
+      ? `<div class="icon-option circle-preview selected" style="background:#fff" title="Свой логотип">
+           <img src="${itemDraft.customLogo}" alt="">
+         </div>`
+      : '';
+    const upload = `<div class="icon-option upload" onclick="document.getElementById('itemLogoInput').click()" title="Загрузить PNG">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    </div>`;
+    container.innerHTML = regular + brand + custom + upload;
   }
 
-  /* ============ скачивание ============ */
-  /* Notion вставляет виджет в iframe-песочницу БЕЗ разрешения allow-downloads:
-     обычный клик по <a download> браузер молча блокирует (файл «не качается»).
-     Зато у песочницы есть allow-popups-to-escape-sandbox — окно, открытое
-     виджетом, живёт вне песочницы, и скачивание из него работает.
-     Поэтому:
-       — виджет открыт напрямую (не в iframe): качаем как обычно, без окон;
-       — веб-версия Notion: мгновенно открываем крошечное окно, кладём в него
-         файл и закрываем — браузер сохраняет файл, окно исчезает само;
-       — приложение Notion (Electron): окно уходит во внешний браузер, blob
-         туда не передать — качаем по прямой ссылке Google Drive. */
-  function dataUrlToBlob(dataUrl, fallbackMime){
-    var parts = String(dataUrl).split(',');
-    var mime = (parts[0].match(/^data:([^;]+)/)||[])[1] || fallbackMime || 'application/octet-stream';
-    var bin = atob(parts[1]||'');
-    var u8 = new Uint8Array(bin.length);
-    for (var i=0;i<bin.length;i++) u8[i] = bin.charCodeAt(i);
-    return new Blob([u8], {type:mime});
+  function renderItemColorPicker() {
+    document.getElementById('itemColorPicker').innerHTML = Object.entries(COLORS).map(([k, v]) => `
+      <div class="color-option ${itemDraft.color === k ? 'selected' : ''}"
+           style="background: ${v}"
+           onclick="selectItemColor('${k}')"></div>
+    `).join('');
   }
-  function saveBlobDirect(name, blob){
-    var a = document.createElement('a');
-    var u = URL.createObjectURL(blob);
-    a.href = u;
-    a.download = name || 'file';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(function(){ URL.revokeObjectURL(u); }, 10000);
-  }
-  function recDriveId(f){
-    if (f.driveId) return f.driveId;
-    var m = f.dl && f.dl.match(/[?&]id=([^&]+)/); /* записи старых версий виджета */
-    return m ? m[1] : null;
-  }
-  function driveDl(id){
-    return 'https://drive.google.com/uc?export=download&id='+encodeURIComponent(id);
-  }
-  /* окно-курьер: открывается СИНХРОННО в обработчике клика (иначе блокировщик),
-     получает blob и закрывается само, как только скачивание стартовало */
-  function openCourier(){
-    var w = null;
-    try{ w = window.open('', '_blank', 'width=340,height=120'); }catch(e){}
-    if (!w) return null;
-    try{
-      w.document.write(
-        '<!doctype html><title>Скачивание…</title>'+
-        '<body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;'+
-        'background:#191919;color:rgba(255,255,255,.85);'+
-        'font:14px -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif">'+
-        '<div id="m">Готовлю файл…</div></body>');
-    }catch(e){}
-    return w;
-  }
-  function courierSay(w, text){
-    try{ var m = w.document.getElementById('m'); if (m) m.textContent = text; }catch(e){}
-  }
-  function courierDownload(w, name, blob){
-    try{
-      var u = URL.createObjectURL(blob);
-      var d = w.document;
-      var a = d.createElement('a');
-      a.href = u;
-      a.download = name || 'file';
-      d.body.appendChild(a);
-      a.click();
-      courierSay(w, '«'+(name||'файл')+'» скачивается…');
-      /* скачиванием управляет браузер — окно можно закрывать */
-      setTimeout(function(){ try{ w.close(); }catch(e){} }, 900);
-      setTimeout(function(){ URL.revokeObjectURL(u); }, 30000);
-      return true;
-    }catch(e){
-      try{ w.close(); }catch(e2){}
-      return false;
-    }
-  }
-  function courierDrive(w, f){
-    var did = recDriveId(f);
-    if (!did){
-      try{ w.close(); }catch(e){}
-      toast('Данные файла не сохранились — добавьте его заново');
-      return;
-    }
-    /* сервер Drive отдаёт файл как attachment — скачивание идёт без песочницы;
-       вкладку со скачиванием браузер закрывает сам, но подстрахуемся */
-    try{ w.location = driveDl(did); }catch(e){}
-    setTimeout(function(){ try{ w.close(); }catch(e){} }, 12000);
-  }
-  var fetching = {}; /* id файла -> очередь колбэков, ждущих байты */
-  /* подтягиваем байты из Drive через Apps Script (fetch с CORS работает);
-     повторный вызов для того же файла не падает, а ждёт уже идущий запрос —
-     иначе клик сразу после наведения (предзагрузки) уходил бы в обход */
-  function fetchBytes(f, cb){
-    if (sessionData[f.id]){ cb(null); return; }
-    var did = recDriveId(f);
-    if (!did){ cb(new Error('нет id файла')); return; }
-    if (fetching[f.id]){ fetching[f.id].push(cb); return; }
-    fetching[f.id] = [cb];
-    function finish(err){
-      var q = fetching[f.id] || [];
-      delete fetching[f.id];
-      q.forEach(function(fn){ try{ fn(err); }catch(e){} });
-    }
-    fetch(gasUrl()+'?action=download&id='+encodeURIComponent(did)+'&key='+encodeURIComponent(WIDGET_KEY))
-      .then(function(r){ return r.json(); })
-      .then(function(res){
-        if (!(res && res.ok && res.data)) throw new Error(res && res.error || 'старый Apps Script: нет команды download');
-        sessionData[f.id] = 'data:'+(res.mime||f.mime||'application/octet-stream')+';base64,'+res.data;
-        /* кэшируем навсегда: следующие скачивания мгновенные даже после перезагрузки */
-        try{ idbPut(f.id, dataUrlToBlob(sessionData[f.id], f.mime)); }catch(e){}
-        finish(null);
-      })
-      .catch(function(e){ finish(e); });
-  }
-  function downloadFile(f){
-    var local = f.data || sessionData[f.id];
 
-    /* 1) виджет открыт напрямую — качаем без окон */
-    if (!FRAMED){
-      if (local){ saveBlobDirect(f.name, dataUrlToBlob(local, f.mime)); return; }
-      idbGet(f.id, function(blob){
-        if (blob){ saveBlobDirect(f.name, blob); return; }
-        if (!recDriveId(f)){ toast('Данные файла не сохранились — добавьте его заново'); return; }
-        toast('Готовлю «'+f.name+'»…');
-        fetchBytes(f, function(err){
-          if (err){ toast('Не удалось скачать: '+(err.message||'ошибка')); return; }
-          saveBlobDirect(f.name, dataUrlToBlob(sessionData[f.id], f.mime));
-        });
-      });
-      return;
-    }
+  function selectItemIcon(k, shape) {
+    itemDraft.icon = k;
+    itemDraft.shape = shape;
+    itemDraft.customLogo = null;
+    renderItemIconPicker();
+  }
 
-    /* 2) приложение Notion: окно откроется во внешнем браузере — только Drive */
-    if (NOTION_APP){
-      var did = recDriveId(f);
-      if (did){
-        window.open(driveDl(did), '_blank');
-        toast('Скачивание пошло через браузер');
-      } else {
-        toast('Файл ещё загружается в Drive — попробуйте через минуту');
-        retryUploads();
-      }
-      return;
-    }
+  function selectItemColor(k) {
+    itemDraft.color = k;
+    renderItemIconPicker();
+    renderItemColorPicker();
+  }
 
-    /* 3) веб-версия Notion: окно-курьер (вне песочницы) скачивает и закрывается */
-    var w = openCourier();
-    if (!w){
-      /* блокировщик всплывающих окон: пробуем прямой способ и подсказываем */
-      if (local){ saveBlobDirect(f.name, dataUrlToBlob(local, f.mime)); }
-      toast('Разрешите всплывающие окна для этого сайта, чтобы скачивание работало');
-      return;
+  function editItem(colId, itemId) { openItemModal(colId, itemId); }
+
+  function closeItemModal() {
+    document.getElementById('itemModal').classList.remove('active');
+    itemCtx = null; itemDraft = null;
+  }
+
+  function saveItem() {
+    const name = document.getElementById('itemName').value.trim();
+    let url = document.getElementById('itemUrl').value.trim();
+    if (!name) return;
+    if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;
+
+    const col = state.columns.find(c => c.id === itemCtx.colId);
+    if (itemCtx.itemId) {
+      const item = col.items.find(i => i.id === itemCtx.itemId);
+      Object.assign(item, { name, url, icon: itemDraft.icon, color: itemDraft.color, shape: itemDraft.shape, customLogo: itemDraft.customLogo });
+    } else {
+      col.items.push({ id: uid(), name, url, icon: itemDraft.icon, color: itemDraft.color, shape: itemDraft.shape, customLogo: itemDraft.customLogo });
     }
-    var deliver = function(blob){
-      if (!courierDownload(w, f.name, blob)) courierDrive(w, f);
+    save();
+    closeItemModal();
+  }
+
+  function deleteItem(colId, itemId) {
+    if (!confirm('Удалить ссылку?')) return;
+    const col = state.columns.find(c => c.id === colId);
+    col.items = col.items.filter(i => i.id !== itemId);
+    save();
+  }
+
+  // ─── Column modal ───────────────────────────────
+  function openColumnModal(colId = null) {
+    const col = colId ? state.columns.find(c => c.id === colId) : null;
+    colCtx = { id: colId };
+    colDraft = col
+      ? { title: col.title, primaryUrl: col.primaryUrl || '', icon: col.icon, color: col.color, metrics: structuredClone(col.metrics || []), customLogo: col.customLogo }
+      : { title: '', primaryUrl: '', icon: 'chart', color: 'blue', metrics: [], customLogo: null };
+
+    document.getElementById('columnModalTitle').textContent = col ? 'Настройки раздела' : 'Новый раздел';
+    document.getElementById('columnTitle').value = colDraft.title;
+    document.getElementById('columnUrl').value = colDraft.primaryUrl;
+    document.getElementById('deleteColumnBtn').style.display = col ? '' : 'none';
+
+    const fileInput = document.getElementById('columnLogoInput');
+    fileInput.value = '';
+    fileInput.onchange = e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = ev => { colDraft.customLogo = ev.target.result; renderColumnIconPicker(); };
+      reader.readAsDataURL(file);
     };
-    if (local){ deliver(dataUrlToBlob(local, f.mime)); return; }
-    idbGet(f.id, function(blob){
-      if (blob){ deliver(blob); return; }
-      if (!recDriveId(f)){
-        try{ w.close(); }catch(e){}
-        toast('Данные файла не сохранились — добавьте его заново');
-        return;
+
+    renderColumnIconPicker();
+    renderColumnColorPicker();
+    renderMetricsEditor();
+    document.getElementById('columnModal').classList.add('active');
+    setTimeout(() => document.getElementById('columnTitle').focus(), 100);
+  }
+
+  function renderColumnIconPicker() {
+    const regular = Object.entries(ICONS).map(([k, svg]) => `
+      <div class="icon-option ${!colDraft.customLogo && colDraft.icon === k ? 'selected' : ''}"
+           style="background: ${COLORS[colDraft.color] || COLORS.blue}"
+           onclick="selectColumnIcon('${k}')">${svg}</div>
+    `).join('');
+    const custom = colDraft.customLogo
+      ? `<div class="icon-option selected" style="background:#fff"><img src="${colDraft.customLogo}" alt=""></div>`
+      : '';
+    const upload = `<div class="icon-option upload" onclick="document.getElementById('columnLogoInput').click()" title="Загрузить PNG">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    </div>`;
+    document.getElementById('columnIconPicker').innerHTML = regular + custom + upload;
+  }
+
+  function renderColumnColorPicker() {
+    document.getElementById('columnColorPicker').innerHTML = Object.entries(COLORS).map(([k, v]) => `
+      <div class="color-option ${colDraft.color === k ? 'selected' : ''}"
+           style="background: ${v}"
+           onclick="selectColumnColor('${k}')"></div>
+    `).join('');
+  }
+
+  function selectColumnIcon(k) { colDraft.icon = k; colDraft.customLogo = null; renderColumnIconPicker(); }
+  function selectColumnColor(k) { colDraft.color = k; renderColumnIconPicker(); renderColumnColorPicker(); }
+
+  function renderMetricsEditor() {
+    document.getElementById('metricsEditor').innerHTML = colDraft.metrics.map((m, i) => `
+      <div class="metric-edit-row">
+        <input type="text" value="${escapeHtml(m.label)}" placeholder="Название" oninput="colDraft.metrics[${i}].label = this.value">
+        <button onclick="colDraft.metrics.splice(${i}, 1); renderMetricsEditor()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+    `).join('');
+  }
+
+  function addMetricRow() {
+    colDraft.metrics.push({ label: '', value: '' });
+    renderMetricsEditor();
+  }
+
+  function closeColumnModal() {
+    document.getElementById('columnModal').classList.remove('active');
+    colCtx = null; colDraft = null;
+  }
+
+  function saveColumn() {
+    const title = document.getElementById('columnTitle').value.trim();
+    let url = document.getElementById('columnUrl').value.trim();
+    if (!title) return;
+    if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;
+    colDraft.title = title;
+    colDraft.primaryUrl = url;
+    colDraft.metrics = colDraft.metrics.filter(m => m.label.trim());
+
+    if (colCtx.id) {
+      const col = state.columns.find(c => c.id === colCtx.id);
+      const oldVals = {};
+      (col.metrics || []).forEach(m => { oldVals[m.label] = m.value; });
+      colDraft.metrics = colDraft.metrics.map(m => ({ ...m, value: oldVals[m.label] ?? m.value ?? '' }));
+      Object.assign(col, { title, primaryUrl: url, icon: colDraft.icon, color: colDraft.color, metrics: colDraft.metrics, customLogo: colDraft.customLogo });
+    } else {
+      state.columns.push({
+        id: uid(),
+        title,
+        primaryUrl: url,
+        icon: colDraft.icon,
+        color: colDraft.color,
+        customLogo: colDraft.customLogo,
+        metrics: colDraft.metrics,
+        marketplaces: [],
+        items: []
+      });
+    }
+    save();
+    closeColumnModal();
+  }
+
+  function deleteColumn() {
+    if (!confirm('Удалить раздел вместе со всеми ссылками?')) return;
+    state.columns = state.columns.filter(c => c.id !== colCtx.id);
+    save();
+    closeColumnModal();
+  }
+
+  // ─── Marketplace modal ──────────────────────────
+  function openMpModal(colId, mpId = null) {
+    const col = state.columns.find(c => c.id === colId);
+    const mp = mpId ? col.marketplaces.find(m => m.id === mpId) : null;
+    mpCtx = { colId, mpId };
+    mpDraft = mp
+      ? { key: mp.key, name: mp.name, url: mp.url || '', customLogo: mp.customLogo || null }
+      : { key: 'ozon', name: MARKETPLACES.ozon.name, url: '', customLogo: null };
+
+    const fileInput = document.getElementById('mpLogoInput');
+    fileInput.value = '';
+    fileInput.onchange = e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = ev => { mpDraft.customLogo = ev.target.result; renderMpPicker(); };
+      reader.readAsDataURL(file);
+    };
+
+    renderMpPicker();
+    document.getElementById('mpName').value = mpDraft.name;
+    document.getElementById('mpUrl').value = mpDraft.url;
+    document.getElementById('mpModal').classList.add('active');
+  }
+
+  function renderMpPicker() {
+    const brand = Object.entries(MARKETPLACES).map(([k, m]) => `
+      <div class="mp-picker-btn"
+           style="background: ${m.bg}; ${!mpDraft.customLogo && mpDraft.key === k ? 'border-color: var(--text-primary);' : ''}"
+           onclick="selectMp('${k}')" title="${m.name}">
+        <span class="letter" style="color:${m.color}">${m.letter}</span>
+        ${logoImgHtml(m)}
+      </div>
+    `).join('');
+    const custom = mpDraft.customLogo
+      ? `<div class="mp-picker-btn" style="background:#fff; border-color: var(--text-primary);" title="Свой">
+           <img class="custom-logo" src="${mpDraft.customLogo}" alt="">
+         </div>`
+      : '';
+    const upload = `<div class="mp-picker-btn upload" onclick="document.getElementById('mpLogoInput').click()" title="Загрузить свой">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    </div>`;
+    document.getElementById('mpPicker').innerHTML = brand + custom + upload;
+  }
+
+  function selectMp(k) {
+    mpDraft.key = k;
+    mpDraft.customLogo = null;
+    if (!mpCtx.mpId) mpDraft.name = MARKETPLACES[k].name;
+    document.getElementById('mpName').value = mpDraft.name;
+    renderMpPicker();
+  }
+
+  function closeMpModal() {
+    document.getElementById('mpModal').classList.remove('active');
+    mpCtx = null; mpDraft = null;
+  }
+
+  function editMp(colId, mpId) { openMpModal(colId, mpId); }
+
+  function saveMp() {
+    const name = document.getElementById('mpName').value.trim() || (MARKETPLACES[mpDraft.key]?.name ?? 'Маркетплейс');
+    let url = document.getElementById('mpUrl').value.trim();
+    if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;
+    const col = state.columns.find(c => c.id === mpCtx.colId);
+    if (!col.marketplaces) col.marketplaces = [];
+    if (mpCtx.mpId) {
+      const mp = col.marketplaces.find(m => m.id === mpCtx.mpId);
+      Object.assign(mp, { key: mpDraft.key, name, url, customLogo: mpDraft.customLogo });
+    } else {
+      col.marketplaces.push({
+        id: uid(),
+        key: mpDraft.key,
+        name,
+        url,
+        customLogo: mpDraft.customLogo,
+        turnover: '',
+        margin: '',
+        profit: ''
+      });
+    }
+    save();
+    closeMpModal();
+  }
+
+  function deleteMp(colId, mpId) {
+    if (!confirm('Удалить маркетплейс?')) return;
+    const col = state.columns.find(c => c.id === colId);
+    col.marketplaces = col.marketplaces.filter(m => m.id !== mpId);
+    save();
+  }
+
+  // ─── Inline editing ─────────────────────────────
+  function updateMetric(e) {
+    const colId = e.target.dataset.col;
+    const idx = parseInt(e.target.dataset.idx);
+    const raw = e.target.textContent.trim();
+    const col = state.columns.find(c => c.id === colId);
+    col.metrics[idx].value = raw;
+    save();
+  }
+
+  function updateMpValue(e) {
+    const colId = e.target.dataset.col;
+    const mpId = e.target.dataset.mp;
+    const field = e.target.dataset.field;
+    const raw = e.target.textContent.trim();
+    const col = state.columns.find(c => c.id === colId);
+    const mp = col.marketplaces.find(m => m.id === mpId);
+    mp[field] = raw;
+    save();
+  }
+
+  ['itemModal', 'columnModal', 'mpModal'].forEach(id => {
+    document.getElementById(id).addEventListener('click', e => {
+      if (e.target.id === id) {
+        if (id === 'itemModal') closeItemModal();
+        else if (id === 'columnModal') closeColumnModal();
+        else closeMpModal();
       }
-      courierSay(w, 'Скачиваю «'+f.name+'» из Drive…');
-      fetchBytes(f, function(err){
-        if (err){ courierDrive(w, f); return; } /* резерв: прямая ссылка Drive */
-        deliver(dataUrlToBlob(sessionData[f.id], f.mime));
-      });
     });
-  }
-  /* заранее греем байты при наведении: клик скачает мгновенно */
-  function prefetchBytes(f){
-    if (f.data || sessionData[f.id] || fetching[f.id]) return;
-    idbGet(f.id, function(blob){
-      if (blob || f.data || sessionData[f.id] || fetching[f.id]) return;
-      if (!recDriveId(f)) return;
-      fetchBytes(f, function(){});
-    });
-  }
+  });
 
-  /* ============ рендер ============ */
-  function fmtDate(ts){
-    var d = new Date(ts);
-    var p = function(n){ return (n<10?'0':'')+n; };
-    return p(d.getDate())+'.'+p(d.getMonth()+1)+'.'+String(d.getFullYear()).slice(2);
-  }
-  function esc(s){
-    return String(s).replace(/[&<>"']/g, function(c){
-      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
-    });
-  }
-  function render(){
-    var files = loadFiles();
-    var byGroup = {drive:[],docs:[],sheets:[],slides:[]};
-    files.forEach(function(f){
-      var g = (TYPE_META[f.type]||TYPE_META.drive).group;
-      byGroup[g].push(f);
-    });
-    Object.keys(byGroup).forEach(function(g){
-      var cntEl = document.querySelector('[data-cnt="'+g+'"]');
-      if (cntEl) cntEl.textContent = byGroup[g].length;
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { closeItemModal(); closeColumnModal(); closeMpModal(); }
+  });
 
-      var col = document.querySelector('.col[data-col="'+g+'"]');
-      col.querySelectorAll('.fcard').forEach(function(n){ n.remove(); });
-
-      byGroup[g].forEach(function(f){
-        var card = document.createElement('div');
-        card.className = 'card fcard c-'+g;
-
-        if (f.uploading) card.className += ' uploading';
-
-        var go = document.createElement('a');
-        go.className = 'go';
-        if (f.kind === 'upload' || f.kind === 'drive'){
-          /* наши файлы: клик = скачивание оригинала */
-          go.href = '#';
-          go.title = 'Скачать «'+f.name+'»';
-          go.addEventListener('click', function(e){
-            e.preventDefault();
-            downloadFile(f);
-          });
-          /* греем байты заранее, чтобы клик скачивал мгновенно */
-          go.addEventListener('mouseenter', function(){ prefetchBytes(f); });
-        } else {
-          /* ссылки (Google и любые другие) — просто открываются */
-          go.href = f.url;
-          go.target = '_blank';
-          go.rel = 'noopener';
-          go.title = f.url || '';
-        }
-        var subText = fmtDate(f.added);
-        if (f.uploading) subText += ' · загружается в Drive…';
-        else if (f.kind==='upload') subText += ' · локально';
-        else if (f.kind==='drive') subText += ' · Drive';
-        go.innerHTML =
-          '<span class="ic">'+fileIcon(f.type)+'</span>'+
-          '<span class="meta"><span class="name">'+esc(f.name)+'</span>'+
-          '<span class="sub">'+subText+'</span></span>';
-
-        var side = document.createElement('span');
-        side.className = 'side';
-        if (f.kind === 'drive' && f.url){
-          var open = document.createElement('a');
-          open.className = 'iconbtn';
-          open.href = f.url; open.target = '_blank'; open.rel = 'noopener';
-          open.title = 'Открыть онлайн в Drive';
-          open.textContent = '↗';
-          side.appendChild(open);
-        }
-        var del = document.createElement('button');
-        del.className = 'iconbtn del';
-        del.title = 'Удалить';
-        del.setAttribute('aria-label','Удалить '+f.name);
-        del.textContent = '✕';
-        del.addEventListener('click', function(e){
-          e.preventDefault(); e.stopPropagation();
-          var rest = loadFiles().filter(function(x){ return x.id!==f.id; });
-          saveFiles(rest);
-          idbDel(f.id);
-          render();
-        });
-        side.appendChild(del);
-
-        card.appendChild(go);
-        card.appendChild(side);
-        col.appendChild(card);
-      });
-    });
-    broadcastHeight();
-  }
-
-  /* ============ toast ============ */
-  var toastTimer;
-  function toast(msg){
-    var t = $('toast');
-    t.textContent = msg;
-    t.classList.add('show');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(function(){ t.classList.remove('show'); }, 3400);
-  }
-
-  /* ============ авто-высота (если хост слушает) ============ */
-  var lastH = 0;
-  function broadcastHeight(){
-    var wrap = document.getElementById('wrap');
-    if(!wrap) return;
-    var h = Math.ceil(wrap.getBoundingClientRect().height) + 8;
-    if (h === lastH) return;
-    lastH = h;
-    try{
-      parent.postMessage(JSON.stringify({method:'resize', height:h}), '*');
-      parent.postMessage(JSON.stringify({src:location.toString(), context:'iframe.resize', height:h}), '*');
-      parent.postMessage({type:'resize', height:h}, '*');
-      parent.postMessage({type:'embed-size', height:h}, '*');
-      parent.postMessage('resize:'+h, '*');
-    }catch(e){}
-  }
-  if (typeof ResizeObserver !== 'undefined'){
-    new ResizeObserver(broadcastHeight).observe(document.getElementById('wrap'));
-  }
-  window.addEventListener('load', broadcastHeight);
-
-  boot();
-})();
+  load();
 </script>
 </body>
 </html>
