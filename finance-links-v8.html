@@ -47,7 +47,9 @@
               url: '',
               customLogo: sourceMp.customLogo || null,
               cells: { turnover: '', margin: '', profit: '' },
-              turnover: '', margin: '', profit: ''
+              turnover: '',
+              margin: '',
+              profit: ''
             });
             existing.add(sourceMp.key);
           });
@@ -58,11 +60,14 @@
   } catch (_) {}
 
   try {
-    const response = await fetch('./finance-links.html?v=11', { cache: 'no-store' });
+    const response = await fetch('./finance-links.html?v=12', { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    let html = await response.text();
 
-    const overrides = `
+    const sourceHtml = await response.text();
+    const parsed = new DOMParser().parseFromString(sourceHtml, 'text/html');
+
+    const overrides = parsed.createElement('style');
+    overrides.textContent = `
       html, body {
         width: 100% !important;
         max-width: none !important;
@@ -164,11 +169,14 @@
         bottom: 14px !important;
       }
     `;
+    parsed.head.appendChild(overrides);
 
-    html = html.replace('</style>', `${overrides}</style>`);
-    html = html.replace('</body>', '<script src="./finance-flex.js?v=1"></script></body>');
+    const flexScript = parsed.createElement('script');
+    flexScript.src = './finance-flex.js?v=2';
+    parsed.body.appendChild(flexScript);
+
     document.open();
-    document.write(html);
+    document.write('<!DOCTYPE html>' + parsed.documentElement.outerHTML);
     document.close();
   } catch (error) {
     document.body.innerHTML = '<div style="font-family:Arial,sans-serif;color:#fff;padding:20px">Не удалось загрузить виджет. Обновите страницу.</div>';
