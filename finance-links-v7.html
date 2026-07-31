@@ -6,7 +6,13 @@
   <meta name="robots" content="noindex">
   <title>Финансы</title>
   <style>
-    html, body { margin: 0; min-height: 100%; background: #191919; }
+    html, body {
+      margin: 0;
+      width: 100%;
+      min-height: 100%;
+      background: #191919;
+      overflow-x: hidden;
+    }
   </style>
 </head>
 <body>
@@ -122,22 +128,61 @@
     return state;
   }
 
-  try {
-    let raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      for (const key of LEGACY_KEYS) {
-        raw = localStorage.getItem(key);
-        if (raw) break;
+  async function boot() {
+    try {
+      let raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) {
+        for (const key of LEGACY_KEYS) {
+          raw = localStorage.getItem(key);
+          if (raw) break;
+        }
       }
+
+      const state = migrate(raw ? JSON.parse(raw) : clone(defaultState));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch (error) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(clone(defaultState)));
     }
 
-    const state = migrate(raw ? JSON.parse(raw) : clone(defaultState));
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch (error) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(clone(defaultState)));
+    try {
+      const response = await fetch('./finance-links.html?v=8', { cache: 'no-store' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      let html = await response.text();
+
+      const overrides = `
+        html, body {
+          width: 100% !important;
+          max-width: none !important;
+          overflow-x: hidden !important;
+        }
+        .container {
+          width: 100% !important;
+          max-width: none !important;
+          margin: 0 !important;
+          padding: 16px 16px 84px !important;
+        }
+        .board {
+          width: 100% !important;
+          max-width: none !important;
+        }
+        .metric-cell .value.linked,
+        .mp-stat .val.linked {
+          box-shadow: none !important;
+          text-decoration: none !important;
+          border-bottom: none !important;
+        }
+      `;
+
+      html = html.replace('</style>', `${overrides}</style>`);
+      document.open();
+      document.write(html);
+      document.close();
+    } catch (error) {
+      document.body.innerHTML = '<div style="font-family:Arial,sans-serif;color:#fff;padding:20px">Не удалось загрузить виджет. Обновите страницу.</div>';
+    }
   }
 
-  location.replace('./finance-links.html?v=7');
+  boot();
 })();
 </script>
 </body>
