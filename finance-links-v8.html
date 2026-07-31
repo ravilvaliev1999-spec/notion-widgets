@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex">
+  <title>Финансы</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      min-height: 100%;
+      background: #191919;
+      overflow-x: hidden;
+    }
+  </style>
+</head>
+<body>
+<script>
+(async () => {
+  const STORAGE_KEY = 'finance_board_v6';
+  const defaults = [
+    { key: 'ozon', name: 'OZON' },
+    { key: 'wb', name: 'Wildberries' },
+    { key: 'yandex', name: 'Яндекс Маркет' },
+    { key: 'lemana', name: 'Лемана Про' },
+    { key: 'petrovich', name: 'Петрович' }
+  ];
+
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const saved = JSON.parse(raw);
+      if (saved && Array.isArray(saved.columns)) {
+        const plan = saved.columns.find(c => c.id === 'col-plan' || c.title === 'План-факт');
+        const daily = saved.columns.find(c => c.id === 'col-daily' || /Ежедневный отч[её]т/i.test(c.title || ''));
+        if (daily) {
+          if (!Array.isArray(daily.marketplaces)) daily.marketplaces = [];
+          const source = Array.isArray(plan?.marketplaces) && plan.marketplaces.length ? plan.marketplaces : defaults;
+          const existing = new Set(daily.marketplaces.map(mp => mp.key));
+          source.forEach(sourceMp => {
+            if (!sourceMp?.key || existing.has(sourceMp.key)) return;
+            daily.marketplaces.push({
+              id: `mp-daily-${sourceMp.key}`,
+              key: sourceMp.key,
+              name: sourceMp.name || sourceMp.key,
+              url: '',
+              customLogo: sourceMp.customLogo || null,
+              cells: { turnover: '', margin: '', profit: '' },
+              turnover: '', margin: '', profit: ''
+            });
+            existing.add(sourceMp.key);
+          });
+        }
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+      }
+    }
+  } catch (_) {}
+
+  try {
+    const response = await fetch('./finance-links.html?v=11', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    let html = await response.text();
+
+    const overrides = `
+      html, body {
+        width: 100% !important;
+        max-width: none !important;
+        overflow-x: hidden !important;
+      }
+      .container {
+        width: 100% !important;
+        max-width: none !important;
+        margin: 0 !important;
+        padding: 8px 10px 76px !important;
+      }
+      .board {
+        width: 100% !important;
+        max-width: none !important;
+        gap: 8px !important;
+      }
+      .column {
+        padding: 10px !important;
+        gap: 6px !important;
+        border-radius: 16px !important;
+      }
+      .column-head {
+        gap: 7px !important;
+        padding: 3px 4px 7px !important;
+        margin: -2px -2px 0 !important;
+      }
+      .column-icon {
+        width: 30px !important;
+        height: 30px !important;
+        border-radius: 9px !important;
+      }
+      .column-icon svg { width: 17px !important; height: 17px !important; }
+      .column-title { font-size: 14.5px !important; }
+      .metrics-row { gap: 4px !important; }
+      .metric-cell {
+        padding: 4px 7px !important;
+        gap: 0 !important;
+        border-radius: 9px !important;
+      }
+      .metric-cell .label { font-size: 8px !important; }
+      .metric-cell .value {
+        font-size: 11.5px !important;
+        line-height: 1.1 !important;
+        min-height: 14px !important;
+      }
+      .mp-list { gap: 4px !important; }
+      .mp-row {
+        min-height: 33px !important;
+        padding: 3px 6px !important;
+        gap: 6px !important;
+        border-radius: 9px !important;
+      }
+      .mp-badge { width: 23px !important; height: 23px !important; }
+      .mp-stats { gap: 4px !important; }
+      .mp-stat .lbl { font-size: 8px !important; }
+      .mp-stat .val {
+        font-size: 10.5px !important;
+        line-height: 1.05 !important;
+        min-height: 12px !important;
+      }
+      .items {
+        display: grid !important;
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        gap: 4px !important;
+      }
+      .item {
+        min-height: 32px !important;
+        padding: 4px 6px !important;
+        gap: 6px !important;
+        border-radius: 9px !important;
+      }
+      .item-icon {
+        width: 22px !important;
+        height: 22px !important;
+        border-radius: 7px !important;
+      }
+      .item-icon svg { width: 13px !important; height: 13px !important; }
+      .item-name {
+        font-size: 11.5px !important;
+        line-height: 1.15 !important;
+        -webkit-line-clamp: 1 !important;
+      }
+      .metric-cell .value.linked,
+      .mp-stat .val.linked {
+        box-shadow: none !important;
+        text-decoration: none !important;
+        border-bottom: none !important;
+      }
+      .fab-sync {
+        width: 38px !important;
+        height: 38px !important;
+        right: 18px !important;
+        bottom: 64px !important;
+      }
+      .fab-add {
+        width: 44px !important;
+        height: 44px !important;
+        right: 15px !important;
+        bottom: 14px !important;
+      }
+    `;
+
+    html = html.replace('</style>', `${overrides}</style>`);
+    html = html.replace('</body>', '<script src="./finance-flex.js?v=1"></script></body>');
+    document.open();
+    document.write(html);
+    document.close();
+  } catch (error) {
+    document.body.innerHTML = '<div style="font-family:Arial,sans-serif;color:#fff;padding:20px">Не удалось загрузить виджет. Обновите страницу.</div>';
+  }
+})();
+</script>
+</body>
+</html>
