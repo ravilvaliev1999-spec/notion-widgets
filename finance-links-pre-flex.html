@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex">
+  <title>Финансы</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      min-height: 100%;
+      background: #191919;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body>
+<script>
+(() => {
+  const STORAGE_KEY = 'finance_board_v6';
+
+  // Одноцелевой откат следов версии с расширенным конструктором.
+  // Обычные показатели, ссылки, маркетплейсы, значения и размеры колонок сохраняются.
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const state = JSON.parse(raw);
+      if (state && Array.isArray(state.columns)) {
+        state.columns.forEach(column => {
+          delete column.collapsed;
+
+          if (Array.isArray(column.items)) {
+            // Элементы этих типов появились только в расширенной версии.
+            column.items = column.items.filter(item => {
+              const kind = item && item.kind;
+              return !kind || kind === 'link';
+            });
+
+            column.items.forEach(item => {
+              delete item.kind;
+              delete item.checked;
+              delete item.text;
+            });
+          }
+        });
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      }
+    }
+  } catch (_) {}
+
+  // Точная версия интерфейса из коммита 5e0b70a — непосредственно до гибкого конструктора.
+  location.replace('./finance-links-v7.html?exact=5e0b70ae13ce3688871d153314045ec8a4c4a7ce');
+})();
+</script>
+</body>
+</html>
