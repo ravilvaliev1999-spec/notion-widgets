@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex">
+  <title>Финансы</title>
+  <style>
+    html, body { margin: 0; min-height: 100%; background: #191919; }
+  </style>
+</head>
+<body>
+<script>
+(() => {
+  const STORAGE_KEY = 'finance_board_v6';
+  const LEGACY_KEYS = ['finance_board_v5', 'finance_board_v4'];
+
+  const dailyMarketplaces = [
+    { id: 'mp-daily-ozon', key: 'ozon', name: 'OZON', url: '', customLogo: null, cells: { turnover: '', margin: '', profit: '' }, turnover: '', margin: '', profit: '' },
+    { id: 'mp-daily-wb', key: 'wb', name: 'Wildberries', url: '', customLogo: null, cells: { turnover: '', margin: '', profit: '' }, turnover: '', margin: '', profit: '' },
+    { id: 'mp-daily-yandex', key: 'yandex', name: 'Яндекс Маркет', url: '', customLogo: null, cells: { turnover: '', margin: '', profit: '' }, turnover: '', margin: '', profit: '' },
+    { id: 'mp-daily-lemana', key: 'lemana', name: 'Лемана Про', url: '', customLogo: null, cells: { turnover: '', margin: '', profit: '' }, turnover: '', margin: '', profit: '' },
+    { id: 'mp-daily-petrovich', key: 'petrovich', name: 'Петрович', url: '', customLogo: null, cells: { turnover: '', margin: '', profit: '' }, turnover: '', margin: '', profit: '' }
+  ];
+
+  const defaultState = {
+    columns: [
+      {
+        id: 'col-plan',
+        title: 'План-факт',
+        primaryUrl: 'https://docs.google.com/spreadsheets/d/18N5BTp5pucflEkjfxN42XW3TVD7ijRooooLENDSyCNw/edit?gid=1471308300#gid=1471308300',
+        icon: 'bars',
+        color: 'blue',
+        customLogo: null,
+        metrics: [
+          { label: 'ТО', value: '', cell: '' },
+          { label: '%', value: '', cell: '' },
+          { label: 'ВПМП', value: '', cell: '' }
+        ],
+        marketplaces: [
+          { id: 'mp-ozon', key: 'ozon', name: 'OZON', url: '', customLogo: null, cells: { turnover: '', margin: '', profit: '' }, turnover: '', margin: '', profit: '' },
+          { id: 'mp-wb', key: 'wb', name: 'Wildberries', url: '', customLogo: null, cells: { turnover: '', margin: '', profit: '' }, turnover: '', margin: '', profit: '' },
+          { id: 'mp-yx', key: 'yandex', name: 'Яндекс Маркет', url: '', customLogo: null, cells: { turnover: '', margin: '', profit: '' }, turnover: '', margin: '', profit: '' },
+          { id: 'mp-lm', key: 'lemana', name: 'Лемана Про', url: '', customLogo: null, cells: { turnover: '', margin: '', profit: '' }, turnover: '', margin: '', profit: '' },
+          { id: 'mp-pt', key: 'petrovich', name: 'Петрович', url: '', customLogo: null, cells: { turnover: '', margin: '', profit: '' }, turnover: '', margin: '', profit: '' }
+        ],
+        items: [
+          { id: 'i-sg', name: 'Сургут план-факт', url: 'https://docs.google.com/spreadsheets/d/1GM5yj02rdMn8Awb8c2cHI3E88FqExABRQnBP5gcJDzA/edit?gid=1140550675#gid=1140550675', icon: 'sheet', color: 'teal', shape: 'square', customLogo: null },
+          { id: 'i-pl', name: 'Личный план-факт', url: 'https://docs.google.com/spreadsheets/d/1JgNrNaiV_BImoZe3hkLdrz3NKvNjbrgxewray9YAdkc/edit?usp=drive_web&ouid=110674916578572419155', icon: 'sheet', color: 'purple', shape: 'square', customLogo: null }
+        ]
+      },
+      {
+        id: 'col-daily',
+        title: 'Ежедневный отчёт',
+        primaryUrl: 'https://docs.google.com/spreadsheets/d/1i_33Y3iFeQZhYq_AgWKPqkzF_rRJBoPgaLgI84QVBII/edit?gid=2137022750#gid=2137022750',
+        icon: 'calendar',
+        color: 'orange',
+        customLogo: null,
+        metrics: [
+          { label: 'Заказы', value: '', cell: '' },
+          { label: '%', value: '', cell: '' },
+          { label: 'ВПМП', value: '', cell: '' }
+        ],
+        marketplaces: dailyMarketplaces.map(item => ({ ...item, cells: { ...item.cells } })),
+        items: [
+          { id: 'i-yn', name: 'Юнитка', url: 'https://docs.google.com/spreadsheets/d/1qBufATbMpZOdqeiWn8699t2AIIRTNbpNRtyD4_Qgn2E/edit?gid=0#gid=0', icon: 'sheet', color: 'orange', shape: 'square', customLogo: null },
+          { id: 'i-sz', name: 'Зарплаты', url: '', icon: 'excel', color: 'green', shape: 'square', customLogo: null }
+        ]
+      },
+      {
+        id: 'col-fin',
+        title: 'Финансовый результат',
+        primaryUrl: 'https://docs.google.com/spreadsheets/d/1roXoFuYj0i0beuAgXDtY2_KSoPdNsHEH9n5rCHwGysY/edit?gid=2135708165#gid=2135708165',
+        icon: 'chart',
+        color: 'green',
+        customLogo: null,
+        hideMarketplaces: true,
+        metrics: [],
+        marketplaces: [],
+        items: [
+          { id: 'i-cl', name: 'Чек-лист проверки', url: '', icon: 'checklist', color: 'green', shape: 'square', customLogo: null }
+        ]
+      }
+    ]
+  };
+
+  function clone(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function migrate(state) {
+    if (!state || !Array.isArray(state.columns)) return clone(defaultState);
+
+    const daily = state.columns.find(column => column.id === 'col-daily' || column.title === 'Ежедневный отчёт' || column.title === 'Ежедневный отчет');
+    const plan = state.columns.find(column => column.id === 'col-plan' || column.title === 'План-факт');
+
+    if (!daily) return state;
+    if (!Array.isArray(daily.marketplaces)) daily.marketplaces = [];
+
+    const source = Array.isArray(plan?.marketplaces) && plan.marketplaces.length
+      ? plan.marketplaces
+      : dailyMarketplaces;
+
+    const existingKeys = new Set(daily.marketplaces.map(item => item.key));
+    source.forEach((item, index) => {
+      if (!item?.key || existingKeys.has(item.key)) return;
+      const fallback = dailyMarketplaces.find(candidate => candidate.key === item.key) || dailyMarketplaces[index];
+      daily.marketplaces.push({
+        id: `mp-daily-${item.key}`,
+        key: item.key,
+        name: item.name || fallback?.name || item.key,
+        url: '',
+        customLogo: item.customLogo || null,
+        cells: { turnover: '', margin: '', profit: '' },
+        turnover: '',
+        margin: '',
+        profit: ''
+      });
+      existingKeys.add(item.key);
+    });
+
+    return state;
+  }
+
+  try {
+    let raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      for (const key of LEGACY_KEYS) {
+        raw = localStorage.getItem(key);
+        if (raw) break;
+      }
+    }
+
+    const state = migrate(raw ? JSON.parse(raw) : clone(defaultState));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch (error) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(clone(defaultState)));
+  }
+
+  location.replace('./finance-links.html?v=7');
+})();
+</script>
+</body>
+</html>
