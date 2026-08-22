@@ -1,0 +1,160 @@
+{
+  "formatVersion": 1,
+  "generatedAt": "2026-08-22T20:48:26.084Z",
+  "mode": "read-only baseline",
+  "workspace": {
+    "name": "Равиль",
+    "id": "ed4b491d-ab6b-449d-bd9a-7b7992281f96"
+  },
+  "access": {
+    "notion": "connected",
+    "github": "connected: ravilvaliev1999-spec/notion-widgets",
+    "googleDrive": "connected; account identifier is stored only in the private backup"
+  },
+  "counts": {
+    "spheres": 5,
+    "directions": 13,
+    "projects": 45,
+    "tasks": 128,
+    "knowledge": 16,
+    "taskMaterials": 5,
+    "expectedInitialElements": 144
+  },
+  "taskStatusCounts": {
+    "Бэклог": 68,
+    "Готово": 33,
+    "В работе": 7,
+    "Ждет": 14,
+    "Знание": 1,
+    "Идея": 5
+  },
+  "taskProjectCardinality": {
+    "zero": 12,
+    "one": 111,
+    "many": 5
+  },
+  "sourceObjects": {
+    "spheres": {
+      "databasePageId": "3822d62739a180f28da8ca56604ff7b8",
+      "dataSourceId": "3822d627-39a1-8052-9ef1-000bc10b8f68",
+      "active": 5,
+      "archived": 0
+    },
+    "directions": {
+      "databasePageId": "3822d62739a180c181fef3e5fbe7237a",
+      "dataSourceId": "3822d627-39a1-8069-9637-000ba20c3b1d",
+      "active": 13,
+      "archived": 0
+    },
+    "projects": {
+      "databasePageId": "3822d62739a1806993f2d330e7ae918e",
+      "dataSourceId": "3822d627-39a1-8068-aafa-000b9db5ed1c",
+      "active": 45,
+      "archived": 0
+    },
+    "tasks": {
+      "databasePageId": "3822d62739a1807a966df43585d75212",
+      "dataSourceId": "3822d627-39a1-8018-a2dc-000b95bf5722",
+      "active": 128,
+      "archived": 0,
+      "templateId": "3832d627-39a1-8026-9d86-d4b40101c0d7",
+      "views": [
+        "3822d627-39a1-8005-be33-000c2dc6338a",
+        "3912d627-39a1-80b8-9242-000cab9362d2"
+      ]
+    },
+    "knowledge": {
+      "databasePageId": "045802df7e54463bac86f0e02d057231",
+      "dataSourceId": "a8e81b3f-5b88-40a3-9e6c-911a6be59d11",
+      "active": 16,
+      "archived": 0
+    },
+    "taskMaterials": {
+      "databasePageId": "79b560c5a3ad48c1a0dd5bc418c83277",
+      "dataSourceId": "dcc5e9aa-dbe7-4b0b-a4e5-450e0b17263b",
+      "active": 5,
+      "archived": 0
+    },
+    "inaccessibleFiles": {
+      "dataSourceId": "2d90f52d-e637-4648-bfa0-59584a170a07"
+    },
+    "inaccessibleOldKnowledge": {
+      "dataSourceId": "c43dbf41-1e73-4e88-9994-a21fabe1529c",
+      "referencedRows": 20,
+      "accessibleRows": 0
+    }
+  },
+  "denylist": [
+    "ed4b491d-ab6b-449d-bd9a-7b7992281f96",
+    "3822d62739a180f28da8ca56604ff7b8",
+    "3822d627-39a1-8052-9ef1-000bc10b8f68",
+    "3822d62739a180c181fef3e5fbe7237a",
+    "3822d627-39a1-8069-9637-000ba20c3b1d",
+    "3822d62739a1806993f2d330e7ae918e",
+    "3822d627-39a1-8068-aafa-000b9db5ed1c",
+    "3822d62739a1807a966df43585d75212",
+    "3822d627-39a1-8018-a2dc-000b95bf5722",
+    "045802df7e54463bac86f0e02d057231",
+    "a8e81b3f-5b88-40a3-9e6c-911a6be59d11",
+    "79b560c5a3ad48c1a0dd5bc418c83277",
+    "dcc5e9aa-dbe7-4b0b-a4e5-450e0b17263b",
+    "2d90f52d-e637-4648-bfa0-59584a170a07",
+    "c43dbf41-1e73-4e88-9994-a21fabe1529c",
+    "3842d62739a18074b000d6477d56768c",
+    "3832d627-39a1-8026-9d86-d4b40101c0d7",
+    "3902d62739a1808689d2f829226f2b7e",
+    "3932d627-39a1-8184-9f88-c232b8cc988f",
+    "3992d627-39a1-80ee-bab9-e8dbc7850435"
+  ],
+  "anomalies": [
+    {
+      "code": "LEGACY_KB_INACCESSIBLE",
+      "severity": "blocking_for_completeness",
+      "detail": "20 relation targets in old knowledge DS return object_not_found; separate access/export required before completeness can be proven."
+    },
+    {
+      "code": "KNOWLEDGE_POINTERS_NOT_FULL_COPY",
+      "severity": "high",
+      "detail": "The 16 current Knowledge rows are 1:1 summaries pointing to 16 source pages. Those sources contain at least 22383 characters and 74 direct child pages, so recursive body/subtree copy is mandatory."
+    },
+    {
+      "code": "MULTI_PROJECT_TASKS",
+      "severity": "high",
+      "detail": "5 active tasks have 19 direct project links each; 12 have none; 111 have one."
+    },
+    {
+      "code": "DANGLING_PROJECT",
+      "severity": "medium",
+      "id": "3932d627-39a1-8184-9f88-c232b8cc988f",
+      "detail": "Deleted project remains in Sphere and Direction reverse relations."
+    },
+    {
+      "code": "DANGLING_TASK",
+      "severity": "medium",
+      "id": "3992d627-39a1-80ee-bab9-e8dbc7850435",
+      "detail": "Deleted task remains in Project reverse relation and contains a historical widget attachment."
+    },
+    {
+      "code": "MATERIALS_NOT_ISOLATED",
+      "severity": "high",
+      "detail": "Task Materials database has no task relation; current embedded view is global."
+    },
+    {
+      "code": "LIVE_WIDGET_PATH_DRIFT",
+      "severity": "critical",
+      "detail": "main/taskfileswidgetv18.html is a finance widget although README identifies it as task-files."
+    },
+    {
+      "code": "PUBLIC_SHARED_SECRET",
+      "severity": "critical",
+      "detail": "Legacy public HTML and Apps Script contain a shared credential; value intentionally excluded."
+    }
+  ],
+  "limitations": [
+    "Original workspace remained read-only.",
+    "Connector cannot enumerate the full workspace Trash.",
+    "Official Notion export and separate sandbox workspace require an authenticated Notion UI session.",
+    "Old knowledge DS c43dbf41… is inaccessible to the current connection.",
+    "The 16 accessible Knowledge cards are pointers; their source subtrees must be traversed recursively."
+  ]
+}

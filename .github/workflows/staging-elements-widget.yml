@@ -1,0 +1,30 @@
+name: staging-elements-widget
+
+on:
+  push:
+    branches:
+      - staging/notion-elements-widget-v2
+    paths:
+      - "staging/elements-files-widget/**"
+      - ".github/workflows/staging-elements-widget.yml"
+  pull_request:
+    paths:
+      - "staging/elements-files-widget/**"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: staging/elements-files-widget
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node --test backend/test/*.test.mjs frontend/test/*.test.mjs migration/test/*.test.mjs
+      - run: node scripts/secret-scan.mjs
+      - run: docker build -f backend/Dockerfile .
