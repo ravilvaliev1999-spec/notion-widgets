@@ -1,0 +1,38 @@
+{
+  "auditedAt": "2026-08-22",
+  "repository": "ravilvaliev1999-spec/notion-widgets",
+  "productionMain": "ea9361aee9c8666956b24a907784f6a053fe47e6",
+  "bestUxReference": {
+    "branch": "claude/notion-widget-perf-files-8rs10s",
+    "path": "taskfileswidgetv18.html",
+    "internalVersion": "v20",
+    "blobSha": "f43b6c69c0b1bb7f529938f4f3012ec6e8b03d72",
+    "size": 74308,
+    "runtimeApproved": false
+  },
+  "safeIdeasReimplemented": [
+    "four cards",
+    "responsive 4/2/1 layout",
+    "fast cache-first paint",
+    "task-specific binding",
+    "pending-operation recovery",
+    "IndexedDB/localStorage as cache only",
+    "download courier UX"
+  ],
+  "explicitlyRejected": [
+    "public shared key",
+    "live Apps Script endpoint",
+    "JSONP",
+    "whole-Drive recent scan",
+    "localStorage as source of truth",
+    "anonymous tag/upload/download",
+    "base64 upload limit architecture",
+    "public-by-link permissions"
+  ],
+  "mainPathDrift": {
+    "path": "taskfileswidgetv18.html",
+    "blobSha": "071b029e7203939cc99b92ebe735c3fe87525ef6",
+    "actualProduct": "finance widget",
+    "mustNotDeployAsTaskFiles": true
+  }
+}

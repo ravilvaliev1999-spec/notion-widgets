@@ -1,0 +1,40 @@
+{
+  "verifiedAt": "2026-08-22",
+  "documents": [
+    {
+      "name": "Master_prompt_Notion_sandbox.docx",
+      "role": "authoritative full specification",
+      "size": 51983,
+      "sha256": "86343100D185CA5B27320094873F4ACF72F48A6E8C8ECDAF0FB059D8BA9830E6",
+      "driveBackupId": "10_yToduIDEM9H-Nhvl3d6XHJX1mJYH3f"
+    },
+    {
+      "name": "TZ_Notion_widget_files.docx",
+      "role": "supplementary widget specification",
+      "size": 76536,
+      "sha256": "6DEA7C1FBF9041ECCE1986DC05C878BFD3587D77D990ECA42742D1334BAA09D5",
+      "driveBackupId": "1j_ZUpZg34syHk1I2g8ycIhMPAN37DaD4"
+    },
+    {
+      "name": "База знаний.docx",
+      "role": "supplementary knowledge-model specification",
+      "size": 51348,
+      "sha256": "BFFC7DCE787029AB282D2EB44586EA4A134A8D9D752CBB0CDCBBA8206E64D5DD",
+      "driveBackupId": "1-O1tYB9dHJL6APOqJ2Z7QD-lkIE0gHU0"
+    },
+    {
+      "name": "Notion_plan_20_steps.docx",
+      "role": "short execution checklist",
+      "size": 40200,
+      "sha256": "B930B3BA92F8E47FC1EB8186CA17449C60AA9BF0FCAFF36D1EE9ADFFAEE2DF16",
+      "driveBackupId": "1CFujRyEPXyA_5jGNA20QtxFUPQDbQM3B"
+    }
+  ],
+  "verification": {
+    "extraction": "complete",
+    "comments": 0,
+    "trackedChanges": 0,
+    "visualRender": "passed",
+    "backupSizesMatchLocal": true
+  }
+}

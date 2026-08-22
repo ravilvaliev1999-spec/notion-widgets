@@ -1,0 +1,28 @@
+{
+  "environment": "staging",
+  "dryRun": true,
+  "writeGate": "closed",
+  "sandbox": {
+    "workspaceId": "REQUIRED_SEPARATE_WORKSPACE_ID",
+    "rootPageId": "REQUIRED_SANDBOX_ROOT_PAGE_ID",
+    "elementsDatabaseId": "REQUIRED_ELEMENTS_DATABASE_ID",
+    "elementsDataSourceId": "REQUIRED_ELEMENTS_DATA_SOURCE_ID",
+    "spheresDataSourceId": "REQUIRED_SANDBOX_SPHERES_DATA_SOURCE_ID",
+    "directionsDataSourceId": "REQUIRED_SANDBOX_DIRECTIONS_DATA_SOURCE_ID",
+    "projectsDataSourceId": "REQUIRED_SANDBOX_PROJECTS_DATA_SOURCE_ID"
+  },
+  "googleDrive": {
+    "rootFolderId": "REQUIRED_STAGING_DRIVE_FOLDER_ID",
+    "rootMarker": "REQUIRED_APP_PROPERTY_ELEMENTS_STAGING_BOUNDARY",
+    "expectedAccountEmail": "staging-owner@example.com",
+    "perTaskFolders": true,
+    "makePublic": false
+  },
+  "barriers": {
+    "denylistPath": "config/original-denylist.json",
+    "allowArchive": false,
+    "allowPermanentDelete": false,
+    "allowMoveToTrashWithConfirmation": true,
+    "requireSourceToSandboxMap": true
+  }
+}
