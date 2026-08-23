@@ -1,10 +1,11 @@
 {
   "version": 2,
   "title": "Элементы",
-  "creationStrategy": "Clone the sandbox copy of the current Tasks data source, then rewire every relation to sandbox IDs before adding new properties.",
+  "creationStrategy": "Extend the authorized main Elements data source in place. Add only the widget properties below; preserve and hide Legacy properties, statuses and relations until explicit acceptance.",
   "preserveFromTasks": [
     "Name",
     "Статус",
+    "Статус задачи",
     "Приоритет",
     "Дата",
     "Ответственный",
@@ -29,7 +30,9 @@
     "[SYS] Приоритет балл",
     "[SYS] Приоритет задан",
     "[SYS] Флаг: В работе",
-    "[SYS] Флаг: Готово"
+    "[SYS] Флаг: Готово",
+    "Файлы",
+    "📚 Материалы"
   ],
   "properties": {
     "Тип": { "type": "select", "options": ["Задача", "Знание", "Раздел"], "emptyMeans": "Входящие" },
@@ -39,17 +42,17 @@
     "Архив": { "type": "checkbox" },
     "Внутри": { "type": "self_relation", "limit": 1, "reciprocal": "Содержимое" },
     "Содержимое": { "type": "self_relation_reciprocal" },
-    "Знание: Сфера": { "type": "relation", "target": "sandbox.spheresDataSourceId", "limit": 1 },
-    "Знание: Направление": { "type": "relation", "target": "sandbox.directionsDataSourceId", "limit": 1 },
-    "Знание: Проект": { "type": "relation", "target": "sandbox.projectsDataSourceId", "limit": 1 },
+    "Знание: Сфера": { "type": "relation", "target": "authorizedMain.spheresDataSourceId", "limit": 1 },
+    "Знание: Направление": { "type": "relation", "target": "authorizedMain.directionsDataSourceId", "limit": 1 },
+    "Знание: Проект": { "type": "relation", "target": "authorizedMain.projectsDataSourceId", "limit": 1 },
     "[SYS] Прямых мест": { "type": "formula", "expression": "prop(\"Внутри\").length() + prop(\"Знание: Проект\").length() + prop(\"Знание: Направление\").length() + prop(\"Знание: Сфера\").length()" },
     "[SYS] Внутри: Тип": { "type": "formula", "expression": "if(empty(prop(\"Внутри\")), \"\", prop(\"Внутри\").first().prop(\"Тип\"))" },
     "[SYS] Ошибка размещения": { "type": "formula", "contract": "Inbox has 0 direct placements; Knowledge/Section has exactly 1; Knowledge Inside points to Task/Section; Section Inside points only to Section." },
     "[SYS] Ошибка типа": { "type": "formula", "contract": "Knowledge/Section/Inbox must not contain task-only Status, Priority, Projects or Parent/Sub-item values." },
     "[SYS] Вид элемента": { "type": "formula", "expression": "if(empty(prop(\"Тип\")), \"Входящие\", prop(\"Тип\"))" },
-    "[SYS] Контекст: Сфера": { "type": "relation", "target": "sandbox.spheresDataSourceId", "limit": 1, "hidden": true },
-    "[SYS] Контекст: Направление": { "type": "relation", "target": "sandbox.directionsDataSourceId", "limit": 1, "hidden": true },
-    "[SYS] Контекст: Проект": { "type": "relation", "target": "sandbox.projectsDataSourceId", "limit": 1, "hidden": true },
+    "[SYS] Контекст: Сфера": { "type": "relation", "target": "authorizedMain.spheresDataSourceId", "limit": 1, "hidden": true },
+    "[SYS] Контекст: Направление": { "type": "relation", "target": "authorizedMain.directionsDataSourceId", "limit": 1, "hidden": true },
+    "[SYS] Контекст: Проект": { "type": "relation", "target": "authorizedMain.projectsDataSourceId", "limit": 1, "hidden": true },
     "[SYS] Context path": { "type": "rich_text", "hidden": true },
     "[SYS] Ancestor IDs": { "type": "rich_text", "format": "JSON array", "hidden": true },
     "[SYS] Глубина": { "type": "number", "hidden": true },
@@ -70,8 +73,8 @@
     "[SYS] Ошибка sync": { "type": "rich_text", "hidden": true },
     "[SYS] Normalized URL": { "type": "rich_text", "hidden": true },
     "[SYS] Idempotency key": { "type": "rich_text", "hidden": true },
-    "[SYS] Task Page ID": { "type": "formula", "hidden": true },
-    "[SYS] Knowledge key": { "type": "formula", "contract": "task_page_id|g|google_file_id OR task_page_id|u|normalized_url", "hidden": true },
+    "[SYS] Task Page ID": { "type": "formula", "expression": "if(prop(\"Тип\") == \"Знание\" and prop(\"Внутри\").length() == 1 and prop(\"Внутри\").first().prop(\"Тип\") == \"Задача\", prop(\"Внутри\").first().id(), \"\")", "hidden": true },
+    "[SYS] Knowledge key": { "type": "formula", "expression": "if(empty(prop(\"[SYS] Task Page ID\")), \"\", if(not(empty(prop(\"[SYS] Google File ID\"))), prop(\"[SYS] Task Page ID\") + \"|g|\" + prop(\"[SYS] Google File ID\"), if(not(empty(prop(\"[SYS] Normalized URL\"))), prop(\"[SYS] Task Page ID\") + \"|u|\" + prop(\"[SYS] Normalized URL\"), \"\")))", "contract": "task_page_id|g|google_file_id OR task_page_id|u|normalized_url", "hidden": true },
     "[SYS] Integrity": { "type": "select", "options": ["ok", "duplicate", "context_error", "sync_error"], "hidden": true },
     "[MIG] Источник": { "type": "select", "options": ["Tasks", "Knowledge", "Legacy Files", "Manual"], "hidden": true },
     "[MIG] Source Page ID": { "type": "rich_text", "hidden": true },
@@ -86,7 +89,7 @@
   "statusPolicy": {
     "taskOnly": true,
     "groups": { "toDo": ["Идея", "Бэклог"], "inProgress": ["В работе", "Ждет"], "complete": ["Готово"] },
-    "legacyKnowledgeOption": "Migrate every row with Статус=Знание to Тип=Знание, assign exactly one placement, clear Статус, verify, then remove the option in sandbox only."
+    "legacyKnowledgeOption": "Keep the legacy Статус=Знание option and existing values untouched until explicit final acceptance. New widget records never set task-only status properties."
   },
   "views": [
     "Входящие",
@@ -105,12 +108,10 @@
     "[SYS] Архив"
   ],
   "countInvariants": {
-    "tasks": 128,
-    "knowledgePointers": 16,
-    "initialElementsBeforeLegacyFiles": 144,
-    "spheresPreserved": 5,
-    "spheresShownOnMain": 4,
-    "directions": 13,
-    "projects": 45
+    "captureFreshBaselineBeforeEachStage": true,
+    "existingElementsMustNotDecrease": true,
+    "legacyContainersMustNotDecrease": true,
+    "widgetCanaryExpectedDelta": "exactly one row per distinct test material",
+    "spheresShownOnMain": 4
   }
 }

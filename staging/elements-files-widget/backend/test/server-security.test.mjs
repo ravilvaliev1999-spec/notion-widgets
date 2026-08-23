@@ -4,17 +4,16 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { createApplication } from '../server.mjs';
 import { issueTaskToken } from '../lib/auth.mjs';
-import { loadConfig } from '../lib/config.mjs';
+import { AUTHORIZED_MAIN, loadConfig } from '../lib/config.mjs';
 
-const taskId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-const dataSourceId = '33333333333333333333333333333333';
+const taskId = AUTHORIZED_MAIN.canaryTaskPageId;
+const dataSourceId = AUTHORIZED_MAIN.elementsDataSourceId;
 const secret = '0123456789abcdef0123456789abcdef';
 
 function config() {
   const value = loadConfig({
     APP_ENV: 'staging', PORT: '8787', PUBLIC_BASE_URL: 'http://localhost:8787', WIDGET_PUBLIC_URL: 'http://localhost:8787/',
-    ALLOWED_ORIGINS: 'http://localhost:8787', SANDBOX_WORKSPACE_ID: '11111111111111111111111111111111',
-    SANDBOX_PARENT_PAGE_ID: '22222222222222222222222222222222', ELEMENTS_DATA_SOURCE_ID: dataSourceId,
+    ALLOWED_ORIGINS: 'http://localhost:8787', TARGET_PROFILE: 'authorized-main', ELEMENTS_DATA_SOURCE_ID: dataSourceId,
     STAGING_DRIVE_FOLDER_ID: 'drive-staging-folder', TOKEN_SIGNING_SECRET: secret, WRITE_GATE: 'closed', DRY_RUN: 'true'
   }, { allowMissingSecrets: true });
   value.signingSecret = secret;

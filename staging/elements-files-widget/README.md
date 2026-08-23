@@ -1,30 +1,66 @@
 # Notion «Элементы» + файловый виджет — staging
 
-Это изолированная staging-реализация новой системы. Она не заменяет текущий GitHub Pages, Apps Script, шаблон задач или базы исходного Notion.
+Это staging-реализация нового файлового виджета. Её Notion-цель — явно
+разрешённая основная data source «Элементы». Отдельный Notion workspace для
+этого этапа не создаётся. Production-виджет, действующий Apps Script,
+GitHub-ветка `main` и их deployment остаются без изменений до итоговой
+приёмки.
 
-## Текущий результат
+## Граница этапа
 
-- Проверены доступы к Notion, GitHub и Google Drive.
-- Четыре исходных DOCX полностью прочитаны, визуально проверены, хэши и резервные копии зафиксированы.
-- Оригинальный Notion проаудирован только на чтение: 5 сфер, 13 направлений, 45 проектов, 128 задач, 16 текущих записей знаний и несколько legacy-контуров.
-- Создана отдельная GitHub-ветка staging/notion-elements-widget-v2; main не менялся.
-- Подготовлен fail-closed backend без секретов в браузере.
-- Подготовлен новый интерфейс четырёх карточек Drive / Docs / Sheets / Slides.
-- Notion «Элементы» является источником истины; локальное хранилище используется только как кэш.
-- Создание Google-native файлов возвращает Drive File ID сразу.
-- Office-файлы загружаются без конвертации, с SHA-256, размером и оригинальным скачиванием.
-- Порядок, переименование, замена внешней ссылки, архив, отвязка и подтверждённое перемещение в корзину разделены.
-- Rename reconciliation запускается не реже одного раза в 60 секунд.
-- Offline migration harness по умолчанию не умеет делать внешние записи и защищён allowlist/denylist.
+- Notion-запись разрешается только для точного ID основной data source
+  «Элементы» и заранее перечисленных canary/template page ID.
+- Сначала проверяется одна тестовая запись, затем один шаблон задачи.
+- Массового обхода страниц и массовой замены embed нет.
+- Старые базы, страницы, свойства, статусы и связи не удаляются и не
+  очищаются: до приёмки они сохраняются как Legacy либо скрываются.
+- До приёмки заблокированы unlink с очисткой связи, перемещение Drive-файла в
+  корзину и permanent delete.
+- Staging Drive использует отдельный точный root allowlist и не изменяет
+  production Drive-контур.
 
-## Жёсткая граница
+## Модель данных виджета
 
-Сервис стартует только с APP_ENV=staging. Любая запись требует одновременно:
+Notion «Элементы» остаётся источником истины, а локальное хранилище браузера —
+только кэшем. Контракт виджета содержит 19 скрытых полей:
+
+1. `[SYS] Раздел виджета`
+2. `[SYS] Формат файла`
+3. `[SYS] Провайдер`
+4. `[SYS] Google File ID`
+5. `[SYS] Google Folder ID`
+6. `[SYS] MIME type`
+7. `[SYS] Download name`
+8. `[SYS] Размер байт`
+9. `[SYS] SHA-256`
+10. `[SYS] Drive MD5`
+11. `[SYS] Позиция`
+12. `[SYS] Sync status`
+13. `[SYS] Последняя синхронизация`
+14. `[SYS] Ошибка sync`
+15. `[SYS] Normalized URL`
+16. `[SYS] Idempotency key`
+17. `[SYS] Task Page ID`
+18. `[SYS] Knowledge key`
+19. `[SYS] Integrity`
+
+Карточки Drive / Docs / Sheets / Slides работают через fail-closed backend:
+секреты Google и Notion не передаются в браузер. Google-native файл получает
+Drive File ID сразу; Office-файл сохраняется без конвертации, с размером и
+контрольными суммами.
+
+## Жёсткая граница запуска
+
+Сервис стартует только с `APP_ENV=staging`. Любая разрешённая запись требует
+одновременно:
 
     WRITE_GATE=open
     DRY_RUN=false
 
-Sandbox workspace, root page и data source «Элементы» обязаны быть явно заданы и не могут совпадать ни с одним original/production ID. Неизвестный target отклоняется.
+Этого недостаточно само по себе: точные Notion и Drive ID должны пройти
+allowlist, а операция должна относиться к утверждённой canary-записи или
+к отдельному точному rollout шаблона embed. Файловые mutations до приёмки
+остаются canary-only. Неизвестная цель отклоняется.
 
 ## Локальная проверка
 
@@ -33,29 +69,32 @@ Sandbox workspace, root page и data source «Элементы» обязаны 
     node --test backend/test/*.test.mjs frontend/test/*.test.mjs migration/test/*.test.mjs
     node scripts/secret-scan.mjs
 
-Для безопасного запуска health/static UI оставьте WRITE_GATE=closed и DRY_RUN=true. Полный server start требует заполненного server-side OAuth и отдельного sandbox Notion.
+Для безопасного просмотра health/static UI оставьте `WRITE_GATE=closed` и
+`DRY_RUN=true`. Эти команды не являются live E2E и не доказывают готовность
+OAuth, hosting, Notion webhook или реальной синхронизации Drive.
 
 ## Навигация
 
-- docs/ARCHITECTURE.md — модель данных и потоки.
-- docs/SECURITY.md — найденные риски и новые барьеры.
-- docs/NOTION-SANDBOX-BUILD.md — порядок сборки отдельного workspace.
-- docs/TEST-PLAN.md — acceptance-набор.
-- docs/CUTOVER.md — Gate B, production cutover и rollback.
-- docs/DEPLOYMENT-GATES.md — честный список блокеров открытия записи.
-- config/elements-schema.contract.json — полный контракт «Элементы».
-- audit/baseline-summary-2026-08-22.json — агрегированный публично безопасный baseline.
-- migration/README.md — offline migration harness.
+- `docs/ARCHITECTURE.md` — модель данных и потоки.
+- `docs/SECURITY.md` — риски и защитные барьеры.
+- `docs/NOTION-SANDBOX-BUILD.md` — исторический Legacy-план; не активная
+  инструкция.
+- `docs/TEST-PLAN.md` — canary, acceptance и regression.
+- `docs/CUTOVER.md` — переход после итоговой приёмки и rollback.
+- `docs/DEPLOYMENT-GATES.md` — блокеры открытия live-записи.
+- `config/elements-schema.contract.json` — контракт «Элементы».
+- `migration/README.md` — offline migration harness.
 
-## Что ещё требует внешней среды
+## Что остаётся воротами
 
-Полный live acceptance нельзя честно объявить завершённым до появления:
+Live acceptance нельзя считать завершённым, пока не готовы и не проверены:
 
-1. отдельного Notion workspace и официального экспорта исходника;
-2. отдельной sandbox integration с write-доступом только к sandbox;
-3. отдельного Google OAuth client и staging backend URL;
-4. доступа/экспорта недоступной old Knowledge DS c43dbf41… и Files DS 2d90f52d…;
-5. рекурсивной копии поддеревьев 16 legacy source pages;
-6. Gate B после прохождения тестов.
+1. server-side Google OAuth для staging и точный Drive root;
+2. staging backend URL/hosting и HTTPS;
+3. минимально необходимый Notion write-доступ к основной «Элементы»;
+4. canary E2E на desktop/web/mobile, включая duplicate-task isolation,
+   rename, upload/download и recovery;
+5. отдельное подтверждение владельца на любые действия шире одного шаблона.
 
-До этого production остаётся без изменений.
+До этого production-виджет, Apps Script, `main`, массовые embeds и Legacy
+остаются без изменений.

@@ -1,26 +1,53 @@
 # Deployment gates
 
-Код, offline migration и интерфейс готовы к staging-интеграции, но запись намеренно закрыта. Это не список «ручной работы», а перечень внешних доказательств, без которых безопасный запуск нельзя утверждать.
+Staging frontend/backend и staging Drive предназначены для явно разрешённой
+основной Notion data source «Элементы». Отдельный Notion sandbox workspace не
+является требованием этого rollout. Запись остаётся закрытой до появления
+внешних доказательств ниже.
 
-## Блокирует WRITE_GATE=open
+## Блокирует `WRITE_GATE=open`
 
-1. Отдельный Notion workspace ещё не создан: в доступной браузерной сессии нет авторизации, а создавать sandbox-страницу внутри original workspace запрещено.
-2. Нет отдельной sandbox Notion integration и её server-side token.
-3. Нет отдельного deployment Google OAuth client/refresh token. Staging root должен получить уникальный `elementsStagingBoundary` marker.
-4. Duplicate-task isolation требует доказанного host binding. Copied embed нельзя считать безопасным только потому, что webhook позже обновляет URL.
-5. Нужен live acceptance на desktop/web/mobile, включая rename ≤60 секунд, duplicate task, загрузку/скачивание с SHA-256 и восстановление после сбоя.
+1. Не подтверждены точный Elements data source ID и минимальный Notion
+   write-scope только для него.
+2. Не сверены в live-схеме имена, типы, options и формулы всех 19 widget-полей.
+3. Не зафиксированы точные ID одной canary-задачи и одного тестового шаблона;
+   unknown page должен fail closed.
+4. Нет готового staging backend hosting/HTTPS и отдельного server-side Google
+   OAuth client/refresh token.
+5. Staging Drive root должен иметь точный ID, уникальный boundary marker и не
+   иметь anyone/domain permissions.
+6. Duplicate-task isolation требует доказанного host binding. Исправление
+   copied embed постфактум не считается достаточной защитой.
+7. Нужен live E2E на desktop/web/mobile: create/upload/download, SHA-256,
+   rename, reorder, idempotent retry и recovery.
 
-## Блокирует заявление о полной миграции
+Локальные unit/offline tests не закрывают OAuth, hosting или live E2E gates.
 
-- официальный export original workspace не получен;
-- old Knowledge data source и её 20 targets недоступны интеграции;
-- Files data source недоступна;
-- 16 текущих Knowledge cards являются pointers: требуется рекурсивная копия legacy page bodies и дочерних страниц;
-- неоднозначные task relations (5 задач по 19 проектов) требуют бизнес-решения, а не автоматического исправления.
+## Ограничение охвата до приёмки
 
-## Ограничения первой staging-версии
+- сначала одна canary-задача;
+- после успешной сверки — один тестовый шаблон;
+- массовый embed sweep отсутствует;
+- production-виджет, Apps Script, ветка `main` и deployment неизменны;
+- старые базы, страницы, свойства, статусы и связи сохраняются как Legacy или
+  скрываются;
+- unlink с очисткой relation, Drive Trash и permanent delete заблокированы.
 
-- запускать один backend replica; process-local inflight lock дополняется Drive idempotency recovery, но не заменяет распределённый operation ledger;
-- rename worker использует reconciliation polling; 60-секундный SLA должен быть доказан на реальном объёме;
-- permanent Drive purge отсутствует намеренно; удаление из UI перемещает файл в корзину;
-- production main, Apps Script, original templates и original Notion остаются неизменными до отдельного Gate B.
+## Проверка после каждого шага
+
+После canary и после теста шаблона повторно сверяются:
+
+- общее количество и типы записей;
+- `Внутри`, direct placement и task-only relations;
+- формулы и значения 19 widget-полей;
+- системные и пользовательские views;
+- Drive parent, appProperties, MIME, размер и контрольные суммы;
+- отсутствие изменений в production и Legacy-контурах.
+
+Любое необъяснённое расхождение закрывает gate и переводит затронутые canary-
+объекты в `needs_review` без очистки или удаления.
+
+## После приёмки
+
+Любой охват шире одного шаблона, включение unlink/Trash либо production
+cutover требует отдельного решения владельца и нового плана проверки.

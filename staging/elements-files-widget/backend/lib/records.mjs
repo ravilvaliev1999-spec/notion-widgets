@@ -13,6 +13,7 @@ import {
   titleValue
 } from './notion.mjs';
 import { normalizeId } from './config.mjs';
+import { WIDGET_PROPERTY } from './schema.mjs';
 
 export const P = Object.freeze({
   title: 'Name',
@@ -21,20 +22,16 @@ export const P = Object.freeze({
   archive: 'Архив',
   link: 'Ссылка',
   inside: 'Внутри',
-  section: '[SYS] Раздел виджета',
-  fileFormat: '[SYS] Формат файла',
-  provider: '[SYS] Провайдер',
-  googleFileId: '[SYS] Google File ID',
-  googleFolderId: '[SYS] Google Folder ID',
-  position: '[SYS] Позиция',
-  syncStatus: '[SYS] Sync status',
-  syncedAt: '[SYS] Последняя синхронизация',
-  normalizedUrl: '[SYS] Normalized URL',
-  idempotencyKey: '[SYS] Idempotency key',
-  mimeType: '[SYS] MIME type',
-  size: '[SYS] Размер байт',
-  sha256: '[SYS] SHA-256',
-  md5: '[SYS] Drive MD5'
+  taskProjects: '3. Проекты',
+  parentItem: 'Parent item',
+  contextSphere: '[SYS] Контекст: Сфера',
+  contextDirection: '[SYS] Контекст: Направление',
+  contextProject: '[SYS] Контекст: Проект',
+  contextPath: '[SYS] Context path',
+  ancestorIds: '[SYS] Ancestor IDs',
+  depth: '[SYS] Глубина',
+  contextUpdatedAt: '[SYS] Контекст обновлён',
+  ...WIDGET_PROPERTY
 });
 
 const FORMAT_BY_EXTENSION = Object.freeze({
@@ -61,12 +58,13 @@ export function normalizeExternalUrl(input) {
   url.hash = '';
   url.username = '';
   url.password = '';
-  if ((url.protocol === 'https:' && url.port === '443')) url.port = '';
+  if (url.port === '443') url.port = '';
   return url.toString();
 }
 
 function maxPosition(rows, section) {
-  return rows.filter((row) => row.section === section && row.status !== 'archived').reduce((max, row) => Math.max(max, Number(row.position || 0)), 0);
+  return rows.filter((row) => row.section === section && !INACTIVE_RECORD_STATUSES.has(row.status))
+    .reduce((max, row) => Math.max(max, Number(row.position || 0)), 0);
 }
 
 function activeLookupFilters(taskId) {
@@ -81,21 +79,24 @@ function activeLookupFilters(taskId) {
   ];
 }
 
-function findActiveLookupRecord(rows, taskId, dataSourceId) {
+function activeLookupRecords(rows, taskId, dataSourceId) {
   const expectedTaskId = normalizeId(taskId);
   const expectedDataSourceId = normalizeId(dataSourceId);
-  for (const page of rows) {
-    const record = pageToRecord(page);
-    const properties = page.properties || {};
-    if (record.inTrash) continue;
-    if (record.dataSourceId !== expectedDataSourceId) continue;
-    if (propertySelect(properties[P.type]) !== 'Знание') continue;
-    if (properties[P.archive]?.checkbox === true) continue;
-    if (record.taskIds.length !== 1 || record.insideHasMore || record.taskId !== expectedTaskId) continue;
-    if (INACTIVE_RECORD_STATUSES.has(String(record.status || '').toLowerCase())) continue;
-    return record;
-  }
-  return null;
+  return rows.map(pageToRecord).filter((record) =>
+    !record.inTrash &&
+    record.dataSourceId === expectedDataSourceId &&
+    record.type === 'Знание' &&
+    record.archived !== true &&
+    record.taskIds.length === 1 &&
+    !record.insideHasMore &&
+    record.taskId === expectedTaskId &&
+    !INACTIVE_RECORD_STATUSES.has(String(record.status || '').toLowerCase())
+  );
+}
+
+function finiteNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  return Number.isFinite(Number(value)) ? Number(value) : null;
 }
 
 export function pageToRecord(page) {
@@ -106,6 +107,8 @@ export function pageToRecord(page) {
     id: normalizeId(page.id),
     dataSourceId: pageParentDataSource(page),
     name: propertyText(p[P.title]),
+    type: propertySelect(p[P.type]),
+    archived: p[P.archive]?.checkbox === true,
     taskId: inside.length === 1 && !insideHasMore ? inside[0] : '',
     taskIds: inside,
     insideHasMore,
@@ -115,41 +118,63 @@ export function pageToRecord(page) {
     provider: propertySelect(p[P.provider]),
     googleFileId: propertyText(p[P.googleFileId]),
     googleFolderId: propertyText(p[P.googleFolderId]),
+    downloadName: propertyText(p[P.downloadName]),
     position: propertyNumber(p[P.position]) || 0,
     status: propertySelect(p[P.syncStatus]),
+    syncError: propertyText(p[P.syncError]),
+    integrity: propertySelect(p[P.integrity]),
     url: propertyText(p[P.normalizedUrl]),
     idempotencyKey: propertyText(p[P.idempotencyKey]),
     mimeType: propertyText(p[P.mimeType]),
     size: propertyNumber(p[P.size]),
     sha256: propertyText(p[P.sha256]),
     md5: propertyText(p[P.md5]),
+    context: {
+      sphereId: propertyRelation(p[P.contextSphere]).map(normalizeId)[0] || '',
+      directionId: propertyRelation(p[P.contextDirection]).map(normalizeId)[0] || '',
+      projectId: propertyRelation(p[P.contextProject]).map(normalizeId)[0] || '',
+      path: propertyText(p[P.contextPath]),
+      ancestorIds: propertyText(p[P.ancestorIds]),
+      depth: propertyNumber(p[P.depth]) || 0
+    },
     notionUrl: page.url,
     lastEditedTime: page.last_edited_time
   };
 }
 
 export function recordProperties(record) {
+  const context = record.context || {};
   return {
     [P.title]: titleValue(record.name),
     [P.type]: selectValue('Знание'),
     [P.knowledgeFormat]: selectValue(record.provider === 'External URL' ? 'Ссылка' : 'Файл'),
-    [P.archive]: { checkbox: false },
+    [P.archive]: { checkbox: Boolean(record.archived) },
     [P.link]: { url: record.url || null },
     [P.inside]: relationValue([record.taskId]),
+    [P.contextSphere]: relationValue(context.sphereId ? [context.sphereId] : []),
+    [P.contextDirection]: relationValue(context.directionId ? [context.directionId] : []),
+    [P.contextProject]: relationValue(context.projectId ? [context.projectId] : []),
+    [P.contextPath]: richTextValue(context.path || ''),
+    [P.ancestorIds]: richTextValue(context.ancestorIds || '[]'),
+    [P.depth]: { number: finiteNumber(context.depth) || 0 },
+    [P.contextUpdatedAt]: dateValue(context.updatedAt || new Date()),
     [P.section]: selectValue(record.section),
     [P.fileFormat]: selectValue(record.format),
     [P.provider]: selectValue(record.provider),
     [P.googleFileId]: richTextValue(record.googleFileId),
     [P.googleFolderId]: richTextValue(record.googleFolderId),
-    [P.position]: { number: Number(record.position) },
+    [P.mimeType]: richTextValue(record.mimeType),
+    [P.downloadName]: richTextValue(record.downloadName || record.name),
+    [P.size]: { number: finiteNumber(record.size) },
+    [P.sha256]: richTextValue(record.sha256),
+    [P.md5]: richTextValue(record.md5),
+    [P.position]: { number: finiteNumber(record.position) || 0 },
     [P.syncStatus]: selectValue(record.status || 'synced'),
     [P.syncedAt]: dateValue(record.syncedAt || new Date()),
+    [P.syncError]: richTextValue(record.syncError || ''),
     [P.normalizedUrl]: richTextValue(record.url),
     [P.idempotencyKey]: richTextValue(record.idempotencyKey),
-    [P.mimeType]: richTextValue(record.mimeType),
-    [P.size]: { number: Number.isFinite(Number(record.size)) ? Number(record.size) : null },
-    [P.sha256]: richTextValue(record.sha256),
-    [P.md5]: richTextValue(record.md5)
+    [P.integrity]: selectValue(record.integrity || 'ok')
   };
 }
 
@@ -171,19 +196,55 @@ export class RecordRepository {
       },
       sorts: [{ property: P.position, direction: 'ascending' }]
     });
-    const records = rows.map(pageToRecord).filter((row) => !row.inTrash && row.taskId === normalizeId(taskId));
-    return includeArchived ? records : records.filter((row) => row.status !== 'archived' && row.status !== 'unlinked' && row.status !== 'deleted');
+    const records = rows.map(pageToRecord).filter((row) =>
+      !row.inTrash && row.taskIds.length === 1 && !row.insideHasMore && row.taskId === normalizeId(taskId));
+    return includeArchived ? records : records.filter((row) =>
+      !row.archived && !INACTIVE_RECORD_STATUSES.has(String(row.status || '').toLowerCase()));
+  }
+
+  async listGoogleDriveForTask(taskId, includeArchived = false) {
+    const rows = await this.notion.queryDataSource(this.config.elementsDataSourceId, {
+      filter: {
+        and: [
+          { property: P.type, select: { equals: 'Знание' } },
+          { property: P.inside, relation: { contains: normalizeId(taskId) } },
+          { property: P.provider, select: { equals: 'Google Drive' } },
+          { property: P.googleFileId, rich_text: { is_not_empty: true } }
+        ]
+      },
+      sorts: [{ property: P.position, direction: 'ascending' }]
+    });
+    const records = rows.map(pageToRecord).filter((row) =>
+      !row.inTrash && row.dataSourceId === normalizeId(this.config.elementsDataSourceId) &&
+      row.type === 'Знание' && row.provider === 'Google Drive' && row.googleFileId &&
+      row.taskIds.length === 1 && !row.insideHasMore && row.taskId === normalizeId(taskId));
+    return includeArchived ? records : records.filter((row) =>
+      !row.archived && !INACTIVE_RECORD_STATUSES.has(String(row.status || '').toLowerCase()));
   }
 
   async getForTask(taskId, recordId) {
     const page = await this.notion.retrievePage(recordId);
     const record = pageToRecord(page);
     invariant(!record.inTrash, 410, 'record_in_trash', 'Запись файла находится в корзине или архиве');
-    invariant(record.dataSourceId === normalizeId(this.config.elementsDataSourceId), 404, 'record_not_found', 'Запись находится вне sandbox «Элементы»');
-    invariant(record.taskIds.length === 1 && !record.insideHasMore, 409, 'ambiguous_record_placement', 'Запись файла должна быть связана ровно с одной задачей');
+    invariant(record.dataSourceId === normalizeId(this.config.elementsDataSourceId), 404, 'record_not_found',
+      'Запись находится вне утверждённой main DS «Элементы»');
+    invariant(record.taskIds.length === 1 && !record.insideHasMore, 409, 'ambiguous_record_placement',
+      'Запись файла должна быть связана ровно с одной задачей');
     invariant(record.taskId === normalizeId(taskId), 404, 'record_not_found', 'Файл не принадлежит этой задаче');
-    invariant(propertySelect(page.properties && page.properties[P.type]) === 'Знание', 404, 'record_not_found', 'Запись файла некорректна');
+    invariant(record.type === 'Знание', 404, 'record_not_found', 'Запись файла некорректна');
     return record;
+  }
+
+  async uniqueActive(rows, taskId) {
+    const records = activeLookupRecords(rows, taskId, this.config.elementsDataSourceId);
+    if (records.length > 1) {
+      await Promise.allSettled(records.map((record) => this.patch(taskId, record.id, {
+        integrity: 'duplicate',
+        syncError: 'duplicate_widget_identity'
+      })));
+      throw new AppError(409, 'duplicate_widget_records', 'Обнаружены дубли материалов; записи сохранены и помечены для проверки');
+    }
+    return records[0] || null;
   }
 
   async findByIdempotency(taskId, key) {
@@ -195,7 +256,7 @@ export class RecordRepository {
         ]
       }
     });
-    return findActiveLookupRecord(rows, taskId, this.config.elementsDataSourceId);
+    return this.uniqueActive(rows, taskId);
   }
 
   async findByUniqueKey(taskId, input) {
@@ -208,7 +269,7 @@ export class RecordRepository {
     const rows = await this.notion.queryDataSource(this.config.elementsDataSourceId, {
       filter: { and: [...activeLookupFilters(taskId), identity] }
     });
-    return findActiveLookupRecord(rows, taskId, this.config.elementsDataSourceId);
+    return this.uniqueActive(rows, taskId);
   }
 
   async create(taskId, input) {
@@ -227,10 +288,14 @@ export class RecordRepository {
         idempotencyKey: key,
         position: input.position || maxPosition(current, input.section) + 1,
         status: input.status || 'synced',
+        integrity: input.integrity || 'ok',
+        syncError: input.syncError || '',
         syncedAt: new Date()
       };
       const page = await this.notion.createPage(this.config.elementsDataSourceId, recordProperties(record));
-      return pageToRecord(page);
+      const created = pageToRecord(page);
+      await this.findByUniqueKey(taskId, input);
+      return created;
     })();
     this.inflight.set(operationKey, operation);
     try { return await operation; } finally { this.inflight.delete(operationKey); }
@@ -240,19 +305,34 @@ export class RecordRepository {
     await this.getForTask(taskId, recordId);
     const properties = {};
     if (changes.name !== undefined) properties[P.title] = titleValue(changes.name);
-    if (changes.type !== undefined) properties[P.type] = selectValue(changes.type);
     if (changes.archive !== undefined) properties[P.archive] = { checkbox: Boolean(changes.archive) };
-    if (changes.position !== undefined) properties[P.position] = { number: Number(changes.position) };
+    if (changes.position !== undefined) properties[P.position] = { number: finiteNumber(changes.position) };
     if (changes.status !== undefined) properties[P.syncStatus] = selectValue(changes.status);
     if (changes.section !== undefined) properties[P.section] = selectValue(changes.section);
     if (changes.format !== undefined) properties[P.fileFormat] = selectValue(changes.format);
-    if (changes.taskId !== undefined) properties[P.inside] = relationValue(changes.taskId ? [changes.taskId] : []);
+    if (changes.provider !== undefined) properties[P.provider] = selectValue(changes.provider);
+    if (changes.googleFileId !== undefined) properties[P.googleFileId] = richTextValue(changes.googleFileId);
+    if (changes.googleFolderId !== undefined) properties[P.googleFolderId] = richTextValue(changes.googleFolderId);
+    if (changes.mimeType !== undefined) properties[P.mimeType] = richTextValue(changes.mimeType);
+    if (changes.downloadName !== undefined) properties[P.downloadName] = richTextValue(changes.downloadName);
+    if (changes.size !== undefined) properties[P.size] = { number: finiteNumber(changes.size) };
+    if (changes.sha256 !== undefined) properties[P.sha256] = richTextValue(changes.sha256);
+    if (changes.md5 !== undefined) properties[P.md5] = richTextValue(changes.md5);
     if (changes.syncedAt !== undefined) properties[P.syncedAt] = dateValue(changes.syncedAt);
+    if (changes.syncError !== undefined) properties[P.syncError] = richTextValue(changes.syncError);
+    if (changes.integrity !== undefined) properties[P.integrity] = selectValue(changes.integrity);
     if (changes.url !== undefined) {
       properties[P.normalizedUrl] = richTextValue(changes.url);
       properties[P.link] = { url: changes.url || null };
     }
     const page = await this.notion.updatePage(recordId, properties);
     return pageToRecord(page);
+  }
+
+  async markTaskIntegrity(taskId, integrity, syncError = '') {
+    return this.notion.updatePage(normalizeId(taskId), {
+      [P.integrity]: selectValue(integrity),
+      [P.syncError]: richTextValue(syncError)
+    });
   }
 }

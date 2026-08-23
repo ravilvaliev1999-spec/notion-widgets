@@ -64,3 +64,18 @@ test('Drive preflight rejects anyone/domain access before opening the gate', asy
     { code: 'public_drive_boundary' }
   );
 });
+
+test('Drive idempotency and task-folder lookups fail closed on duplicates', async () => {
+  const duplicateFiles = [{ id: 'one' }, { id: 'two' }];
+  const drive = client(async () => response({ files: duplicateFiles }));
+  await assert.rejects(drive.findFileByIdempotency({
+    folderId: 'folder', taskId: 'a'.repeat(32), idempotencyKey: 'idem-12345678'
+  }), { code: 'duplicate_drive_identity' });
+  await assert.rejects(drive.ensureTaskFolder(rootId, 'a'.repeat(32), 'Task'), { code: 'duplicate_task_folder' });
+});
+
+test('Drive client exposes no trash or permanent-delete capability', () => {
+  const drive = client(async () => response({}));
+  assert.equal(typeof drive.trashFile, 'undefined');
+  assert.equal(typeof drive.deleteFile, 'undefined');
+});

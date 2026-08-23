@@ -73,12 +73,21 @@ test('widget record uses knowledge type and direct Inside relation only', () => 
     provider: 'Google Drive', googleFileId: 'drive-id', googleFolderId: 'folder-id', position: 1,
     status: 'synced', url: 'https://drive.google.com/file/d/x', idempotencyKey: 'idem-12345678',
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', size: 12,
-    sha256: 'a'.repeat(64), md5: 'b'.repeat(32), syncedAt: new Date('2026-08-22T00:00:00Z')
+    downloadName: 'original.docx', sha256: 'a'.repeat(64), md5: 'b'.repeat(32),
+    syncError: '', integrity: 'ok', context: {
+      sphereId: '11111111111111111111111111111111', directionId: '22222222222222222222222222222222',
+      projectId: '33333333333333333333333333333333', path: 'S / D / P / T', ancestorIds: '[]', depth: 0
+    }, syncedAt: new Date('2026-08-22T00:00:00Z')
   });
   assert.equal(properties['Тип'].select.name, 'Знание');
   assert.equal(properties['Внутри'].relation[0].id, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
   assert.equal(properties['3. Проекты'], undefined);
   assert.equal(properties['Parent item'], undefined);
+  assert.equal(properties[P.downloadName].rich_text[0].text.content, 'original.docx');
+  assert.equal(properties[P.integrity].select.name, 'ok');
+  assert.equal(properties[P.taskPageId], undefined);
+  assert.equal(properties[P.knowledgeKey], undefined);
+  assert.equal(recordProperties({ name: 'native', taskId, context: {}, size: null })[P.size].number, null);
 });
 
 test('Task and Section rows with colliding keys never satisfy record dedup lookups', async () => {
@@ -164,4 +173,30 @@ test('re-adding an archived identity creates a new active row instead of reporti
   assert.equal(created.id, 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee');
   assert.equal(created.status, 'synced');
   assert.equal(created.taskId, taskId);
+});
+
+test('duplicate active records are preserved and marked Integrity=duplicate', async () => {
+  const first = lookupPage({ id: '11111111111111111111111111111111' });
+  const second = lookupPage({ id: '22222222222222222222222222222222' });
+  const pages = new Map([[first.id, first], [second.id, second]]);
+  const updates = [];
+  const notion = {
+    queryDataSource: async () => [first, second],
+    retrievePage: async (id) => pages.get(id),
+    updatePage: async (id, properties) => {
+      updates.push({ id, properties });
+      const page = pages.get(id);
+      return { ...page, properties: { ...page.properties, ...properties } };
+    }
+  };
+  const repository = new RecordRepository({ elementsDataSourceId: dataSourceId }, notion);
+  await assert.rejects(repository.findByIdempotency(taskId, 'lookup-key-12345678'), {
+    code: 'duplicate_widget_records'
+  });
+  assert.equal(updates.length, 2);
+  assert.deepEqual(updates.map((update) => update.id).sort(), [first.id, second.id].sort());
+  for (const update of updates) {
+    assert.equal(update.properties[P.integrity].select.name, 'duplicate');
+    assert.equal(update.properties[P.syncError].rich_text[0].text.content, 'duplicate_widget_identity');
+  }
 });

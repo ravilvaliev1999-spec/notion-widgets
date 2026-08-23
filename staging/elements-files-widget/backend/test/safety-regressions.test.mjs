@@ -5,13 +5,13 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { createApplication } from '../server.mjs';
 import { issueTaskToken } from '../lib/auth.mjs';
-import { loadConfig } from '../lib/config.mjs';
+import { AUTHORIZED_MAIN, loadConfig } from '../lib/config.mjs';
 import { P, RecordRepository } from '../lib/records.mjs';
 
-const taskId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const taskId = AUTHORIZED_MAIN.canaryTaskPageId;
 const otherTaskId = 'cccccccccccccccccccccccccccccccc';
 const recordId = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
-const dataSourceId = '33333333333333333333333333333333';
+const dataSourceId = AUTHORIZED_MAIN.elementsDataSourceId;
 const secret = '0123456789abcdef0123456789abcdef';
 const taskFolderId = 'drive-task-folder';
 
@@ -22,8 +22,7 @@ function stagingConfig({ writeEnabled = false } = {}) {
     PUBLIC_BASE_URL: 'http://localhost:8787',
     WIDGET_PUBLIC_URL: 'http://localhost:8787/',
     ALLOWED_ORIGINS: 'http://localhost:8787',
-    SANDBOX_WORKSPACE_ID: '11111111111111111111111111111111',
-    SANDBOX_PARENT_PAGE_ID: '22222222222222222222222222222222',
+    TARGET_PROFILE: 'authorized-main',
     ELEMENTS_DATA_SOURCE_ID: dataSourceId,
     STAGING_DRIVE_FOLDER_ID: 'drive-staging-folder',
     STAGING_DRIVE_MARKER: 'ELEMENTS_WIDGET_STAGING_ONLY',
@@ -76,6 +75,19 @@ function widgetHeaders(extra = {}) {
 
 async function withServer(config, dependencies, run) {
   const app = createApplication(config, {
+    targetPreflight: async () => true,
+    contextResolver: async () => ({
+      sphereId: AUTHORIZED_MAIN.spheresDataSourceId,
+      directionId: AUTHORIZED_MAIN.directionsDataSourceId,
+      projectId: AUTHORIZED_MAIN.projectsDataSourceId,
+      path: 'Sphere / Direction / Project / Task',
+      ancestorIds: '[]',
+      depth: 0,
+      updatedAt: new Date(),
+      status: 'synced',
+      integrity: 'ok',
+      syncError: ''
+    }),
     ...dependencies,
     logger: { error() {}, info() {}, warn() {} }
   });
@@ -140,7 +152,7 @@ test('a knowledge record with two Inside relations is hidden from list and rejec
   });
 });
 
-test('physical deletion requires a two-step X-Delete-Token and trashes instead of hard-deleting', async () => {
+test('physical deletion routes are absent and archive/unlink preserve Type and Inside', async () => {
   const record = {
     id: recordId,
     taskId,
@@ -159,61 +171,34 @@ test('physical deletion requires a two-step X-Delete-Token and trashes instead o
       return { ...record, ...changes };
     }
   };
-  const trashCalls = [];
-  const deleteCalls = [];
   const drive = {
-    assertStagingRoot: async () => ({ root: { id: 'drive-staging-folder' }, principal: { emailAddress: 'sandbox@example.test' } }),
-    getFile: async () => ({
-      id: record.googleFileId,
-      name: record.name,
-      trashed: false,
-      parents: [taskFolderId],
-      appProperties: { elementsTaskPageId: taskId }
-    }),
-    trashFile: async (fileId) => {
-      trashCalls.push(fileId);
-      return { id: fileId, trashed: true };
-    },
-    deleteFile: async (fileId) => {
-      deleteCalls.push(fileId);
-    }
+    assertStagingRoot: async () => ({ root: { id: 'drive-staging-folder' }, principal: { emailAddress: 'sandbox@example.test' } })
   };
 
   await withServer(stagingConfig({ writeEnabled: true }), { notion, drive, records }, async (base) => {
-    const direct = await fetch(base + '/api/v1/tasks/' + taskId + '/files/' + recordId + '/physical-delete', {
-      method: 'POST',
-      headers: widgetHeaders()
-    });
-    const directPayload = await direct.json();
-    assert.equal(direct.status, 401);
-    assert.equal(directPayload.error.code, 'invalid_token');
-    assert.deepEqual(trashCalls, []);
-    assert.deepEqual(deleteCalls, []);
+    for (const suffix of ['physical-delete-intent', 'physical-delete']) {
+      const response = await fetch(base + '/api/v1/tasks/' + taskId + '/files/' + recordId + '/' + suffix, {
+        method: 'POST', headers: widgetHeaders()
+      });
+      assert.equal(response.status, 404);
+      assert.equal((await response.json()).error.code, 'not_found');
+    }
 
-    const intent = await fetch(base + '/api/v1/tasks/' + taskId + '/files/' + recordId + '/physical-delete-intent', {
-      method: 'POST',
-      headers: widgetHeaders()
-    });
-    const intentPayload = await intent.json();
-    assert.equal(intent.status, 200);
-    assert.equal(typeof intentPayload.deleteToken, 'string');
-    assert.ok(intentPayload.deleteToken.length > 40);
-
-    const confirmed = await fetch(base + '/api/v1/tasks/' + taskId + '/files/' + recordId + '/physical-delete', {
-      method: 'POST',
-      headers: widgetHeaders({ 'X-Delete-Token': intentPayload.deleteToken })
-    });
-    const confirmedPayload = await confirmed.json();
-
-    assert.equal(confirmed.status, 200);
-    assert.equal(confirmedPayload.item.status, 'deleted');
-    assert.deepEqual(trashCalls, [record.googleFileId]);
-    assert.deepEqual(deleteCalls, []);
-    assert.equal(patchCalls.length, 1);
-    assert.equal(patchCalls[0].actualTaskId, taskId);
-    assert.equal(patchCalls[0].actualRecordId, recordId);
-    assert.equal(patchCalls[0].changes.status, 'deleted');
-    assert.equal(patchCalls[0].changes.taskId, null);
+    for (const action of ['archive', 'unlink']) {
+      const response = await fetch(base + '/api/v1/tasks/' + taskId + '/files/' + recordId + '/' + action, {
+        method: 'POST', headers: widgetHeaders()
+      });
+      assert.equal(response.status, 200);
+    }
+    assert.equal(patchCalls.length, 2);
+    assert.deepEqual(patchCalls.map((call) => call.changes.status), ['archived', 'unlinked']);
+    for (const call of patchCalls) {
+      assert.equal(call.actualTaskId, taskId);
+      assert.equal(call.actualRecordId, recordId);
+      assert.equal(call.changes.archive, true);
+      assert.equal('type' in call.changes, false);
+      assert.equal('taskId' in call.changes, false);
+    }
   });
 });
 
@@ -285,8 +270,6 @@ test('ambiguous Notion failure preserves the Drive file and retry recovers it by
   let createdFile = null;
   let createNativeCalls = 0;
   const recoveryCalls = [];
-  const trashCalls = [];
-  const deleteCalls = [];
   const drive = {
     assertStagingRoot: async () => ({ root: { id: 'drive-staging-folder' }, principal: { emailAddress: 'sandbox@example.test' } }),
     ensureTaskFolder: async () => ({ id: taskFolderId }),
@@ -308,9 +291,7 @@ test('ambiguous Notion failure preserves the Drive file and retry recovers it by
         }
       };
       return createdFile;
-    },
-    trashFile: async (fileId) => { trashCalls.push(fileId); },
-    deleteFile: async (fileId) => { deleteCalls.push(fileId); }
+    }
   };
   let notionCreateAttempts = 0;
   const records = {
@@ -329,9 +310,6 @@ test('ambiguous Notion failure preserves the Drive file and retry recovers it by
     assert.equal(first.status, 500);
     assert.equal(firstPayload.error.code, 'internal_error');
     assert.equal(createNativeCalls, 1);
-    assert.deepEqual(trashCalls, []);
-    assert.deepEqual(deleteCalls, []);
-
     const retry = await nativeRequest(base, 'native-recovery-12345678');
     const retryPayload = await retry.json();
 
@@ -345,8 +323,6 @@ test('ambiguous Notion failure preserves the Drive file and retry recovers it by
       taskId,
       idempotencyKey: 'native-recovery-12345678'
     });
-    assert.deepEqual(trashCalls, []);
-    assert.deepEqual(deleteCalls, []);
   });
 });
 
@@ -484,7 +460,7 @@ test('crash after verified upload is recovered without uploading bytes twice', a
   });
 });
 
-test('unverified corrupt recovery is never promoted when quarantine fails', async () => {
+test('unverified corrupt recovery is preserved for review and never promoted', async () => {
   const expected = Buffer.from('abc');
   const corrupt = Buffer.from('abd');
   const sha256 = createHash('sha256').update(expected).digest('hex');
@@ -492,7 +468,6 @@ test('unverified corrupt recovery is never promoted when quarantine fails', asyn
   let uploadArgs;
   let exposeCorrupt = false;
   let createCalls = 0;
-  let trashCalls = 0;
   const drive = {
     assertStagingRoot: async () => ({ root: { id: 'drive-staging-folder' }, principal: { emailAddress: 'sandbox@example.test' } }),
     ensureTaskFolder: async () => ({ id: taskFolderId }),
@@ -504,8 +479,7 @@ test('unverified corrupt recovery is never promoted when quarantine fails', asyn
       }
     }) : null,
     initiateResumable: async (args) => { uploadArgs = args; return 'https://upload.example.test/corrupt-session'; },
-    downloadFile: async () => new Response(corrupt, { status: 200 }),
-    trashFile: async () => { trashCalls += 1; throw new Error('Drive trash unavailable'); }
+    downloadFile: async () => new Response(corrupt, { status: 200 })
   };
   const records = {
     findByIdempotency: async () => null,
@@ -525,9 +499,9 @@ test('unverified corrupt recovery is never promoted when quarantine fails', asyn
       const result = await fetch(base + '/api/v1/tasks/' + taskId + '/uploads', {
         method: 'PUT', headers: widgetHeaders({ 'X-Upload-Token': session.uploadToken, 'Content-Type': 'application/octet-stream' }), body: expected
       });
-      assert.equal(result.status, 500);
+      assert.equal(result.status, 422);
+      assert.equal((await result.json()).error.code, 'upload_recovery_checksum_mismatch');
     }
-    assert.equal(trashCalls, 2);
     assert.equal(createCalls, 0);
   });
 });

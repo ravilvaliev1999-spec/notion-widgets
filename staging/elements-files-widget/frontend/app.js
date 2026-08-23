@@ -17,7 +17,7 @@
   };
   var NATIVE_KIND = { Docs: "docs", Sheets: "sheets", Slides: "slides" };
   var MAX_UPLOAD_BYTES = 512 * 1024 * 1024;
-  var CACHE_VERSION = 1;
+  var CACHE_VERSION = 2;
   var REFRESH_INTERVAL_MS = 60000;
   var HASH_CHUNK_BYTES = 4 * 1024 * 1024;
 
@@ -185,9 +185,9 @@
       renderSkeletons();
     }
 
-    refresh({ quiet: Boolean(cached) });
+    refresh({ quiet: Boolean(cached), reconcile: true });
     state.refreshTimer = window.setInterval(function () {
-      if (document.visibilityState === "visible" && navigator.onLine) refresh({ quiet: true });
+      if (document.visibilityState === "visible" && navigator.onLine) refresh({ quiet: true, reconcile: false });
     }, REFRESH_INTERVAL_MS);
     updateCacheAge();
     window.setInterval(updateCacheAge, 30000);
@@ -196,7 +196,7 @@
 
   function bindEvents() {
     dom.themeButton.addEventListener("click", cycleTheme);
-    dom.refreshButton.addEventListener("click", function () { refresh({ quiet: false }); });
+    dom.refreshButton.addEventListener("click", function () { refresh({ quiet: false, reconcile: true }); });
     dom.addButton.addEventListener("click", function () { openAddDialog("Drive", "link"); });
 
     document.addEventListener("click", handleDocumentClick);
@@ -239,11 +239,11 @@
     window.addEventListener("online", function () {
       updateNetworkState();
       toast("Соединение восстановлено", "success");
-      refresh({ quiet: true });
+      refresh({ quiet: true, reconcile: true });
     });
     window.addEventListener("offline", updateNetworkState);
     document.addEventListener("visibilitychange", function () {
-      if (document.visibilityState === "visible" && navigator.onLine) refresh({ quiet: true });
+      if (document.visibilityState === "visible" && navigator.onLine) refresh({ quiet: true, reconcile: false });
     });
     window.addEventListener("storage", function (event) {
       if (event.key === themeKey()) applySavedTheme();
@@ -384,8 +384,7 @@
     appendAction(popover, isDownloadable(item) ? "download" : "open", item.id, isDownloadable(item) ? "Скачать" : "Открыть");
     popover.appendChild(element("span", "action-divider"));
     appendAction(popover, "archive", item.id, "Архивировать");
-    appendAction(popover, "unlink", item.id, "Отвязать от задачи");
-    if (canPhysicallyDelete(item)) appendAction(popover, "physical-delete", item.id, "Переместить файл в корзину", true);
+    appendAction(popover, "unlink", item.id, "Скрыть без удаления связей");
     menu.append(summary, popover);
     actions.appendChild(menu);
 
@@ -533,10 +532,6 @@
     return item.provider === "Google Drive" && Boolean(item.googleFileId) && !isNative(item);
   }
 
-  function canPhysicallyDelete(item) {
-    return item.provider === "Google Drive" && Boolean(item.googleFileId);
-  }
-
   async function refresh(options) {
     if (state.refreshing || !context.validTask || !context.validAccess || !context.validBinding || !navigator.onLine) return;
     state.refreshing = true;
@@ -544,14 +539,24 @@
     dom.refreshButton.setAttribute("aria-busy", "true");
     if (!options.quiet) setSync("neutral", "Обновление…");
     try {
-      var payload = await api("/api/v1/tasks/" + context.taskId + "/files");
+      var payload;
+      if (options && options.reconcile) {
+        try {
+          payload = await api("/api/v1/tasks/" + context.taskId + "/refresh", { method: "POST" });
+        } catch (error) {
+          if (["write_gate_closed", "dry_run_enabled", "task_write_not_allowlisted"].indexOf(error && error.code) === -1) throw error;
+          payload = await api("/api/v1/tasks/" + context.taskId + "/files");
+        }
+      } else {
+        payload = await api("/api/v1/tasks/" + context.taskId + "/files");
+      }
       if (!payload || !Array.isArray(payload.items)) throw new WidgetError("invalid_response", "Сервер вернул неизвестный формат списка.");
       state.items = normaliseItems(payload.items);
       state.cachedAt = Date.now();
       state.loaded = true;
       writeCache();
       render();
-      setSync("success", "Синхронизировано", "Каталог sandbox «Элементы»");
+      setSync("success", "Синхронизировано", "Каталог основной DS «Элементы»");
     } catch (error) {
       handleError(error, state.loaded ? "Показана последняя локальная копия." : "Не удалось получить список файлов.");
       if (!state.loaded) renderEmpty();
@@ -584,8 +589,11 @@
       provider: String(raw.provider || ""),
       googleFileId: String(raw.googleFileId || "").slice(0, 300),
       googleFolderId: String(raw.googleFolderId || "").slice(0, 300),
+      downloadName: String(raw.downloadName || raw.name || "").slice(0, 240),
       position: raw.position === null || raw.position === undefined || raw.position === "" ? null : Number(raw.position),
       status: String(raw.status || "active"),
+      syncError: String(raw.syncError || "").slice(0, 2000),
+      integrity: String(raw.integrity || "ok").slice(0, 40),
       url: String(raw.url || "").slice(0, 4096),
       mimeType: String(raw.mimeType || "").slice(0, 180),
       size: raw.size === null || raw.size === undefined ? null : Number(raw.size),
@@ -752,7 +760,6 @@
     else if (action === "move-down") moveItem(item, 1);
     else if (action === "archive") openConfirmation(item, "archive");
     else if (action === "unlink") openConfirmation(item, "unlink");
-    else if (action === "physical-delete") openConfirmation(item, "physical-delete");
   }
 
   function openItem(item) {
@@ -1274,16 +1281,10 @@
         typed: false
       },
       unlink: {
-        title: "Отвязать от задачи?",
-        message: "Связь карточки «" + item.name + "» с текущей задачей будет удалена. Сам материал не удаляется.",
-        button: "Отвязать",
+        title: "Скрыть карточку?",
+        message: "Карточка «" + item.name + "» будет архивирована и исчезнет из виджета. Тип, задача, связи и файл сохранятся.",
+        button: "Скрыть",
         typed: false
-      },
-      "physical-delete": {
-        title: "Переместить файл в корзину Drive?",
-        message: "Физический файл «" + item.name + "» будет перемещён в корзину из защищённой папки задачи. Карточка исчезнет из виджета.",
-        button: "Переместить в корзину",
-        typed: true
       }
     };
     var definition = definitions[action];
@@ -1310,23 +1311,12 @@
     }
     setFormBusy(dom.confirmForm, true);
     try {
-      if (current.action === "physical-delete") {
-        var intent = await api("/api/v1/tasks/" + context.taskId + "/files/" + current.item.id + "/physical-delete-intent", { method: "POST" });
-        if (!intent || !intent.deleteToken || !intent.item || intent.item.name !== current.item.name) {
-          throw new WidgetError("invalid_delete_intent", "Сервер не подтвердил точное имя удаляемого файла.");
-        }
-        await api("/api/v1/tasks/" + context.taskId + "/files/" + current.item.id + "/physical-delete", {
-          method: "POST",
-          headers: { "X-Delete-Token": intent.deleteToken }
-        });
-      } else {
-        await api("/api/v1/tasks/" + context.taskId + "/files/" + current.item.id + "/" + current.action, { method: "POST" });
-      }
+      await api("/api/v1/tasks/" + context.taskId + "/files/" + current.item.id + "/" + current.action, { method: "POST" });
       state.items = state.items.filter(function (item) { return item.id !== current.item.id; });
       writeCache();
       render();
       closeDialog(dom.confirmDialog);
-      var labels = { archive: "Карточка архивирована", unlink: "Материал отвязан", "physical-delete": "Файл перемещён в корзину" };
+      var labels = { archive: "Карточка архивирована", unlink: "Карточка скрыта, связи сохранены" };
       toast(labels[current.action], "success");
       await refresh({ quiet: true });
     } catch (error) {
@@ -1544,15 +1534,15 @@
   }
 
   function cacheKey() {
-    return "elements-files-widget:v1:cache:" + (context.validTask ? context.taskId : "invalid");
+    return "elements-files-widget:v2:cache:" + (context.validTask ? context.taskId : "invalid");
   }
 
   function expandedKey(section) {
-    return "elements-files-widget:v1:expanded:" + (context.validTask ? context.taskId : "invalid") + ":" + section;
+    return "elements-files-widget:v2:expanded:" + (context.validTask ? context.taskId : "invalid") + ":" + section;
   }
 
   function themeKey() {
-    return "elements-files-widget:v1:theme";
+    return "elements-files-widget:v2:theme";
   }
 
   function readCache() {

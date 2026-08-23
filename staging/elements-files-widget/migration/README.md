@@ -1,8 +1,14 @@
 # Offline migration harness
 
-This directory is the only supported migration path for the staging
-`Elements` data source. It has no HTTP client and cannot call Notion, Drive,
-Apps Script, GitHub Pages, or another external service.
+This directory is an offline audit/planning harness. It has no HTTP client and
+cannot call Notion, Drive, Apps Script, GitHub Pages, or another external
+service. It is not permission to run a bulk migration against the live main
+`Elements` data source.
+
+For the active rollout, staging frontend/backend may target only the explicitly
+authorized main Notion `Elements` data source, first one canary page and then
+one approved task template. Production widget, Apps Script, the `main` branch,
+and existing embeds remain untouched. There is no mass embed sweep.
 
 ## Safety model
 
@@ -13,20 +19,30 @@ Apps Script, GitHub Pages, or another external service.
 - `DRY_RUN` defaults to `true`; `WRITE_GATE` defaults to `closed`.
 - `apply` writes only an offline target JSON file and version-2 ledger, and
   requires `APP_ENV=staging`, `WRITE_GATE=open`, and `DRY_RUN=false`.
-- `SANDBOX_WORKSPACE_ID`, `SANDBOX_PARENT_PAGE_ID`, and
-  `ELEMENTS_DATA_SOURCE_ID` form the required write allowlist.
-- Every sandbox page ID used by an external relation map must also be listed in
-  `SANDBOX_WRITE_ALLOWLIST_IDS`.
-- A relation-map target may never be a source ID, an original denylist ID, or
-  an ID outside the sandbox allowlist.
-- `ORIGINAL_DENYLIST_IDS` must contain the source workspace, task data source,
-  and knowledge data source IDs. Any allowlist/denylist overlap fails closed.
+- The exact target workspace/page/data-source IDs form the required offline
+  target allowlist. In builds that still expose `SANDBOX_*` environment names,
+  those are legacy variable names and do not require a separate Notion
+  workspace.
+- Every target page ID used by an external relation map must also be listed in
+  the exact write allowlist.
+- A relation-map target may never be a source ID, a protected denylist ID, or
+  an ID outside the target allowlist.
+- `ORIGINAL_DENYLIST_IDS` contains protected IDs that are outside the explicit
+  target. Any allowlist/denylist overlap fails closed.
 - Defaults enforce exactly 128 tasks, 0 sections, and 16 knowledge records.
   Override only with reviewed `MIGRATION_EXPECTED_TASKS`,
   `MIGRATION_EXPECTED_SECTIONS`, and `MIGRATION_EXPECTED_KNOWLEDGE`.
 
 The CLI does not load `.env` files. Supply environment variables through the
-calling process and never put credentials in snapshots or the ledger.
+calling process and never put credentials in snapshots or the ledger. It never
+performs OAuth, hosting, Notion, or Drive live E2E; those remain deployment
+gates.
+
+Before any separately approved external step, show the affected record count,
+run the plan against canary data, and then verify counts, relations, formulas,
+views, and all 19 widget fields. Legacy pages, properties, statuses, and
+relations are preserved or hidden until final acceptance. Unlink clearing,
+Drive Trash, and permanent delete are prohibited before that acceptance.
 
 ## Elements schema contract
 
@@ -98,7 +114,7 @@ IDs below are placeholders.
 }
 ```
 
-External `relationMaps` are source-page-ID to sandbox-page-ID maps for
+External `relationMaps` are source-page-ID to authorized-target-page-ID maps for
 `sphere`, `direction`, and `project`. They are not optional when the
 selected placement uses that level.
 
@@ -152,10 +168,11 @@ The version-2 ledger has separate task, section, and knowledge mappings. Each
 entry records deterministic idempotency key, source fingerprint, target ID,
 and the complete resolved placement:
 
-- direct: source kind/ID plus exact sandbox target ID;
+- direct: source kind/ID plus exact authorized target ID;
 - Inbox: reason, selected level, and ambiguous source IDs.
 
 A rerun skips mapped records. If a target write succeeded before the ledger
 checkpoint, the rerun recovers it by deterministic idempotency key. Changed
-source content, target drift, another sandbox, an old version-1 ledger, or a
-conflicting placement stops the migration instead of creating a duplicate.
+source content, target drift, another target identity, an old version-1 ledger,
+or a conflicting placement stops the migration instead of creating a
+duplicate.

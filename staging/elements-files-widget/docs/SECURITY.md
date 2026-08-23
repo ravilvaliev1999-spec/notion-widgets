@@ -1,51 +1,80 @@
 # Безопасность
 
-## Вывод аудита legacy
+## Вывод аудита Legacy
 
-Текущий публичный task-files контур нельзя переносить как backend. Аудит выявил опубликованный общий credential, недостаточную изоляцию task/file и слишком широкие полномочия старого Drive/Notion контура. Кроме того, заявленный live taskfileswidgetv18.html на main фактически является другим интерфейсом.
+Действующий публичный task-files контур нельзя повторно использовать как
+backend staging-виджета. В нём обнаружены общий browser credential,
+недостаточная изоляция task/file и слишком широкие полномочия старого
+Drive/Notion контура. Значения секретов в этом репозитории не публикуются.
 
-Технические детали и значения ключей намеренно не публикуются в этом открытом репозитории; полный отчёт хранится в закрытом Backup/Handoff. Опубликованный общий ключ следует считать скомпрометированным и ротировать отдельной production-операцией после готового rollback.
+Legacy-виджет, Apps Script и production deployment остаются неизменными до
+итоговой приёмки. Ротация или отзыв старого контура — отдельная production-
+операция с собственным rollback.
 
 ## Новые барьеры
 
-- Только APP_ENV=staging.
-- DRY_RUN=true и WRITE_GATE=closed по умолчанию.
-- Sandbox allowlist обязателен; unknown ID запрещён.
-- Original workspace, databases, data sources, templates, deleted IDs и source rows входят в denylist.
-- Пересечение allowlist/denylist останавливает процесс.
-- Access token подписан и ограничен task_page_id.
+- Только `APP_ENV=staging`.
+- `DRY_RUN=true` и `WRITE_GATE=closed` по умолчанию.
+- Notion allowlist содержит точный ID основной «Элементы», одну canary-задачу
+  и затем один явно выбранный шаблон; unknown ID запрещён.
+- Все остальные основные/Legacy databases, data sources, templates и pages
+  остаются вне write-scope.
+- До первой mutation сверяются все 19 widget-полей.
+- Массового обхода страниц и массовой замены embed нет.
+- Повторяющиеся widget embed-блоки не удаляются: один детерминированный блок
+  может быть обновлён, остальные сохраняются, а task получает
+  `Integrity=duplicate`.
+- Access token подписан и ограничен `task_page_id`.
 - CORS — точный список origin; wildcard отсутствует.
 - Notion webhook проверяется HMAC-SHA256 по raw body.
-- Drive file проверяется по folder parent и appProperties.
-- Перед первой mutation проверяются ожидаемый Google account, точный staging root, marker и отсутствие anyone/domain permissions.
-- Удаление файла — двухшаговый intent/confirm с 60-секундным token; runtime перемещает файл в корзину, а не вызывает permanent delete.
-- Нет public permissions и вызовов permissions.create.
-- JSONP, shared browser key, Apps Script fallback и whole-Drive scan отсутствуют.
-- Upload limit 512 MiB; размер и SHA-256 проверяются.
-- Crash recovery принимает Drive-файл только с server-written verified marker либо повторно скачивает и хэширует его; непрошедший файл не превращается в Notion-карточку.
-- Server secrets исключены из frontend, логов и Git.
+- Drive file проверяется по folder parent и `appProperties`.
+- Перед первой mutation проверяются ожидаемый Google account, точный staging
+  root, marker и отсутствие anyone/domain permissions.
+- До итоговой приёмки unlink с очисткой relation, перемещение в Drive Trash и
+  permanent delete заблокированы.
+- JSONP, shared browser key, Apps Script fallback и whole-Drive scan
+  отсутствуют.
+- Upload ограничен по размеру; размер и SHA-256 проверяются.
+- Crash recovery принимает Drive-файл только с server-written verified marker
+  либо после повторной проверки содержимого.
+- Server secrets исключаются из frontend, логов и Git.
 
-## Перед staging deploy
+## Перед canary deploy
 
-1. Создать отдельный Google Cloud project/OAuth client.
-2. Redirect URI и consent screen ограничить staging-доменом.
-3. Refresh token хранить в secret manager.
-4. Создать отдельную Notion integration только для sandbox.
-5. Разрешить integration только sandbox root/data sources.
-6. Включить HTTPS и точный ALLOWED_ORIGINS.
-7. Сгенерировать TOKEN_SIGNING_SECRET минимум 32 случайных байта.
-8. Настроить Notion webhook и сохранить verification token как secret.
-9. Проверить, что staging Drive folder не имеет anyone/domain permissions.
-10. Установить уникальный `appProperties.elementsStagingBoundary` либо один `.elements-staging-boundary.json` в root и тот же `STAGING_DRIVE_MARKER` в secrets.
-11. Задать `GOOGLE_EXPECTED_ACCOUNT_EMAIL` и original Drive denylist.
-12. Выполнить duplicate-task isolation acceptance; без доказанного host binding write gate не открывать.
-13. Запустить negative tests allowlist/denylist до открытия gate.
+1. Проверить точные Elements data source, canary page и template page ID.
+2. Ограничить Notion integration минимально необходимым доступом к основной
+   «Элементы»; не открывать ей Legacy-контуры.
+3. Проверить схему 19 widget-полей и baseline counts/relations/views.
+4. Создать отдельный Google Cloud OAuth client для staging.
+5. Ограничить redirect URI и consent screen staging-доменом.
+6. Хранить refresh token только в server-side secret store.
+7. Развернуть staging backend по HTTPS с точным `ALLOWED_ORIGINS`.
+8. Сгенерировать отдельный `TOKEN_SIGNING_SECRET`.
+9. Настроить и проверить Notion webhook secret.
+10. Проверить staging Drive root ID, boundary marker и permissions.
+11. Выполнить negative tests allowlist/denylist до открытия gate.
+12. Выполнить duplicate-task host-binding test.
+
+OAuth, hosting и live E2E на момент написания остаются gates; этот документ не
+утверждает, что они пройдены.
+
+## Запрещённые cleanup-пути до приёмки
+
+- удаление Legacy-баз, страниц, свойств, статусов или relations;
+- автоматическое обнуление `Внутри` при unlink;
+- удаление повторяющихся embed-блоков вместо маркировки `duplicate`;
+- массовое удаление/замена embed-блоков;
+- Drive Trash и permanent delete;
+- любые изменения production-виджета, Apps Script, ветки `main` или их
+  deployment.
 
 ## Production remediation — только после Gate B
 
-- Ротировать legacy shared key.
-- Отозвать старый Apps Script deployment или ограничить его.
-- Удалить Anyone access и public-by-link side effects.
-- Защитить main required checks.
-- Исключить diagnostic/legacy HTML из Pages publish.
-- Очистку Git history выполнять отдельно: это разрушительная операция и не заменяет ротацию.
+- ротировать Legacy shared key;
+- отозвать или ограничить старый Apps Script deployment;
+- убрать публичные Drive permissions;
+- защитить `main` required checks;
+- исключить diagnostic/Legacy HTML из Pages publish.
+
+Очистка Git history и Legacy-данных всегда рассматривается отдельно: она
+разрушительна и не заменяет ротацию секретов.

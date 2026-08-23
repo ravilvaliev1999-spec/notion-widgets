@@ -1,29 +1,18 @@
 {
-  "version": 1,
-  "purpose": "Hard stop for every original/production container known at the 2026-08-22 baseline. Source row IDs from the private snapshot must be appended at runtime.",
-  "workspaceIds": [
-    "ed4b491d-ab6b-449d-bd9a-7b7992281f96"
-  ],
+  "version": 2,
+  "purpose": "Hard stop for Legacy containers inside the authorized main workspace. Active Elements/Spheres/Directions/Projects and the approved template/canary are intentionally excluded and validated by an exact allowlist in backend/lib/config.mjs.",
+  "workspaceIds": [],
   "databasePageIds": [
-    "3822d62739a180f28da8ca56604ff7b8",
-    "3822d62739a180c181fef3e5fbe7237a",
-    "3822d62739a1806993f2d330e7ae918e",
-    "3822d62739a1807a966df43585d75212",
     "045802df7e54463bac86f0e02d057231",
     "79b560c5a3ad48c1a0dd5bc418c83277"
   ],
   "dataSourceIds": [
-    "3822d627-39a1-8052-9ef1-000bc10b8f68",
-    "3822d627-39a1-8069-9637-000ba20c3b1d",
-    "3822d627-39a1-8068-aafa-000b9db5ed1c",
-    "3822d627-39a1-8018-a2dc-000b95bf5722",
     "a8e81b3f-5b88-40a3-9e6c-911a6be59d11",
     "dcc5e9aa-dbe7-4b0b-a4e5-450e0b17263b",
     "2d90f52d-e637-4648-bfa0-59584a170a07",
     "c43dbf41-1e73-4e88-9994-a21fabe1529c"
   ],
   "templateAndWidgetPageIds": [
-    "3832d627-39a1-8026-9d86-d4b40101c0d7",
     "3842d62739a18074b000d6477d56768c",
     "3902d62739a1808689d2f829226f2b7e"
   ],

@@ -5,18 +5,26 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Readable, Transform } from 'node:stream';
 import { AppError, asAppError, invariant } from './lib/errors.mjs';
-import { assertWriteGate, loadConfig, normalizeId } from './lib/config.mjs';
+import {
+  assertTaskWriteAllowed,
+  assertWriteGate,
+  embedRolloutTargetIds,
+  loadConfig,
+  normalizeId
+} from './lib/config.mjs';
 import { bearer, issueTaskToken, signToken, verifyToken } from './lib/auth.mjs';
 import { DriveClient } from './lib/drive.mjs';
 import {
   NotionClient,
-  assertSandboxTask,
+  assertAuthorizedTask,
   pageParentDataSource,
   propertySelect,
   propertyText
 } from './lib/notion.mjs';
 import { P, RecordRepository, classifyFile, normalizeExternalUrl } from './lib/records.mjs';
-import { startRenameSync } from './lib/sync.mjs';
+import { resolveTaskContext } from './lib/context.mjs';
+import { assertAuthorizedDatabase, assertAuthorizedDataSource } from './lib/schema.mjs';
+import { reconcileTaskFiles, startTaskMetadataSync } from './lib/sync.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const frontendDir = join(here, '..', 'frontend');
@@ -106,7 +114,7 @@ function applyApiCors(request, response, allowedOrigins) {
   if (origin) response.setHeader('Access-Control-Allow-Origin', origin);
   response.setHeader('Vary', 'Origin');
   response.setHeader('Access-Control-Allow-Credentials', 'false');
-  response.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Idempotency-Key, X-Upload-Token, X-Delete-Token');
+  response.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Idempotency-Key, X-Upload-Token');
   response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
 }
 
@@ -139,6 +147,16 @@ function validEmbedForTask(urlValue, taskId, config) {
   }
 }
 
+function isManagedWidgetEmbed(urlValue, config) {
+  try {
+    const url = new URL(urlValue);
+    const expected = new URL(config.widgetPublicUrl || config.publicBaseUrl + '/');
+    return url.origin === expected.origin && url.pathname === expected.pathname;
+  } catch {
+    return false;
+  }
+}
+
 function safeFileNameForHeader(name) {
   return encodeURIComponent(name).replace(/['()*]/g, (char) => '%' + char.charCodeAt(0).toString(16).toUpperCase());
 }
@@ -152,6 +170,15 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
   const drive = dependencies.drive || new DriveClient(config);
   const records = dependencies.records || new RecordRepository(config, notion);
   const logger = dependencies.logger || console;
+  const contextResolver = dependencies.contextResolver || resolveTaskContext;
+  const targetPreflight = dependencies.targetPreflight || (async () => {
+    const [database, dataSource] = await Promise.all([
+      notion.retrieveDatabase(config.authorizedElementsDatabaseId),
+      notion.retrieveDataSource(config.elementsDataSourceId)
+    ]);
+    assertAuthorizedDatabase(database, config);
+    assertAuthorizedDataSource(dataSource, config);
+  });
   const allowedOrigins = safeOriginSet(config);
   const limitWrite = createLimiter();
   const folderCache = new Map();
@@ -170,24 +197,28 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     const access = verifyToken(bearer(request.headers), config.signingSecret, { aud: 'widget', taskId });
     invariant(normalizeId(access.dataSourceId) === normalizeId(config.elementsDataSourceId), 403, 'wrong_data_source', 'Token выпущен для другой базы');
     const page = await notion.retrievePage(normalizeId(taskId));
-    assertSandboxTask(page, config.elementsDataSourceId);
+    assertAuthorizedTask(page, config.elementsDataSourceId);
     return page;
   }
 
   async function ensureWriteReady() {
     assertWriteGate(config);
     if (!writePreflight) {
-      writePreflight = drive.assertStagingRoot({
-        folderId: config.stagingDriveFolderId,
-        expectedAccountEmail: config.googleExpectedAccountEmail,
-        expectedMarker: config.stagingDriveMarker
-      }).catch((error) => { writePreflight = null; throw error; });
+      writePreflight = Promise.all([
+        drive.assertStagingRoot({
+          folderId: config.stagingDriveFolderId,
+          expectedAccountEmail: config.googleExpectedAccountEmail,
+          expectedMarker: config.stagingDriveMarker
+        }),
+        targetPreflight()
+      ]).catch((error) => { writePreflight = null; throw error; });
     }
     return writePreflight;
   }
 
   async function requireWrite(request, taskId) {
     limitWrite(clientAddress(request) + ':' + normalizeId(taskId));
+    assertTaskWriteAllowed(config, taskId);
     await ensureWriteReady();
   }
 
@@ -201,8 +232,19 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     catch (error) { folderCache.delete(key); throw error; }
   }
 
+  async function recordPlacement(taskPage) {
+    const resolved = await contextResolver(taskPage, notion, config);
+    const { status, integrity, syncError, ...context } = resolved;
+    return {
+      context,
+      status: status || 'synced',
+      integrity: integrity || 'ok',
+      syncError: syncError || ''
+    };
+  }
+
   function assertNativeMatch(existing, { name, kind }) {
-    invariant(existing.provider === 'Google Drive' && existing.name === name && existing.format === GOOGLE_KIND_FORMAT[kind],
+    invariant(existing.provider === 'Google Drive' && (existing.downloadName || existing.name) === name && existing.format === GOOGLE_KIND_FORMAT[kind],
       409, 'idempotency_conflict', 'Idempotency-Key уже использован для другого Google-файла');
   }
 
@@ -212,17 +254,17 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
   }
 
   function assertUploadRecordMatch(existing, expected) {
-    invariant(existing.provider === 'Google Drive' && existing.name === expected.name && existing.mimeType === expected.mimeType &&
+    invariant(existing.provider === 'Google Drive' && (existing.downloadName || existing.name) === expected.name && existing.mimeType === expected.mimeType &&
       Number(existing.size) === Number(expected.size) && existing.sha256 === expected.sha256,
     409, 'idempotency_conflict', 'Idempotency-Key уже использован для другого файла');
   }
 
-  async function recoverUploadFile(file, expected, restartOnMismatch = false) {
+  async function recoverUploadFile(file, expected) {
     invariant(file?.id && (file.parents || []).includes(expected.folderId), 502, 'unsafe_drive_parent', 'Recovered Drive file находится вне task folder');
     invariant(normalizeId(file.appProperties?.elementsTaskPageId) === normalizeId(expected.taskId) &&
       file.appProperties?.elementsIdempotencyKey === expected.idempotencyKey,
     502, 'unsafe_drive_metadata', 'Recovered Drive file не привязан к операции');
-    invariant(file.name === expected.name && file.mimeType === expected.mimeType &&
+    invariant(file.mimeType === expected.mimeType &&
       file.appProperties?.elementsPayloadFingerprint === expected.payloadFingerprint &&
       file.appProperties?.elementsDeclaredSha256 === expected.sha256,
     409, 'idempotency_conflict', 'Idempotency-Key уже использован для другого upload payload');
@@ -236,9 +278,8 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     let actualSize = 0;
     const hash = createHash('sha256');
     if (Number.isFinite(metadataSize) && metadataSize !== expected.size) {
-      await drive.trashFile(file.id);
-      if (restartOnMismatch) return null;
-      throw new AppError(422, 'upload_recovery_size_mismatch', 'Recovered Drive file имеет другой размер; начните загрузку заново');
+      throw new AppError(422, 'upload_recovery_size_mismatch',
+        'Recovered Drive file имеет другой размер; файл сохранён для ручной проверки');
     }
     const source = await drive.downloadFile(file.id);
     invariant(source?.body, 502, 'drive_download_empty', 'Google Drive не вернул поток recovered file');
@@ -250,9 +291,8 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     }
     const actualSha256 = hash.digest('hex');
     if (exceededSize || actualSize !== expected.size || actualSha256 !== expected.sha256) {
-      await drive.trashFile(file.id);
-      if (restartOnMismatch) return null;
-      throw new AppError(422, 'upload_recovery_checksum_mismatch', 'Recovered Drive file не прошёл SHA-256; начните загрузку заново');
+      throw new AppError(422, 'upload_recovery_checksum_mismatch',
+        'Recovered Drive file не прошёл SHA-256; файл сохранён для ручной проверки');
     }
     const marked = await drive.markFileVerified({
       fileId: file.id,
@@ -276,12 +316,13 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     return onceMutation('native:' + normalizeId(taskId) + ':' + key, async () => {
       const existing = await records.findByIdempotency(taskId, key);
       if (existing) { assertNativeMatch(existing, { name, kind }); return existing; }
+      const placement = await recordPlacement(task);
       const folder = await taskFolder(task, taskId);
       const recovered = await drive.findFileByIdempotency({ folderId: folder.id, taskId: normalizeId(taskId), idempotencyKey: key });
       const file = recovered || await drive.createNative({ name, kind, folderId: folder.id, taskId: normalizeId(taskId), idempotencyKey: key });
       const classified = classifyFile(file.name, file.mimeType);
       invariant((file.parents || []).includes(folder.id) && normalizeId(file.appProperties?.elementsTaskPageId) === normalizeId(taskId) &&
-        file.appProperties?.elementsIdempotencyKey === key && file.name === name && classified.format === GOOGLE_KIND_FORMAT[kind],
+        file.appProperties?.elementsIdempotencyKey === key && classified.format === GOOGLE_KIND_FORMAT[kind],
       502, 'unsafe_native_file', 'Google Drive вернул native file вне ожидаемой операции');
       return await records.create(taskId, {
         name: file.name,
@@ -292,17 +333,19 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
         googleFolderId: folder.id,
         url: file.webViewLink,
         mimeType: file.mimeType,
+        downloadName: name,
         size: null,
         md5: '',
         sha256: '',
-        idempotencyKey: key
+        idempotencyKey: key,
+        ...placement
       });
     });
   }
 
   async function addLink(request, taskId) {
     await requireWrite(request, taskId);
-    await requireTask(request, taskId);
+    const task = await requireTask(request, taskId);
     const body = await readJson(request);
     const key = idempotencyKey(request, body);
     const url = normalizeExternalUrl(body.url);
@@ -310,6 +353,7 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     const name = cleanName(body.name || new URL(url).hostname);
     const existing = await records.findByIdempotency(taskId, key);
     if (existing) { assertLinkMatch(existing, { name, section, url }); return existing; }
+    const placement = await recordPlacement(task);
     return records.create(taskId, {
       name,
       section,
@@ -319,10 +363,12 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
       googleFolderId: '',
       url,
       mimeType: 'text/uri-list',
+      downloadName: name,
       size: null,
       md5: '',
       sha256: '',
-      idempotencyKey: key
+      idempotencyKey: key,
+      ...placement
     });
   }
 
@@ -348,13 +394,13 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     return onceMutation('upload-init:' + operationKey, async () => {
       const existing = await records.findByIdempotency(taskId, key);
       if (existing) { assertUploadRecordMatch(existing, { name, mimeType, size, sha256 }); return { completed: true, record: existing }; }
+      const placement = await recordPlacement(task);
       const folder = await taskFolder(task, taskId);
       const recovered = await drive.findFileByIdempotency({ folderId: folder.id, taskId: normalizeId(taskId), idempotencyKey: key });
       if (recovered) {
         const recovery = await recoverUploadFile(recovered, {
           taskId, folderId: folder.id, idempotencyKey: key, payloadFingerprint, name, mimeType, size, sha256
-        }, true);
-        if (!recovery) return initiateUploadSession();
+        });
         const safeFile = recovery.file;
         const classified = classifyFile(safeFile.name, safeFile.mimeType);
         const record = await records.create(taskId, {
@@ -366,10 +412,12 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
           googleFolderId: folder.id,
           url: safeFile.webViewLink || '',
           mimeType: safeFile.mimeType,
+          downloadName: name,
           size,
           md5: safeFile.md5Checksum || '',
           sha256: recovery.sha256,
-          idempotencyKey: key
+          idempotencyKey: key,
+          ...placement
         });
         return { completed: true, record };
       }
@@ -383,7 +431,8 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
         const uploadId = randomUUID();
         const upload = {
           uploadId, sessionUrl, name, mimeType, size, sha256, payloadFingerprint,
-          section: classified.section, format: classified.format, folderId: folder.id, idempotencyKey: key, taskId: normalizeId(taskId)
+          section: classified.section, format: classified.format, folderId: folder.id, idempotencyKey: key,
+          taskId: normalizeId(taskId), placement
         };
         const uploadToken = signToken({ aud: 'upload', taskId: normalizeId(taskId), uploadId, idempotencyKey: key }, config.signingSecret, 3600);
         const response = { completed: false, uploadToken, expiresIn: 3600 };
@@ -395,7 +444,7 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
 
   async function completeUpload(request, taskId, uploadToken) {
     await requireWrite(request, taskId);
-    await requireTask(request, taskId);
+    const task = await requireTask(request, taskId);
     const claims = verifyToken(uploadToken, config.signingSecret, { aud: 'upload', taskId });
     const operationKey = normalizeId(taskId) + ':' + claims.idempotencyKey;
     const session = uploadSessions.get(operationKey);
@@ -414,15 +463,12 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
         assertUploadRecordMatch(existing, upload);
         return { record: existing, sha256: existing.sha256 };
       }
+      const placement = await recordPlacement(task);
       const recovered = await drive.findFileByIdempotency({ folderId: upload.folderId, taskId: normalizeId(taskId), idempotencyKey: upload.idempotencyKey });
       if (recovered) {
         request.resume();
         let recovery;
-        try { recovery = await recoverUploadFile(recovered, upload, false); }
-        catch (error) {
-          if (error?.code === 'upload_recovery_size_mismatch' || error?.code === 'upload_recovery_checksum_mismatch') uploadSessions.delete(operationKey);
-          throw error;
-        }
+        recovery = await recoverUploadFile(recovered, upload);
         const safeFile = recovery.file;
         const classified = classifyFile(safeFile.name, safeFile.mimeType);
         const record = await records.create(taskId, {
@@ -434,10 +480,12 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
           googleFolderId: upload.folderId,
           url: safeFile.webViewLink || '',
           mimeType: safeFile.mimeType,
+          downloadName: upload.name,
           size: upload.size,
           md5: safeFile.md5Checksum || '',
           sha256: recovery.sha256,
-          idempotencyKey: upload.idempotencyKey
+          idempotencyKey: upload.idempotencyKey,
+          ...placement
         });
         uploadSessions.delete(operationKey);
         return { record, sha256: recovery.sha256 };
@@ -464,14 +512,14 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
       }
       const actualSha256 = hash.digest('hex');
       if (upload.sha256 && upload.sha256 !== actualSha256) {
-        if (file.id) await drive.trashFile(file.id).catch(() => {});
         uploadSessions.delete(operationKey);
-        throw new AppError(422, 'sha256_mismatch', 'Контрольная сумма загруженного файла не совпала');
+        throw new AppError(422, 'sha256_mismatch',
+          'Контрольная сумма загруженного файла не совпала; Drive object сохранён для ручной проверки');
       }
       invariant(file.id && (file.parents || []).includes(upload.folderId), 502, 'unsafe_drive_parent', 'Drive вернул файл вне task folder');
       invariant(normalizeId(file.appProperties?.elementsTaskPageId) === normalizeId(taskId), 502, 'unsafe_drive_metadata', 'Drive вернул файл без task binding');
       invariant(file.appProperties?.elementsIdempotencyKey === upload.idempotencyKey &&
-        file.appProperties?.elementsPayloadFingerprint === upload.payloadFingerprint && file.name === upload.name && file.mimeType === upload.mimeType && Number(file.size) === upload.size,
+        file.appProperties?.elementsPayloadFingerprint === upload.payloadFingerprint && file.mimeType === upload.mimeType && Number(file.size) === upload.size,
       502, 'unsafe_drive_metadata', 'Drive вернул файл вне ожидаемой upload operation');
       await drive.markFileVerified({
         fileId: file.id,
@@ -490,10 +538,12 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
         googleFolderId: upload.folderId,
         url: file.webViewLink || '',
         mimeType: file.mimeType || upload.mimeType,
+        downloadName: upload.name,
         size: Number(file.size || upload.size),
         md5: file.md5Checksum || '',
         sha256: actualSha256,
-        idempotencyKey: upload.idempotencyKey
+        idempotencyKey: upload.idempotencyKey,
+        ...placement
       });
       uploadSessions.delete(operationKey);
       return { record, sha256: actualSha256 };
@@ -553,42 +603,29 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     return records.listForTask(taskId);
   }
 
+  async function refreshTaskFromRequest(request, taskId) {
+    await requireWrite(request, taskId);
+    await requireTask(request, taskId);
+    const sync = await reconcileTaskFiles(config, taskId, drive, records, logger);
+    return { items: await records.listForTask(taskId), sync };
+  }
+
+  async function refreshTaskForSync(taskId) {
+    assertTaskWriteAllowed(config, taskId);
+    await ensureWriteReady();
+    const task = await notion.retrievePage(normalizeId(taskId));
+    assertAuthorizedTask(task, config.elementsDataSourceId);
+    return reconcileTaskFiles(config, taskId, drive, records, logger);
+  }
+
   async function recordAction(request, taskId, recordId, action) {
     await requireWrite(request, taskId);
     await requireTask(request, taskId);
     if (action === 'archive') return records.patch(taskId, recordId, { status: 'archived', archive: true, syncedAt: new Date() });
-    if (action === 'unlink') return records.patch(taskId, recordId, { status: 'unlinked', type: null, taskId: null, syncedAt: new Date() });
+    if (action === 'unlink') {
+      return records.patch(taskId, recordId, { status: 'unlinked', archive: true, syncedAt: new Date() });
+    }
     throw new AppError(404, 'unknown_action', 'Неизвестное действие');
-  }
-
-  async function deletionIntent(request, taskId, recordId) {
-    await requireWrite(request, taskId);
-    await requireTask(request, taskId);
-    const record = await records.getForTask(taskId, recordId);
-    invariant(record.provider === 'Google Drive' && record.googleFileId, 422, 'not_physical_file', 'У записи нет физического Google-файла');
-    const file = await drive.getFile(record.googleFileId);
-    invariant((file.parents || []).includes(record.googleFolderId), 403, 'unsafe_physical_delete', 'Файл находится вне task folder');
-    invariant(normalizeId(file.appProperties?.elementsTaskPageId) === normalizeId(taskId), 403, 'unsafe_physical_delete', 'File ID не привязан к задаче');
-    invariant(file.name === record.name, 409, 'file_name_out_of_sync', 'Имя файла ещё синхронизируется; повторите позже');
-    const deleteToken = signToken({
-      aud: 'delete', taskId: normalizeId(taskId), recordId: normalizeId(recordId),
-      fileId: record.googleFileId, folderId: record.googleFolderId, name: record.name
-    }, config.signingSecret, 60);
-    return { deleteToken, expiresIn: 60, item: { id: record.id, name: record.name } };
-  }
-
-  async function physicalDelete(request, taskId, recordId) {
-    await requireWrite(request, taskId);
-    await requireTask(request, taskId);
-    const deletion = verifyToken(String(request.headers['x-delete-token'] || ''), config.signingSecret, { aud: 'delete', taskId, recordId });
-    const record = await records.getForTask(taskId, recordId);
-    invariant(record.googleFileId === deletion.fileId && record.googleFolderId === deletion.folderId && record.name === deletion.name,
-      409, 'delete_intent_stale', 'Файл изменился после подтверждения удаления');
-    const file = await drive.getFile(record.googleFileId);
-    invariant((file.parents || []).includes(record.googleFolderId), 403, 'unsafe_physical_delete', 'Файл находится вне task folder');
-    invariant(normalizeId(file.appProperties?.elementsTaskPageId) === normalizeId(taskId), 403, 'unsafe_physical_delete', 'File ID не привязан к задаче');
-    if (!file.trashed) await drive.trashFile(record.googleFileId);
-    return records.patch(taskId, recordId, { status: 'deleted', type: null, archive: true, taskId: null, syncedAt: new Date() });
   }
 
   async function downloadLink(request, taskId, recordId) {
@@ -603,17 +640,18 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
   async function streamDownload(request, response, recordId, url) {
     const token = verifyToken(url.searchParams.get('access'), config.signingSecret, { aud: 'download', recordId });
     const task = await notion.retrievePage(token.taskId);
-    assertSandboxTask(task, config.elementsDataSourceId);
+    assertAuthorizedTask(task, config.elementsDataSourceId);
     const record = await records.getForTask(token.taskId, recordId);
     invariant(record.googleFileId === token.fileId, 403, 'wrong_file', 'Download token не совпадает с File ID');
     const file = await drive.getFile(record.googleFileId);
     invariant((file.parents || []).includes(record.googleFolderId), 403, 'unsafe_download', 'Файл находится вне task folder');
     invariant(normalizeId(file.appProperties?.elementsTaskPageId) === record.taskId, 403, 'unsafe_download', 'Файл не привязан к задаче');
+    invariant(file.trashed !== true, 410, 'drive_file_trashed', 'Google-файл находится в корзине');
     const source = await drive.downloadFile(record.googleFileId);
     response.writeHead(200, {
       'Content-Type': source.headers.get('content-type') || record.mimeType || 'application/octet-stream',
       ...(source.headers.get('content-length') ? { 'Content-Length': source.headers.get('content-length') } : {}),
-      'Content-Disposition': "attachment; filename*=UTF-8''" + safeFileNameForHeader(record.name),
+      'Content-Disposition': "attachment; filename*=UTF-8''" + safeFileNameForHeader(record.downloadName || record.name),
       'Cache-Control': 'private, no-store',
       'X-Content-Type-Options': 'nosniff'
     });
@@ -621,34 +659,40 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
   }
 
   async function ensureWidgetEmbed(page) {
-    if (pageParentDataSource(page) !== normalizeId(config.elementsDataSourceId)) return false;
-    if (page.in_trash === true || page.archived === true || propertySelect(page.properties && page.properties[P.type]) !== 'Задача') return false;
+    assertAuthorizedTask(page, config.elementsDataSourceId);
     const children = await notion.listBlockChildren(page.id);
-    const expectedBase = (config.widgetPublicUrl || config.publicBaseUrl).replace(/#.*$/, '');
-    const widgetEmbeds = children.filter((block) => block.type === 'embed' && String(block.embed?.url || '').startsWith(expectedBase));
+    const widgetEmbeds = children.filter((block) =>
+      block.type === 'embed' && isManagedWidgetEmbed(block.embed?.url, config));
     const valid = widgetEmbeds.find((block) => validEmbedForTask(block.embed?.url, page.id, config));
     const keeper = valid || widgetEmbeds[0];
     if (keeper) {
       if (!valid) await notion.updateEmbedBlock(keeper.id, embedUrl(config, page.id));
       const duplicates = widgetEmbeds.filter((block) => block.id !== keeper.id);
-      await Promise.all(duplicates.map((block) => notion.trashBlock(block.id)));
-      return !valid || duplicates.length > 0;
+      if (duplicates.length > 0) {
+        await records.markTaskIntegrity(page.id, 'duplicate', 'duplicate_widget_embed');
+      } else if (propertySelect(page.properties?.[P.integrity]) === 'duplicate' &&
+        propertyText(page.properties?.[P.syncError]) === 'duplicate_widget_embed') {
+        await records.markTaskIntegrity(page.id, 'ok', '');
+      }
+      return { changed: !valid || duplicates.length > 0, patched: !valid, appended: false, duplicates: duplicates.length };
     }
     await notion.appendBlockChildren(page.id, [{ object: 'block', type: 'embed', embed: { url: embedUrl(config, page.id) } }]);
-    return true;
+    return { changed: true, patched: false, appended: true, duplicates: 0 };
   }
 
   async function renewEmbeds() {
+    const targetIds = embedRolloutTargetIds(config);
+    if (targetIds.length === 0) return { scanned: 0, changed: 0, duplicates: 0, targets: [] };
     await ensureWriteReady();
-    const pages = await notion.queryDataSource(config.elementsDataSourceId, {
-      filter: { property: P.type, select: { equals: 'Задача' } }
-    });
     let changed = 0;
-    for (const page of pages) {
-      const didChange = await onceMutation('webhook:' + normalizeId(page.id), () => ensureWidgetEmbed(page));
-      if (didChange) changed += 1;
+    let duplicates = 0;
+    for (const targetId of targetIds) {
+      const page = await notion.retrievePage(targetId);
+      const result = await onceMutation('embed:' + targetId, () => ensureWidgetEmbed(page));
+      if (result.changed) changed += 1;
+      duplicates += result.duplicates;
     }
-    return { scanned: pages.length, changed };
+    return { scanned: targetIds.length, changed, duplicates, targets: targetIds };
   }
 
   async function handleNotionWebhook(request, response) {
@@ -665,10 +709,14 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
       sendJson(response, 200, { ok: true });
       return;
     }
-    await onceMutation('webhook:' + normalizeId(event.entity.id), async () => {
-      const page = await notion.retrievePage(event.entity.id);
-      if (pageParentDataSource(page) !== normalizeId(config.elementsDataSourceId) || page.in_trash === true || page.archived === true ||
-        propertySelect(page.properties && page.properties[P.type]) !== 'Задача') return;
+    const targetIds = new Set(embedRolloutTargetIds(config));
+    const eventId = normalizeId(event.entity.id);
+    if (!config.enableNewTaskWebhook || !targetIds.has(eventId)) {
+      sendJson(response, 200, { ok: true, ignored: true });
+      return;
+    }
+    await onceMutation('webhook:' + eventId, async () => {
+      const page = await notion.retrievePage(eventId);
       await ensureWriteReady();
       await ensureWidgetEmbed(page);
     });
@@ -683,7 +731,12 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
       '/styles.css': ['styles.css', 'text/css; charset=utf-8']
     };
     if (pathname === '/config.js') {
-      const body = 'window.ELEMENTS_WIDGET_CONFIG=' + JSON.stringify({ apiBase: config.publicBaseUrl.replace(/\/$/, '') }) + ';';
+      const body = 'window.ELEMENTS_WIDGET_CONFIG=' + JSON.stringify({
+        apiBase: config.publicBaseUrl.replace(/\/$/, ''),
+        targetProfile: config.targetProfile,
+        allowDriveTrash: false,
+        unlinkMode: 'archive-preserve-relations'
+      }) + ';';
       response.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Length': Buffer.byteLength(body) });
       response.end(body);
       return true;
@@ -717,7 +770,16 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
         if (request.method === 'OPTIONS') { response.writeHead(204); response.end(); return; }
       }
       if (request.method === 'GET' && url.pathname === '/api/v1/healthz') {
-        sendJson(response, 200, { ok: true, environment: config.appEnv, dryRun: config.dryRun, writeGate: config.writeGate, notionVersion: config.notionVersion });
+        sendJson(response, 200, {
+          ok: true,
+          environment: config.appEnv,
+          targetProfile: config.targetProfile,
+          dryRun: config.dryRun,
+          writeGate: config.writeGate,
+          notionVersion: config.notionVersion,
+          embedRolloutPhase: config.embedRolloutPhase,
+          destructiveDriveActions: false
+        });
         return;
       }
       if (request.method === 'POST' && url.pathname === '/webhooks/notion') {
@@ -735,6 +797,10 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
       if (parts[4] === 'files' && !parts[5] && request.method === 'GET') {
         await requireTask(request, taskId);
         sendJson(response, 200, { items: await records.listForTask(taskId) });
+        return;
+      }
+      if (parts[4] === 'refresh' && !parts[5] && request.method === 'POST') {
+        sendJson(response, 200, await refreshTaskFromRequest(request, taskId));
         return;
       }
       if (parts[4] === 'google-native' && request.method === 'POST') {
@@ -771,14 +837,6 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
         sendJson(response, 200, { item: await recordAction(request, taskId, parts[5], parts[6]) });
         return;
       }
-      if (parts[4] === 'files' && parts[5] && parts[6] === 'physical-delete-intent' && request.method === 'POST') {
-        sendJson(response, 200, await deletionIntent(request, taskId, parts[5]));
-        return;
-      }
-      if (parts[4] === 'files' && parts[5] && parts[6] === 'physical-delete' && request.method === 'POST') {
-        sendJson(response, 200, { item: await physicalDelete(request, taskId, parts[5]) });
-        return;
-      }
       throw new AppError(404, 'not_found', 'Маршрут не найден');
     } catch (error) {
       const appError = asAppError(error);
@@ -788,11 +846,11 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     }
   }
 
-  return { handler, notion, drive, records, renewEmbeds };
+  return { handler, notion, drive, records, renewEmbeds, refreshTaskForSync };
 }
 
 function startEmbedRenewal(config, app, logger = console) {
-  if (config.writeGate !== 'open' || config.dryRun) return () => {};
+  if (config.writeGate !== 'open' || config.dryRun || embedRolloutTargetIds(config).length === 0) return () => {};
   let running = false;
   const tick = async () => {
     if (running) return;
@@ -809,7 +867,7 @@ function startEmbedRenewal(config, app, logger = console) {
 
 export function startServer(config = loadConfig()) {
   const app = createApplication(config);
-  const stopSync = startRenameSync(config, app.notion, app.drive, app.records);
+  const stopSync = startTaskMetadataSync(config, app.refreshTaskForSync);
   const stopRenewal = startEmbedRenewal(config, app);
   const server = createServer(app.handler);
   server.listen(config.port, () => console.info('[staging] listening on port ' + config.port));

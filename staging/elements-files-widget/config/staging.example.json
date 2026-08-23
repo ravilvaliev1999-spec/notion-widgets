@@ -1,15 +1,23 @@
 {
   "environment": "staging",
+  "targetProfile": "authorized-main",
   "dryRun": true,
   "writeGate": "closed",
-  "sandbox": {
-    "workspaceId": "REQUIRED_SEPARATE_WORKSPACE_ID",
-    "rootPageId": "REQUIRED_SANDBOX_ROOT_PAGE_ID",
-    "elementsDatabaseId": "REQUIRED_ELEMENTS_DATABASE_ID",
-    "elementsDataSourceId": "REQUIRED_ELEMENTS_DATA_SOURCE_ID",
-    "spheresDataSourceId": "REQUIRED_SANDBOX_SPHERES_DATA_SOURCE_ID",
-    "directionsDataSourceId": "REQUIRED_SANDBOX_DIRECTIONS_DATA_SOURCE_ID",
-    "projectsDataSourceId": "REQUIRED_SANDBOX_PROJECTS_DATA_SOURCE_ID"
+  "notion": {
+    "workspaceId": "ed4b491d-ab6b-449d-bd9a-7b7992281f96",
+    "elementsDatabaseId": "3822d627-39a1-807a-966d-f43585d75212",
+    "elementsDataSourceId": "3822d627-39a1-8018-a2dc-000b95bf5722",
+    "taskTemplatePageId": "3832d627-39a1-8026-9d86-d4b40101c0d7",
+    "canaryTaskPageId": "3ae2d627-39a1-80ad-b49c-e028699b75d9",
+    "spheresDataSourceId": "3822d627-39a1-8052-9ef1-000bc10b8f68",
+    "directionsDataSourceId": "3822d627-39a1-8069-9637-000ba20c3b1d",
+    "projectsDataSourceId": "3822d627-39a1-8068-aafa-000b9db5ed1c"
+  },
+  "rollout": {
+    "acceptanceApproved": false,
+    "taskWriteScope": "canary",
+    "embedRolloutPhase": "disabled",
+    "enableNewTaskWebhook": false
   },
   "googleDrive": {
     "rootFolderId": "REQUIRED_STAGING_DRIVE_FOLDER_ID",
@@ -20,9 +28,11 @@
   },
   "barriers": {
     "denylistPath": "config/original-denylist.json",
-    "allowArchive": false,
+    "allowArchive": true,
+    "allowRelationUnlink": false,
     "allowPermanentDelete": false,
-    "allowMoveToTrashWithConfirmation": true,
-    "requireSourceToSandboxMap": true
+    "allowMoveToTrashWithConfirmation": false,
+    "preserveLegacy": true,
+    "massEmbedSweep": false
   }
 }

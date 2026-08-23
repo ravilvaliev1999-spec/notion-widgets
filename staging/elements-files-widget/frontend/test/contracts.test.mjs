@@ -33,8 +33,10 @@ test('task credentials stay in the fragment and referrer mismatch fails before A
   assert.ok(app.indexOf('if (!context.validBinding)') < app.indexOf('var cached = readCache()'));
 });
 
-test('two-step Drive trash confirmation remains wired in UI and API', () => {
-  assert.match(app, /physical-delete-intent/);
-  assert.match(app, /X-Delete-Token/);
-  assert.match(app, /Переместить файл в корзину Drive/);
+test('pre-acceptance UI has no destructive Drive action and refresh is task-scoped', () => {
+  assert.doesNotMatch(app, /physical-delete|X-Delete-Token|Переместить файл в корзину Drive/);
+  assert.doesNotMatch(server, /trashFile|deleteFile|X-Delete-Token/);
+  assert.match(app, /\/api\/v1\/tasks\/" \+ context\.taskId \+ "\/refresh/);
+  assert.match(app, /Тип, задача, связи и файл сохранятся/);
+  assert.match(server, /status: 'unlinked', archive: true/);
 });

@@ -178,6 +178,8 @@ export class DriveClient {
       spaces: 'drive',
       fields: 'files(id,name,mimeType,webViewLink,modifiedTime,size,md5Checksum,parents,appProperties)'
     }).toString());
+    invariant((result.files || []).length <= 1, 409, 'duplicate_drive_identity',
+      'По Idempotency-Key найдено несколько Google-файлов; автоматический выбор запрещён');
     return result.files && result.files[0] ? result.files[0] : null;
   }
 
@@ -195,6 +197,8 @@ export class DriveClient {
       spaces: 'drive',
       fields: 'files(id,name,parents,appProperties)'
     }).toString());
+    invariant((existing.files || []).length <= 1, 409, 'duplicate_task_folder',
+      'Для задачи найдено несколько Google Drive folders; автоматический выбор запрещён');
     if (existing.files && existing.files[0]) return existing.files[0];
     const label = String(taskName || 'Task').replace(/[\\/:*?"<>|]/g, ' ').trim().slice(0, 80);
     return this.request(DRIVE_API + '/files?fields=' + encodeURIComponent('id,name,parents,appProperties'), {
@@ -227,8 +231,7 @@ export class DriveClient {
           elementsDeclaredSha256: sha256,
           elementsPayloadFingerprint: payloadFingerprint
         }
-      }),
-      retrySafe: true
+      })
     }, 'response');
     const sessionUrl = response.headers.get('location');
     invariant(sessionUrl, 502, 'missing_upload_session', 'Google Drive не вернул resumable session');
@@ -276,18 +279,6 @@ export class DriveClient {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name })
-    });
-  }
-
-  deleteFile(fileId) {
-    return this.request(DRIVE_API + '/files/' + encodeURIComponent(fileId), { method: 'DELETE' });
-  }
-
-  trashFile(fileId) {
-    return this.request(DRIVE_API + '/files/' + encodeURIComponent(fileId) + '?fields=' + encodeURIComponent('id,trashed'), {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ trashed: true })
     });
   }
 

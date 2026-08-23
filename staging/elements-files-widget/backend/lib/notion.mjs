@@ -68,6 +68,14 @@ export class NotionClient {
     return this.request('/pages/' + normalizeId(pageId));
   }
 
+  retrieveDatabase(databaseId) {
+    return this.request('/databases/' + normalizeId(databaseId));
+  }
+
+  retrieveDataSource(dataSourceId) {
+    return this.request('/data_sources/' + normalizeId(dataSourceId));
+  }
+
   createPage(dataSourceId, properties, children = []) {
     return this.request('/pages', {
       method: 'POST',
@@ -87,14 +95,6 @@ export class NotionClient {
     });
   }
 
-  trashPage(pageId) {
-    return this.request('/pages/' + normalizeId(pageId), {
-      method: 'PATCH',
-      body: JSON.stringify({ in_trash: true }),
-      retrySafe: true
-    });
-  }
-
   appendBlockChildren(blockId, children) {
     return this.request('/blocks/' + normalizeId(blockId) + '/children', {
       method: 'PATCH',
@@ -108,10 +108,6 @@ export class NotionClient {
       body: JSON.stringify({ embed: { url } }),
       retrySafe: true
     });
-  }
-
-  trashBlock(blockId) {
-    return this.request('/blocks/' + normalizeId(blockId), { method: 'DELETE', retrySafe: true });
   }
 
   async listBlockChildren(blockId) {
@@ -185,8 +181,9 @@ export function propertyRelation(property) {
   return property && Array.isArray(property.relation) ? property.relation.map((item) => item.id) : [];
 }
 
-export function assertSandboxTask(page, expectedDataSourceId) {
+export function assertAuthorizedTask(page, expectedDataSourceId) {
   invariant(page && page.in_trash !== true && page.archived !== true, 410, 'task_in_trash', 'Задача находится в корзине или архиве');
-  invariant(pageParentDataSource(page) === normalizeId(expectedDataSourceId), 403, 'task_outside_sandbox', 'Задача не принадлежит sandbox «Элементы»');
+  invariant(pageParentDataSource(page) === normalizeId(expectedDataSourceId), 403, 'task_outside_elements',
+    'Задача не принадлежит утверждённой main DS «Элементы»');
   invariant(propertySelect(page.properties && page.properties['Тип']) === 'Задача', 422, 'not_a_task', 'Страница не является задачей');
 }
