@@ -64,10 +64,6 @@
       color: var(--muted); font-size: 12px;
     }
     .statusbar .task { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .test-badge {
-      flex: none; border: 1px solid rgba(255,190,67,.5); background: rgba(255,190,67,.12);
-      color: #f1b94f; padding: 2px 7px; border-radius: 999px; font-weight: 700; letter-spacing: .04em;
-    }
     .status-spacer { flex: 1; }
     .icon-button {
       width: 30px; height: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
@@ -222,7 +218,6 @@
 <body>
   <main class="app" id="app">
     <div class="statusbar">
-      <span class="test-badge">TEST v19</span>
       <span class="task" id="taskLabel">Проверяю задачу…</span>
       <span class="status-spacer"></span>
       <button class="icon-button" id="refreshBtn" type="button" title="Сверить с Notion и Drive" aria-label="Обновить">↻</button>
