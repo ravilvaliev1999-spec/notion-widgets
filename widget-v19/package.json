@@ -1,0 +1,13 @@
+{
+  "name": "notion-task-files-widget-v19",
+  "version": "19.0.0-test",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
+
