@@ -9,6 +9,8 @@
     "elementsDataSourceId": "3822d627-39a1-8018-a2dc-000b95bf5722",
     "taskTemplatePageId": "3832d627-39a1-8026-9d86-d4b40101c0d7",
     "canaryTaskPageId": "3ae2d627-39a1-80ad-b49c-e028699b75d9",
+    "canaryMaterialPageId": "3c52d627-39a1-8153-97f5-c0c65e4d294f",
+    "templateTestTaskPageId": null,
     "spheresDataSourceId": "3822d627-39a1-8052-9ef1-000bc10b8f68",
     "directionsDataSourceId": "3822d627-39a1-8069-9637-000ba20c3b1d",
     "projectsDataSourceId": "3822d627-39a1-8068-aafa-000b9db5ed1c"

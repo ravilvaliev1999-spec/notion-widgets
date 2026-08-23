@@ -49,7 +49,8 @@
     var params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     var taskId = String(params.get("task") || "").replace(/-/g, "").toLowerCase();
     var access = String(params.get("access") || "");
-    var referrerTaskId = extractNotionPageId(document.referrer);
+    var referrer = readNotionReferrer(document.referrer);
+    var tokenTaskId = readTokenTaskId(access);
     var configured = window.ELEMENTS_WIDGET_CONFIG && window.ELEMENTS_WIDGET_CONFIG.apiBase;
     var apiBase = window.location.origin;
 
@@ -67,29 +68,46 @@
       access: access,
       apiBase: apiBase,
       validTask: /^[a-f0-9]{32}$/.test(taskId),
-      validAccess: access.length >= 16 && access.length <= 4096,
-      referrerTaskId: referrerTaskId,
-      validBinding: !referrerTaskId || referrerTaskId === taskId
+      validAccess: access.length >= 16 && access.length <= 4096 && Boolean(tokenTaskId),
+      referrerTaskId: referrer.taskId,
+      tokenTaskId: tokenTaskId,
+      validReferrer: referrer.valid,
+      validBinding: referrer.valid && referrer.taskId === taskId && tokenTaskId === taskId
     };
   }
 
-  function extractNotionPageId(referrer) {
-    if (!referrer) return "";
+  function readNotionReferrer(referrer) {
+    if (!referrer) return { valid: false, taskId: "" };
     try {
       var url = new URL(referrer);
-      if (!/(^|\.)notion\.(so|site|com)$/i.test(url.hostname)) return "";
+      if (!/(^|\.)notion\.(so|site|com)$/i.test(url.hostname)) return { valid: false, taskId: "" };
       var idPattern = /[a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/ig;
       var pathCandidates = url.pathname.match(idPattern);
       if (pathCandidates && pathCandidates.length) {
-        return pathCandidates[pathCandidates.length - 1].replace(/-/g, "").toLowerCase();
+        return { valid: true, taskId: pathCandidates[pathCandidates.length - 1].replace(/-/g, "").toLowerCase() };
       }
       var knownPageParams = ["p", "page", "page_id"];
       for (var index = 0; index < knownPageParams.length; index += 1) {
         var candidate = String(url.searchParams.get(knownPageParams[index]) || "");
         var match = candidate.match(idPattern);
-        if (match && match.length) return match[match.length - 1].replace(/-/g, "").toLowerCase();
+        if (match && match.length) return { valid: true, taskId: match[match.length - 1].replace(/-/g, "").toLowerCase() };
       }
-      return "";
+      return { valid: false, taskId: "" };
+    } catch (_) {
+      return { valid: false, taskId: "" };
+    }
+  }
+
+  function readTokenTaskId(token) {
+    try {
+      var parts = String(token || "").split(".");
+      if (parts.length !== 2 || !parts[0] || !parts[1]) return "";
+      var encoded = parts[0].replace(/-/g, "+").replace(/_/g, "/");
+      encoded += "=".repeat((4 - encoded.length % 4) % 4);
+      var payload = JSON.parse(atob(encoded));
+      var tokenTaskId = String(payload && payload.taskId || "").replace(/-/g, "").toLowerCase();
+      if (!payload || payload.aud !== "widget" || !/^[a-f0-9]{32}$/.test(tokenTaskId)) return "";
+      return tokenTaskId;
     } catch (_) {
       return "";
     }
@@ -142,10 +160,6 @@
 
   function initialise() {
     initDom();
-    applySavedTheme();
-    restoreExpandedState();
-    bindEvents();
-    updateNetworkState();
 
     if (!context.validBinding) {
       showContextError(
@@ -173,6 +187,11 @@
       renderEmpty();
       return;
     }
+
+    applySavedTheme();
+    restoreExpandedState();
+    bindEvents();
+    updateNetworkState();
 
     var cached = readCache();
     if (cached) {

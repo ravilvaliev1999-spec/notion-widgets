@@ -15,11 +15,15 @@ Legacy-виджет, Apps Script и production deployment остаются не�
 
 - Только `APP_ENV=staging`.
 - `DRY_RUN=true` и `WRITE_GATE=closed` по умолчанию.
-- Notion allowlist содержит точный ID основной «Элементы», одну canary-задачу
-  и затем один явно выбранный шаблон; unknown ID запрещён.
+- Notion allowlist содержит точный ID основной «Элементы», canary-задачу,
+  canary material и затем точные optional test-task/template targets; unknown
+  ID запрещён, а расширенные embed/write scopes требуют приёмки. Scope
+  `test-task` допускает CRUD только для одного exact ID; `elements` остаётся
+  отдельным full-cutover решением.
 - Все остальные основные/Legacy databases, data sources, templates и pages
   остаются вне write-scope.
-- До первой mutation сверяются все 19 widget-полей.
+- До первой mutation сверяются все 19 widget-полей, core/context schema,
+  relation targets и фактические formula outputs точного canary material.
 - Массового обхода страниц и массовой замены embed нет.
 - Повторяющиеся widget embed-блоки не удаляются: один детерминированный блок
   может быть обновлён, остальные сохраняются, а task получает
@@ -27,7 +31,11 @@ Legacy-виджет, Apps Script и production deployment остаются не�
 - Access token подписан и ограничен `task_page_id`.
 - CORS — точный список origin; wildcard отсутствует.
 - Notion webhook проверяется HMAC-SHA256 по raw body.
-- Drive file проверяется по folder parent и `appProperties`.
+- Перед rename/download повторно проверяются File ID, единственный task-folder
+  parent, idempotency/task appProperties и folder MIME/direct staging-root
+  parent/task binding.
+- Отсутствующий, malformed, non-Notion или mismatched referrer отклоняется до
+  API и task-scoped browser storage.
 - Перед первой mutation проверяются ожидаемый Google account, точный staging
   root, marker и отсутствие anyone/domain permissions.
 - До итоговой приёмки unlink с очисткой relation, перемещение в Drive Trash и

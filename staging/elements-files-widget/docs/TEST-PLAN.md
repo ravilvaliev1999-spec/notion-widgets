@@ -12,8 +12,10 @@
 - общее количество записей и количество Task/Knowledge/Section/Inbox;
 - количество placement/type errors;
 - схемы relations, formulas и views;
-- наличие, типы, options и formulas всех 19 widget-полей;
-- ID одной canary-задачи и одного тестового шаблона;
+- наличие, типы, options и formulas всех 19 widget-полей, core/context полей и
+  relation targets Projects/Directions/Spheres;
+- ID одной canary-задачи, одной canary Knowledge row, одного тестового шаблона
+  и, для фазы `test-task`, точный ID одной созданной из него задачи;
 - отсутствие canary ID в production-виджете, Apps Script и ветке `main`.
 
 Старые базы, страницы, свойства, статусы и связи в baseline помечаются Legacy
@@ -26,7 +28,10 @@
 - target data source не равен точному main Elements ID: отказ.
 - page ID не равен текущей canary/template allowlist: отказ.
 - allowlist пересекается с защищённым Legacy/production denylist: отказ.
-- отсутствует или отличается одно из 19 widget-полей: отказ.
+- отсутствует/отличается runtime property, relation target либо output одной
+  из двух canary-формул: отказ.
+- отсутствует, не разбирается, не принадлежит Notion или не совпадает с token
+  referrer page ID: отказ до fetch/cache.
 - source/read-only adapter не экспонирует write methods.
 - unlink-clear, Drive Trash и permanent delete: отказ до отдельного
   post-acceptance разрешения.
@@ -71,7 +76,10 @@ Legacy должны совпасть с ожидаемой дельтой canary
 
 1. Показать, что будет изменён ровно один allowlisted шаблон.
 2. Добавить embed в этот шаблон без обхода существующих страниц.
-3. Создать одну тестовую задачу из шаблона.
+3. Создать одну тестовую задачу из шаблона, зафиксировать её точный ID и только
+   после приёмки включить `TASK_WRITE_SCOPE=test-task` и embed-фазу
+   `test-task` для CRUD/refresh и перепривязки retained embed. Scope `elements`
+   на этом этапе запрещён.
 4. Повторить host-binding, create/upload/download, rename, idempotency и
    recovery tests.
 5. Снова сверить counts, relations, formulas, views и Legacy.
@@ -85,6 +93,9 @@ Legacy должны совпасть с ожидаемой дельтой canary
 - повтор event не создаёт второй embed;
 - Drive parent/appProperties mismatch переводит record в error и не выдаёт
   содержимое;
+- изменение size/MD5 сохранённого бинарного baseline даёт
+  `needs_review/drive_content_changed`, не меняет baseline/время успеха и
+  блокирует download;
 - rename cycle измеряется live; SLA нельзя считать доказанным заранее.
 
 ## Production regression

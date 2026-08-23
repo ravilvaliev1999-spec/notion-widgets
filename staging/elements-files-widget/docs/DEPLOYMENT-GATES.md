@@ -9,8 +9,10 @@ Staging frontend/backend и staging Drive предназначены для яв
 
 1. Не подтверждены точный Elements data source ID и минимальный Notion
    write-scope только для него.
-2. Не сверены в live-схеме имена, типы, options и формулы всех 19 widget-полей.
-3. Не зафиксированы точные ID одной canary-задачи и одного тестового шаблона;
+2. Не сверены в live-схеме все runtime properties, relation targets контекста
+   и фактические outputs обеих формул точной canary Knowledge row.
+3. Не зафиксированы точные ID canary-задачи, canary material и тестового
+   шаблона; для `test-task` также нужен точный ID одной скопированной задачи;
    unknown page должен fail closed.
 4. Нет готового staging backend hosting/HTTPS и отдельного server-side Google
    OAuth client/refresh token.
@@ -26,7 +28,10 @@ Staging frontend/backend и staging Drive предназначены для яв
 ## Ограничение охвата до приёмки
 
 - сначала одна canary-задача;
-- после успешной сверки — один тестовый шаблон;
+- до приёмки embed/write scope только disabled/canary; после явной приёмки
+  `TASK_WRITE_SCOPE=test-task` ограничивает CRUD/refresh одной точной copied
+  task, затем отдельно обновляется один тестовый шаблон; `elements` — только
+  будущий явный full cutover;
 - массовый embed sweep отсутствует;
 - production-виджет, Apps Script, ветка `main` и deployment неизменны;
 - старые базы, страницы, свойства, статусы и связи сохраняются как Legacy или

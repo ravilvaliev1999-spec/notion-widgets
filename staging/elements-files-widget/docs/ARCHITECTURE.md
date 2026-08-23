@@ -46,7 +46,10 @@ display-filter. Parent/Sub-item и `3. Проекты` остаются task-onl
 ID, Google Folder ID, MIME type, download name, размер, SHA-256, Drive MD5,
 позиция, sync status, время и текст ошибки sync, normalized URL, idempotency
 key, Task Page ID, Knowledge key и Integrity. Перед canary проверяются имена,
-типы, select options и формулы всех 19 полей.
+типы, select options и формулы всех 19 полей. Тот же preflight проверяет
+`Name/Тип/Формат знания/Архив/Ссылка`, placement/context properties,
+Projects/Directions/Spheres schemas и фактические значения обеих формул на
+одной точной canary Knowledge row.
 
 ## Виджет
 
@@ -65,8 +68,10 @@ Google refresh token, OAuth secret, Notion token и webhook verification token
 1. Владелец заранее указывает одну тестовую задачу в основной «Элементы».
 2. Backend проверяет точный parent data source, `Тип=Задача` и page allowlist.
 3. Embed добавляется только в эту canary-задачу.
-4. После полной проверки тот же поток разрешается ровно для одного выбранного
-   шаблона задачи.
+4. После явной приёмки `TASK_WRITE_SCOPE=test-task` и отдельная embed-фаза
+   `test-task` ограничивают CRUD/refresh и перепривязку retained embed ровно
+   одной заранее allowlisted задачей, созданной из шаблона; затем отдельная
+   фаза может обновить ровно сам шаблон. Scope `elements` в этот этап не входит.
 5. Массовый поиск/замена embed по существующим страницам не выполняется.
 6. Виджет читает `Тип=Знание + Внутри=current task`.
 7. Docs/Sheets/Slides создаются в стабильной task-folder staging Drive.
@@ -82,9 +87,10 @@ Staging Drive root задаётся точным ID. В нём создаётс�
 backend сверяет OAuth principal, root ID, staging marker и отсутствие
 anyone/domain permissions.
 
-Скачивание разрешается, только если Knowledge принадлежит текущей задаче,
-File ID совпадает с записью, parent совпадает с task-folder и
-`appProperties.task_page_id` совпадает. HTTP filename берётся из неизменяемого
+Скачивание и переименование разрешаются, только если Knowledge имеет чистые
+`synced/ok` без ошибки, File ID и idempotency key совпадают, файл имеет ровно
+один parent task-folder, а folder является прямым потомком staging root,
+имеет folder MIME и task appProperty. HTTP filename берётся из неизменяемого
 `[SYS] Download name`, поэтому последующее переименование в Drive не меняет
 имя скачиваемого исходника.
 
@@ -101,7 +107,11 @@ Name, canonical URL, MIME, size и Drive MD5, а после восстановл
 `sync_error`/`Ошибка sync`. `Download name`, SHA-256, idempotency key,
 категория, позиция, `Тип` и `Внутри` не перезаписываются. Чужой parent,
 удалённый файл или неверные appProperties переводят запись в
-`error/sync_error`. SLA не считается подтверждённым до live E2E.
+`error/sync_error`. Если у non-native файла с сохранённым SHA-256 изменились
+size или Drive MD5, baseline и время последней успешной синхронизации не
+перезаписываются: запись получает `needs_review/sync_error` с
+`drive_content_changed`, а download блокируется. SLA не считается
+подтверждённым до live E2E.
 
 ## Границы адаптеров
 
@@ -115,7 +125,8 @@ Name, canonical URL, MIME, size и Drive MD5, а после восстановл
 
 ## Ограничение host binding
 
-Внешний iframe не получает криптографически подтверждённый ID страницы-хоста
-от Notion. Поэтому `WRITE_GATE` остаётся закрытым до live-теста дублирования и
-выбора fail-closed host attestation. Webhook может исправить copied embed, но
-сам по себе не доказывает отсутствие короткого окна до доставки события.
+Frontend принимает контекст только при parseable referrer с домена Notion и
+точном совпадении page ID с task ID подписанного token. Отсутствующий,
+неразбираемый, чужой или non-Notion referrer отклоняется до API и task-cache.
+Этот fail-closed барьер всё равно требует live-проверки поведения реальных
+Notion desktop/web/mobile клиентов.

@@ -6,6 +6,7 @@ export const AUTHORIZED_MAIN = Object.freeze({
   elementsDataSourceId: '3822d62739a18018a2dc000b95bf5722',
   taskTemplatePageId: '3832d62739a180269d86d4b40101c0d7',
   canaryTaskPageId: '3ae2d62739a180adb49ce028699b75d9',
+  canaryMaterialPageId: '3c52d62739a1815397f5c0c65e4d294f',
   spheresDataSourceId: '3822d62739a180529ef1000bc10b8f68',
   directionsDataSourceId: '3822d62739a180699637000ba20c3b1d',
   projectsDataSourceId: '3822d62739a18068aafa000b9db5ed1c'
@@ -57,6 +58,7 @@ function assertExactMainTarget(config) {
     elementsDataSourceId: AUTHORIZED_MAIN.elementsDataSourceId,
     authorizedTaskTemplatePageId: AUTHORIZED_MAIN.taskTemplatePageId,
     authorizedCanaryTaskPageId: AUTHORIZED_MAIN.canaryTaskPageId,
+    authorizedCanaryMaterialPageId: AUTHORIZED_MAIN.canaryMaterialPageId,
     spheresDataSourceId: AUTHORIZED_MAIN.spheresDataSourceId,
     directionsDataSourceId: AUTHORIZED_MAIN.directionsDataSourceId,
     projectsDataSourceId: AUTHORIZED_MAIN.projectsDataSourceId
@@ -76,7 +78,9 @@ export function authorizedNotionIds(config) {
     write: new Set([
       config.elementsDataSourceId,
       config.authorizedTaskTemplatePageId,
-      config.authorizedCanaryTaskPageId
+      config.authorizedCanaryTaskPageId,
+      config.authorizedCanaryMaterialPageId,
+      ...(config.authorizedTemplateTestTaskPageId ? [config.authorizedTemplateTestTaskPageId] : [])
     ].map(normalizeId)),
     relationTargets: new Set([
       config.spheresDataSourceId,
@@ -99,6 +103,7 @@ export function assertTargetSafety(config) {
     config.elementsDataSourceId,
     config.authorizedTaskTemplatePageId,
     config.authorizedCanaryTaskPageId,
+    config.authorizedCanaryMaterialPageId,
     config.spheresDataSourceId,
     config.directionsDataSourceId,
     config.projectsDataSourceId
@@ -121,24 +126,41 @@ export function assertTargetSafety(config) {
       'Утверждённый main allowlist пересекается с Legacy denylist', { id });
   }
 
+  const templateTestId = normalizeId(config.authorizedTemplateTestTaskPageId);
+  if (templateTestId) {
+    invariant(/^(?:[a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/i
+      .test(String(config.authorizedTemplateTestTaskPageId).trim()), 500, 'invalid_template_test_task_id',
+      'AUTHORIZED_TEMPLATE_TEST_TASK_PAGE_ID содержит некорректный Notion ID');
+    invariant(!new Set(normalized).has(templateTestId), 500, 'duplicate_main_target',
+      'Template-test task должен иметь отдельный точный ID');
+    invariant(!deny.has(templateTestId), 500, 'allow_deny_overlap',
+      'Template-test task пересекается с Legacy denylist', { id: templateTestId });
+  }
+
   invariant(Boolean(config.stagingDriveFolderId), 500, 'missing_drive_folder',
     'Не задан staging Drive folder');
   invariant(!config.originalDriveDenylist.includes(config.stagingDriveFolderId), 500,
     'production_drive_target_blocked', 'Staging Drive folder совпал с production denylist');
-  invariant(['disabled', 'canary', 'template'].includes(config.embedRolloutPhase), 500,
-    'invalid_embed_rollout_phase', 'EMBED_ROLLOUT_PHASE должен быть disabled, canary или template');
-  invariant(['canary', 'elements'].includes(config.taskWriteScope), 500,
-    'invalid_task_write_scope', 'TASK_WRITE_SCOPE должен быть canary или elements');
+  invariant(['disabled', 'canary', 'test-task', 'template'].includes(config.embedRolloutPhase), 500,
+    'invalid_embed_rollout_phase', 'EMBED_ROLLOUT_PHASE должен быть disabled, canary, test-task или template');
+  invariant(['canary', 'test-task', 'elements'].includes(config.taskWriteScope), 500,
+    'invalid_task_write_scope', 'TASK_WRITE_SCOPE должен быть canary, test-task или elements');
 
   if (!config.acceptanceApproved) {
     invariant(config.taskWriteScope === 'canary', 500, 'acceptance_required',
       'До приёмки запись разрешена только в canary-задачу');
     invariant(config.enableNewTaskWebhook === false, 500, 'acceptance_required',
       'До приёмки webhook новых задач должен быть выключен');
+    invariant(['disabled', 'canary'].includes(config.embedRolloutPhase), 500, 'acceptance_required',
+      'До приёмки обновление embed разрешено только для canary-задачи');
     invariant(config.allowRelationUnlink === false, 500, 'destructive_action_blocked',
       'До приёмки очистка Type/Inside запрещена');
     invariant(config.allowDriveTrash === false, 500, 'destructive_action_blocked',
       'До приёмки Drive Trash запрещён');
+  }
+  if (config.embedRolloutPhase === 'test-task' || config.taskWriteScope === 'test-task') {
+    invariant(Boolean(templateTestId), 500, 'missing_template_test_task_id',
+      'Для test-task scope нужен точный AUTHORIZED_TEMPLATE_TEST_TASK_PAGE_ID');
   }
   return true;
 }
@@ -150,13 +172,33 @@ export function assertTaskWriteAllowed(config, taskId) {
       'task_write_not_allowlisted', 'Запись разрешена только в утверждённую canary-задачу');
     return true;
   }
+  if (config.taskWriteScope === 'test-task') {
+    invariant(config.acceptanceApproved === true, 403, 'acceptance_required',
+      'Запись в template-test task требует явной приёмки');
+    const target = normalizeId(config.authorizedTemplateTestTaskPageId);
+    invariant(/^[a-f0-9]{32}$/.test(target), 403, 'task_write_not_allowlisted',
+      'Не задан точный allowlist template-test task');
+    invariant(normalized === target, 403, 'task_write_not_allowlisted',
+      'Запись разрешена только в утверждённую template-test task');
+    return true;
+  }
   invariant(config.acceptanceApproved === true, 403, 'acceptance_required',
     'Расширенная запись требует явной приёмки');
   return true;
 }
 
 export function embedRolloutTargetIds(config) {
+  if (['test-task', 'template'].includes(config.embedRolloutPhase)) {
+    invariant(config.acceptanceApproved === true, 500, 'acceptance_required',
+      'Расширенное обновление embed требует явной приёмки');
+  }
   if (config.embedRolloutPhase === 'canary') return [normalizeId(config.authorizedCanaryTaskPageId)];
+  if (config.embedRolloutPhase === 'test-task') {
+    const target = normalizeId(config.authorizedTemplateTestTaskPageId);
+    invariant(/^[a-f0-9]{32}$/.test(target), 500, 'missing_template_test_task_id',
+      'Для test-task нужен точный AUTHORIZED_TEMPLATE_TEST_TASK_PAGE_ID');
+    return [target];
+  }
   if (config.embedRolloutPhase === 'template') return [normalizeId(config.authorizedTaskTemplatePageId)];
   return [];
 }
@@ -188,6 +230,8 @@ export function loadConfig(env = process.env, options = {}) {
     elementsDataSourceId: value(env, 'ELEMENTS_DATA_SOURCE_ID', AUTHORIZED_MAIN.elementsDataSourceId),
     authorizedTaskTemplatePageId: value(env, 'AUTHORIZED_TASK_TEMPLATE_PAGE_ID', AUTHORIZED_MAIN.taskTemplatePageId),
     authorizedCanaryTaskPageId: value(env, 'AUTHORIZED_CANARY_TASK_PAGE_ID', AUTHORIZED_MAIN.canaryTaskPageId),
+    authorizedCanaryMaterialPageId: value(env, 'AUTHORIZED_CANARY_MATERIAL_PAGE_ID', AUTHORIZED_MAIN.canaryMaterialPageId),
+    authorizedTemplateTestTaskPageId: value(env, 'AUTHORIZED_TEMPLATE_TEST_TASK_PAGE_ID'),
     spheresDataSourceId: value(env, 'SPHERES_DATA_SOURCE_ID', AUTHORIZED_MAIN.spheresDataSourceId),
     directionsDataSourceId: value(env, 'DIRECTIONS_DATA_SOURCE_ID', AUTHORIZED_MAIN.directionsDataSourceId),
     projectsDataSourceId: value(env, 'PROJECTS_DATA_SOURCE_ID', AUTHORIZED_MAIN.projectsDataSourceId),

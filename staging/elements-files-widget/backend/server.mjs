@@ -23,8 +23,13 @@ import {
 } from './lib/notion.mjs';
 import { P, RecordRepository, classifyFile, normalizeExternalUrl } from './lib/records.mjs';
 import { resolveTaskContext } from './lib/context.mjs';
-import { assertAuthorizedDatabase, assertAuthorizedDataSource } from './lib/schema.mjs';
-import { reconcileTaskFiles, startTaskMetadataSync } from './lib/sync.mjs';
+import {
+  assertAuthorizedDatabase,
+  assertAuthorizedDataSource,
+  assertCanaryFormulaOutputs,
+  assertContextDataSources
+} from './lib/schema.mjs';
+import { driveBinaryBaselineChanged, reconcileTaskFiles, startTaskMetadataSync } from './lib/sync.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const frontendDir = join(here, '..', 'frontend');
@@ -33,6 +38,22 @@ const MAX_UPLOAD_BYTES = 512 * 1024 * 1024;
 const SECTION_VALUES = new Set(['Drive', 'Docs', 'Sheets', 'Slides']);
 const FORMAT_VALUES = new Set(['Google Docs', 'Word', 'Google Sheets', 'Excel', 'CSV', 'Google Slides', 'PowerPoint', 'Link', 'Other File']);
 const GOOGLE_KIND_FORMAT = Object.freeze({ docs: 'Google Docs', sheets: 'Google Sheets', slides: 'Google Slides' });
+const DRIVE_FOLDER_MIME = 'application/vnd.google-apps.folder';
+
+function hasExactParent(file, parentId) {
+  return Array.isArray(file?.parents) && file.parents.length === 1 && String(file.parents[0]) === String(parentId);
+}
+
+function isGoogleNativeMime(mimeType) {
+  return String(mimeType || '').startsWith('application/vnd.google-apps.');
+}
+
+function assertDownloadHealthy(record) {
+  const status = String(record?.status || '').toLowerCase();
+  const integrity = String(record?.integrity || '').toLowerCase();
+  invariant(status === 'synced' && integrity === 'ok' && !String(record?.syncError || '').trim(), 409,
+    'download_blocked_by_integrity', 'Скачивание заблокировано до успешной проверки синхронизации');
+}
 
 function sendJson(response, status, payload, headers = {}) {
   const body = JSON.stringify(payload);
@@ -172,12 +193,18 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
   const logger = dependencies.logger || console;
   const contextResolver = dependencies.contextResolver || resolveTaskContext;
   const targetPreflight = dependencies.targetPreflight || (async () => {
-    const [database, dataSource] = await Promise.all([
+    const [database, dataSource, spheres, directions, projects] = await Promise.all([
       notion.retrieveDatabase(config.authorizedElementsDatabaseId),
-      notion.retrieveDataSource(config.elementsDataSourceId)
+      notion.retrieveDataSource(config.elementsDataSourceId),
+      notion.retrieveDataSource(config.spheresDataSourceId),
+      notion.retrieveDataSource(config.directionsDataSourceId),
+      notion.retrieveDataSource(config.projectsDataSourceId)
     ]);
     assertAuthorizedDatabase(database, config);
     assertAuthorizedDataSource(dataSource, config);
+    assertContextDataSources({ spheres, directions, projects }, config);
+    const canaryMaterial = await notion.retrievePage(config.authorizedCanaryMaterialPageId);
+    assertCanaryFormulaOutputs(canaryMaterial, config);
   });
   const allowedOrigins = safeOriginSet(config);
   const limitWrite = createLimiter();
@@ -230,6 +257,33 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     folderCache.set(key, pending);
     try { return await pending; }
     catch (error) { folderCache.delete(key); throw error; }
+  }
+
+  async function assertDriveRecordBoundary(record, taskId) {
+    invariant(record.googleFileId && record.googleFolderId && record.idempotencyKey, 409,
+      'unsafe_drive_metadata', 'SYS-поля файла неполны; операция с Drive заблокирована');
+    const file = await drive.getFile(record.googleFileId);
+    invariant(String(file?.id || '') === String(record.googleFileId), 409, 'unsafe_drive_file_identity',
+      'Google Drive вернул другой File ID');
+    invariant(file?.trashed !== true, 410, 'drive_file_trashed', 'Google-файл находится в корзине');
+    invariant(hasExactParent(file, record.googleFolderId), 409, 'unsafe_drive_parent',
+      'Google-файл не находится непосредственно в task folder');
+    invariant(normalizeId(file?.appProperties?.elementsTaskPageId) === normalizeId(taskId), 409,
+      'unsafe_drive_task_binding', 'Google-файл не привязан к этой задаче');
+    invariant(String(file?.appProperties?.elementsIdempotencyKey || '') === String(record.idempotencyKey), 409,
+      'unsafe_drive_idempotency_binding', 'Google-файл не совпадает с Idempotency key записи');
+
+    const folder = await drive.getFile(record.googleFolderId);
+    invariant(String(folder?.id || '') === String(record.googleFolderId), 409, 'unsafe_drive_folder_identity',
+      'Google Drive вернул другой Folder ID');
+    invariant(folder?.trashed !== true, 410, 'drive_folder_trashed', 'Task folder находится в корзине');
+    invariant(folder?.mimeType === DRIVE_FOLDER_MIME, 409, 'unsafe_drive_folder_type',
+      'SYS Folder ID не является Google Drive folder');
+    invariant(hasExactParent(folder, config.stagingDriveFolderId), 409, 'unsafe_drive_folder_parent',
+      'Task folder не является прямым потомком staging root');
+    invariant(normalizeId(folder?.appProperties?.elementsTaskPageId) === normalizeId(taskId), 409,
+      'unsafe_drive_folder_binding', 'Task folder не привязан к этой задаче');
+    return { file, folder };
   }
 
   async function recordPlacement(taskPage) {
@@ -572,6 +626,7 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
       invariant(current.provider === 'External URL', 422, 'not_external_link', 'Заменить URL можно только у внешней ссылки');
     }
     if (changes.name !== undefined && current.provider === 'Google Drive' && current.googleFileId) {
+      await assertDriveRecordBoundary(current, taskId);
       await drive.renameFile(current.googleFileId, changes.name);
     }
     changes.syncedAt = new Date();
@@ -632,7 +687,8 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     await requireTask(request, taskId);
     const record = await records.getForTask(taskId, recordId);
     invariant(record.provider === 'Google Drive' && record.googleFileId, 422, 'not_downloadable', 'Запись не является загруженным файлом');
-    invariant(!String(record.mimeType || '').startsWith('application/vnd.google-apps.'), 422, 'google_native_file', 'Google-native файл нужно открыть по ссылке');
+    assertDownloadHealthy(record);
+    invariant(!isGoogleNativeMime(record.mimeType), 422, 'google_native_file', 'Google-native файл нужно открыть по ссылке');
     const token = signToken({ aud: 'download', taskId: normalizeId(taskId), recordId: normalizeId(recordId), fileId: record.googleFileId }, config.signingSecret, 60);
     return { url: config.publicBaseUrl.replace(/\/$/, '') + '/api/v1/download/' + normalizeId(recordId) + '?access=' + encodeURIComponent(token), expiresIn: 60 };
   }
@@ -643,10 +699,24 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     assertAuthorizedTask(task, config.elementsDataSourceId);
     const record = await records.getForTask(token.taskId, recordId);
     invariant(record.googleFileId === token.fileId, 403, 'wrong_file', 'Download token не совпадает с File ID');
-    const file = await drive.getFile(record.googleFileId);
-    invariant((file.parents || []).includes(record.googleFolderId), 403, 'unsafe_download', 'Файл находится вне task folder');
-    invariant(normalizeId(file.appProperties?.elementsTaskPageId) === record.taskId, 403, 'unsafe_download', 'Файл не привязан к задаче');
-    invariant(file.trashed !== true, 410, 'drive_file_trashed', 'Google-файл находится в корзине');
+    assertDownloadHealthy(record);
+    const { file } = await assertDriveRecordBoundary(record, token.taskId);
+    invariant(!isGoogleNativeMime(file.mimeType), 422, 'google_native_file', 'Google-native файл нужно открыть по ссылке');
+    if (driveBinaryBaselineChanged(record, file)) {
+      try {
+        assertTaskWriteAllowed(config, token.taskId);
+        await ensureWriteReady();
+        await records.patch(token.taskId, recordId, {
+          status: 'needs_review', syncError: 'drive_content_changed', integrity: 'sync_error'
+        });
+      } catch (error) {
+        logger.error('[download] integrity diagnostic patch failed', {
+          recordId: normalizeId(recordId), code: error?.code, message: error?.message
+        });
+      }
+      throw new AppError(409, 'drive_content_changed',
+        'Содержимое Google-файла изменилось; сначала выполните безопасное обновление метаданных');
+    }
     const source = await drive.downloadFile(record.googleFileId);
     response.writeHead(200, {
       'Content-Type': source.headers.get('content-type') || record.mimeType || 'application/octet-stream',
@@ -658,7 +728,9 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     Readable.fromWeb(source.body).pipe(response);
   }
 
-  async function ensureWidgetEmbed(page) {
+  async function ensureWidgetEmbed(page, expectedTaskId) {
+    invariant(normalizeId(page?.id) === normalizeId(expectedTaskId), 502, 'notion_page_identity_mismatch',
+      'Notion вернул страницу, не совпадающую с точным rollout target');
     assertAuthorizedTask(page, config.elementsDataSourceId);
     const children = await notion.listBlockChildren(page.id);
     const widgetEmbeds = children.filter((block) =>
@@ -688,7 +760,7 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     let duplicates = 0;
     for (const targetId of targetIds) {
       const page = await notion.retrievePage(targetId);
-      const result = await onceMutation('embed:' + targetId, () => ensureWidgetEmbed(page));
+      const result = await onceMutation('embed:' + targetId, () => ensureWidgetEmbed(page, targetId));
       if (result.changed) changed += 1;
       duplicates += result.duplicates;
     }
@@ -718,7 +790,7 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     await onceMutation('webhook:' + eventId, async () => {
       const page = await notion.retrievePage(eventId);
       await ensureWriteReady();
-      await ensureWidgetEmbed(page);
+      await ensureWidgetEmbed(page, eventId);
     });
     sendJson(response, 200, { ok: true });
   }
@@ -846,7 +918,7 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     }
   }
 
-  return { handler, notion, drive, records, renewEmbeds, refreshTaskForSync };
+  return { handler, notion, drive, records, renewEmbeds, refreshTaskForSync, targetPreflight };
 }
 
 function startEmbedRenewal(config, app, logger = console) {

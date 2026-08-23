@@ -19,6 +19,21 @@ function errorCode(error, fallback = 'drive_sync_error') {
   return String(error?.code || fallback).slice(0, 2000);
 }
 
+function isGoogleNative(mimeType) {
+  return String(mimeType || '').startsWith('application/vnd.google-apps.');
+}
+
+export function driveBinaryBaselineChanged(record, file) {
+  if (isGoogleNative(file?.mimeType || record?.mimeType) || !String(record?.sha256 || '').trim()) return false;
+  const storedSize = Number(record?.size);
+  const driveSize = Number(file?.size);
+  const sizeChanged = record?.size !== null && record?.size !== undefined &&
+    (!Number.isFinite(storedSize) || !Number.isFinite(driveSize) || storedSize !== driveSize);
+  const storedMd5 = String(record?.md5 || '').trim().toLowerCase();
+  const driveMd5 = String(file?.md5Checksum || '').trim().toLowerCase();
+  return sizeChanged || (Boolean(storedMd5) && storedMd5 !== driveMd5);
+}
+
 /**
  * Refreshes only Google Drive records directly related to one authorized task.
  * The result is checked again before a Drive request, so a loose query response
@@ -41,14 +56,26 @@ export async function reconcileTaskFiles(config, taskId, drive, repository, logg
   for (const record of records) {
     try {
       const file = await drive.getFile(record.googleFileId);
-      const safeParent = Boolean(record.googleFolderId) && (file.parents || []).includes(record.googleFolderId);
+      const safeParent = Boolean(record.googleFolderId) && Array.isArray(file.parents) &&
+        file.parents.length === 1 && String(file.parents[0]) === String(record.googleFolderId);
       const safeTask = normalizeId(file.appProperties?.elementsTaskPageId) === expectedTaskId;
       const safeIdentity = String(file.id || '') === String(record.googleFileId);
-      if (!safeParent || !safeTask || !safeIdentity || file.trashed === true) {
+      const safeIdempotency = Boolean(record.idempotencyKey) &&
+        String(file.appProperties?.elementsIdempotencyKey || '') === String(record.idempotencyKey);
+      if (!safeParent || !safeTask || !safeIdentity || !safeIdempotency || file.trashed === true) {
         const reason = file.trashed === true ? 'drive_file_trashed' :
-          !safeParent ? 'unsafe_drive_parent' : !safeTask ? 'unsafe_drive_task_binding' : 'unsafe_drive_file_identity';
+          !safeParent ? 'unsafe_drive_parent' : !safeTask ? 'unsafe_drive_task_binding' :
+            !safeIdentity ? 'unsafe_drive_file_identity' : 'unsafe_drive_idempotency_binding';
         await repository.patch(expectedTaskId, record.id, {
-          status: 'error', syncError: reason, integrity: 'sync_error', syncedAt: new Date()
+          status: 'error', syncError: reason, integrity: 'sync_error'
+        });
+        errors += 1;
+        continue;
+      }
+
+      if (driveBinaryBaselineChanged(record, file)) {
+        await repository.patch(expectedTaskId, record.id, {
+          status: 'needs_review', syncError: 'drive_content_changed', integrity: 'sync_error'
         });
         errors += 1;
         continue;
@@ -80,7 +107,7 @@ export async function reconcileTaskFiles(config, taskId, drive, repository, logg
       errors += 1;
       try {
         await repository.patch(expectedTaskId, record.id, {
-          status: 'error', syncError: errorCode(error), integrity: 'sync_error', syncedAt: new Date()
+          status: 'error', syncError: errorCode(error), integrity: 'sync_error'
         });
       } catch (patchError) {
         logger.error('[drive-sync] diagnostic patch failed', {
@@ -94,6 +121,12 @@ export async function reconcileTaskFiles(config, taskId, drive, repository, logg
   return { taskId: expectedTaskId, scanned: records.length, changed, recovered, errors };
 }
 
+export function metadataSyncTargetId(config) {
+  return config.taskWriteScope === 'test-task'
+    ? config.authorizedTemplateTestTaskPageId
+    : config.authorizedCanaryTaskPageId;
+}
+
 /**
  * Pre-acceptance background refresh is intentionally bounded to the canary.
  * There is no data-source-wide sweep in the runtime.
@@ -104,10 +137,11 @@ export function startTaskMetadataSync(config, refreshTask, logger = console) {
     return () => {};
   }
   let running = false;
+  const targetTaskId = metadataSyncTargetId(config);
   const tick = async () => {
     if (running) return;
     running = true;
-    try { logger.info('[drive-sync]', await refreshTask(config.authorizedCanaryTaskPageId)); }
+    try { logger.info('[drive-sync]', await refreshTask(targetTaskId)); }
     catch (error) { logger.error('[drive-sync] cycle failed', { code: error?.code, message: error?.message }); }
     finally { running = false; }
   };

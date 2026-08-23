@@ -19,6 +19,7 @@ function authorizedEnvironment(overrides = {}) {
     ELEMENTS_DATA_SOURCE_ID: AUTHORIZED_MAIN.elementsDataSourceId,
     AUTHORIZED_TASK_TEMPLATE_PAGE_ID: AUTHORIZED_MAIN.taskTemplatePageId,
     AUTHORIZED_CANARY_TASK_PAGE_ID: AUTHORIZED_MAIN.canaryTaskPageId,
+    AUTHORIZED_CANARY_MATERIAL_PAGE_ID: AUTHORIZED_MAIN.canaryMaterialPageId,
     SPHERES_DATA_SOURCE_ID: AUTHORIZED_MAIN.spheresDataSourceId,
     DIRECTIONS_DATA_SOURCE_ID: AUTHORIZED_MAIN.directionsDataSourceId,
     PROJECTS_DATA_SOURCE_ID: AUTHORIZED_MAIN.projectsDataSourceId,
@@ -49,6 +50,7 @@ test('exact authorized-main allowlist passes, including UUID punctuation', () =>
     ELEMENTS_DATA_SOURCE_ID: hyphenate(AUTHORIZED_MAIN.elementsDataSourceId),
     AUTHORIZED_TASK_TEMPLATE_PAGE_ID: hyphenate(AUTHORIZED_MAIN.taskTemplatePageId),
     AUTHORIZED_CANARY_TASK_PAGE_ID: hyphenate(AUTHORIZED_MAIN.canaryTaskPageId),
+    AUTHORIZED_CANARY_MATERIAL_PAGE_ID: hyphenate(AUTHORIZED_MAIN.canaryMaterialPageId),
     SPHERES_DATA_SOURCE_ID: hyphenate(AUTHORIZED_MAIN.spheresDataSourceId),
     DIRECTIONS_DATA_SOURCE_ID: hyphenate(AUTHORIZED_MAIN.directionsDataSourceId),
     PROJECTS_DATA_SOURCE_ID: hyphenate(AUTHORIZED_MAIN.projectsDataSourceId)
@@ -63,6 +65,7 @@ test('each role-specific Notion target is exact and cannot be swapped', () => {
     ELEMENTS_DATA_SOURCE_ID: 'd'.repeat(32),
     AUTHORIZED_TASK_TEMPLATE_PAGE_ID: 'c'.repeat(32),
     AUTHORIZED_CANARY_TASK_PAGE_ID: 'b'.repeat(32),
+    AUTHORIZED_CANARY_MATERIAL_PAGE_ID: '7'.repeat(32),
     SPHERES_DATA_SOURCE_ID: 'a'.repeat(32),
     DIRECTIONS_DATA_SOURCE_ID: '9'.repeat(32),
     PROJECTS_DATA_SOURCE_ID: '8'.repeat(32)
@@ -93,9 +96,10 @@ test('test targets require the explicit loader option and cannot be enabled by e
     ELEMENTS_DATA_SOURCE_ID: '3'.repeat(32),
     AUTHORIZED_TASK_TEMPLATE_PAGE_ID: '4'.repeat(32),
     AUTHORIZED_CANARY_TASK_PAGE_ID: '5'.repeat(32),
-    SPHERES_DATA_SOURCE_ID: '6'.repeat(32),
-    DIRECTIONS_DATA_SOURCE_ID: '7'.repeat(32),
-    PROJECTS_DATA_SOURCE_ID: '8'.repeat(32)
+    AUTHORIZED_CANARY_MATERIAL_PAGE_ID: '6'.repeat(32),
+    SPHERES_DATA_SOURCE_ID: '7'.repeat(32),
+    DIRECTIONS_DATA_SOURCE_ID: '8'.repeat(32),
+    PROJECTS_DATA_SOURCE_ID: '9'.repeat(32)
   };
   assert.equal(assertTargetSafety(loadConfig(testEnv, { allowMissingSecrets: true, allowTestTargets: true })), true);
 });
@@ -116,7 +120,10 @@ test('pre-acceptance write scope is canary-only and destructive gates stay close
   assert.throws(() => assertTaskWriteAllowed(config, AUTHORIZED_MAIN.taskTemplatePageId), { code: 'task_write_not_allowlisted' });
   for (const [key, value] of [
     ['TASK_WRITE_SCOPE', 'elements'],
+    ['TASK_WRITE_SCOPE', 'test-task'],
     ['ENABLE_NEW_TASK_WEBHOOK', 'true'],
+    ['EMBED_ROLLOUT_PHASE', 'test-task'],
+    ['EMBED_ROLLOUT_PHASE', 'template'],
     ['ALLOW_RELATION_UNLINK', 'true'],
     ['ALLOW_DRIVE_TRASH', 'true']
   ]) {
@@ -126,10 +133,43 @@ test('pre-acceptance write scope is canary-only and destructive gates stay close
   }
 });
 
-test('embed renewal targets only the configured canary or template', () => {
+test('post-acceptance test-task scope permits only the one exact copied task', () => {
+  const templateTestTask = 'a1'.repeat(16);
+  const config = load({
+    ACCEPTANCE_APPROVED: 'true', TASK_WRITE_SCOPE: 'test-task',
+    AUTHORIZED_TEMPLATE_TEST_TASK_PAGE_ID: templateTestTask
+  });
+  assert.equal(assertTargetSafety(config), true);
+  assert.equal(assertTaskWriteAllowed(config, templateTestTask), true);
+  assert.throws(() => assertTaskWriteAllowed(config, AUTHORIZED_MAIN.canaryTaskPageId),
+    { code: 'task_write_not_allowlisted' });
+  assert.throws(() => assertTaskWriteAllowed(config, AUTHORIZED_MAIN.taskTemplatePageId),
+    { code: 'task_write_not_allowlisted' });
+  assert.throws(() => assertTargetSafety(load({ ACCEPTANCE_APPROVED: 'true', TASK_WRITE_SCOPE: 'test-task' })),
+    { code: 'missing_template_test_task_id' });
+});
+
+test('embed renewal targets only one exact rollout page', () => {
+  const templateTestTask = 'a1'.repeat(16);
   assert.deepEqual(embedRolloutTargetIds(load({ EMBED_ROLLOUT_PHASE: 'disabled' })), []);
   assert.deepEqual(embedRolloutTargetIds(load({ EMBED_ROLLOUT_PHASE: 'canary' })), [AUTHORIZED_MAIN.canaryTaskPageId]);
-  assert.deepEqual(embedRolloutTargetIds(load({ EMBED_ROLLOUT_PHASE: 'template' })), [AUTHORIZED_MAIN.taskTemplatePageId]);
+  assert.deepEqual(embedRolloutTargetIds(load({ EMBED_ROLLOUT_PHASE: 'test-task', ACCEPTANCE_APPROVED: 'true',
+    AUTHORIZED_TEMPLATE_TEST_TASK_PAGE_ID: templateTestTask })), [templateTestTask]);
+  assert.deepEqual(embedRolloutTargetIds(load({ EMBED_ROLLOUT_PHASE: 'template', ACCEPTANCE_APPROVED: 'true' })),
+    [AUTHORIZED_MAIN.taskTemplatePageId]);
+});
+
+test('test-task rollout requires an exact optional task ID and fails closed', () => {
+  assert.throws(() => assertTargetSafety(load({ EMBED_ROLLOUT_PHASE: 'test-task', ACCEPTANCE_APPROVED: 'true' })),
+    { code: 'missing_template_test_task_id' });
+  assert.throws(() => assertTargetSafety(load({ AUTHORIZED_TEMPLATE_TEST_TASK_PAGE_ID: 'a-' + 'a'.repeat(31) })),
+    { code: 'invalid_template_test_task_id' });
+  assert.throws(() => assertTargetSafety(load({ AUTHORIZED_TEMPLATE_TEST_TASK_PAGE_ID: AUTHORIZED_MAIN.canaryTaskPageId })),
+    { code: 'duplicate_main_target' });
+  assert.equal(assertTargetSafety(load({
+    EMBED_ROLLOUT_PHASE: 'test-task', ACCEPTANCE_APPROVED: 'true',
+    AUTHORIZED_TEMPLATE_TEST_TASK_PAGE_ID: 'a1'.repeat(16)
+  })), true);
 });
 
 test('writes require an open gate and DRY_RUN=false together', () => {
