@@ -20,6 +20,12 @@ test('frontend has no browser persistence as source of truth', () => {
   assert.match(frontend, /apiBootstrap/);
 });
 
+test('mock mode is limited to local preview and the published canary host', () => {
+  const frontend = text('Index.html');
+  assert.match(frontend, /ravilvaliev1999-spec\.github\.io/);
+  assert.match(frontend, /mockRequested\s*=\s*requestedMock\s*&&\s*\(isLocal\s*\|\|\s*isPublishedCanary\)/);
+});
+
 test('backend is fail-closed on identity, data source and task ownership', () => {
   const backend = text('Code.gs');
   assert.match(backend, /w19AssertViewer_/);

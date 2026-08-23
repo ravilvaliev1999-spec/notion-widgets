@@ -293,7 +293,9 @@
     const $ = (id) => document.getElementById(id);
     const taskPageId = normalizeUuid(new URLSearchParams(location.search).get('task'));
     const isLocal = location.protocol === 'file:' || ['localhost','127.0.0.1','::1'].includes(location.hostname);
-    const mockRequested = isLocal && new URLSearchParams(location.search).get('mock') === '1';
+    const isPublishedCanary = location.hostname.toLowerCase() === 'ravilvaliev1999-spec.github.io';
+    const requestedMock = new URLSearchParams(location.search).get('mock') === '1';
+    const mockRequested = requestedMock && (isLocal || isPublishedCanary);
     const bridge = createBridge();
     let toastTimer = 0;
 
