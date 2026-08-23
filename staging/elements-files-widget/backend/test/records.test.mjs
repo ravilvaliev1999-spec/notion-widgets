@@ -22,7 +22,8 @@ function lookupPage({
   insideHasMore = false,
   idempotencyKey = 'lookup-key-12345678',
   googleFileId = 'drive-file-shared',
-  url = 'https://example.test/shared'
+  url = 'https://example.test/shared',
+  section = 'Drive'
 } = {}) {
   return {
     id,
@@ -34,7 +35,7 @@ function lookupPage({
       [P.type]: { select: { name: type } },
       [P.archive]: { checkbox: archive },
       [P.inside]: { relation: taskIds.map((value) => ({ id: value })), has_more: insideHasMore },
-      [P.section]: { select: { name: 'Drive' } },
+      [P.section]: { select: section ? { name: section } : null },
       [P.syncStatus]: { select: { name: status } },
       [P.idempotencyKey]: richText(idempotencyKey),
       [P.googleFileId]: richText(googleFileId),
@@ -88,6 +89,7 @@ test('widget record uses knowledge type and direct Inside relation only', () => 
   assert.equal(properties[P.taskPageId], undefined);
   assert.equal(properties[P.knowledgeKey], undefined);
   assert.equal(recordProperties({ name: 'native', taskId, context: {}, size: null })[P.size].number, null);
+  assert.equal(recordProperties({ name: 'unverified', taskId, context: {}, syncedAt: null })[P.syncedAt].date, null);
 });
 
 test('Task and Section rows with colliding keys never satisfy record dedup lookups', async () => {
@@ -108,6 +110,20 @@ test('Task and Section rows with colliding keys never satisfy record dedup looku
   assert.equal(await repository.findByUniqueKey(taskId, { googleFileId: 'drive-file-shared' }), null);
   assert.equal(queryBodies.length, 2);
   for (const body of queryBodies) assertActiveLookupQuery(body);
+});
+
+test('context refresh lookup includes every active scoped Knowledge row even without a widget section', async () => {
+  const blankSection = lookupPage({ id: '1'.repeat(32), section: '' });
+  const link = lookupPage({ id: '2'.repeat(32), section: 'Drive', googleFileId: '', url: 'https://example.test/link' });
+  let query;
+  const notion = {
+    queryDataSource: async (_dataSourceId, body) => { query = body; return [blankSection, link]; }
+  };
+  const repository = new RecordRepository({ elementsDataSourceId: dataSourceId }, notion);
+  const rows = await repository.listActiveKnowledgeForTask(taskId);
+  assert.deepEqual(rows.map((row) => row.id), [blankSection.id, link.id]);
+  assert.equal(query.filter.and.some((item) => item.property === P.section), false);
+  assertActiveLookupQuery(query);
 });
 
 test('dedup post-filter accepts only one active Knowledge relation in the current data source and task', async () => {
@@ -199,4 +215,36 @@ test('duplicate active records are preserved and marked Integrity=duplicate', as
     assert.equal(update.properties[P.integrity].select.name, 'duplicate');
     assert.equal(update.properties[P.syncError].rich_text[0].text.content, 'duplicate_widget_identity');
   }
+});
+
+test('repository context patch writes the complete inherited context without touching placement relations', async () => {
+  const page = lookupPage();
+  let update;
+  const notion = {
+    retrievePage: async () => page,
+    updatePage: async (id, properties) => {
+      update = { id, properties };
+      return { ...page, properties: { ...page.properties, ...properties } };
+    }
+  };
+  const repository = new RecordRepository({ elementsDataSourceId: dataSourceId }, notion);
+  const updatedAt = new Date('2026-08-23T01:02:03.000Z');
+  await repository.patch(taskId, page.id, {
+    context: {
+      sphereId: '1'.repeat(32), directionId: '2'.repeat(32), projectId: '3'.repeat(32),
+      path: 'Sphere / Direction / Project / Task', ancestorIds: JSON.stringify(['1'.repeat(32)]),
+      depth: 2, updatedAt
+    }
+  });
+
+  assert.equal(update.id, page.id);
+  assert.deepEqual(update.properties[P.contextSphere].relation, [{ id: '1'.repeat(32) }]);
+  assert.deepEqual(update.properties[P.contextDirection].relation, [{ id: '2'.repeat(32) }]);
+  assert.deepEqual(update.properties[P.contextProject].relation, [{ id: '3'.repeat(32) }]);
+  assert.equal(update.properties[P.contextPath].rich_text[0].text.content, 'Sphere / Direction / Project / Task');
+  assert.equal(update.properties[P.ancestorIds].rich_text[0].text.content, JSON.stringify(['1'.repeat(32)]));
+  assert.equal(update.properties[P.depth].number, 2);
+  assert.equal(update.properties[P.contextUpdatedAt].date.start, updatedAt.toISOString());
+  assert.equal(update.properties[P.inside], undefined);
+  assert.equal(update.properties[P.type], undefined);
 });

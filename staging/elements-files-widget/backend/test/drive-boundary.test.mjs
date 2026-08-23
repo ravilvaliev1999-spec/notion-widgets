@@ -74,6 +74,30 @@ test('Drive idempotency and task-folder lookups fail closed on duplicates', asyn
   await assert.rejects(drive.ensureTaskFolder(rootId, 'a'.repeat(32), 'Task'), { code: 'duplicate_task_folder' });
 });
 
+test('new task-folder is re-queried and must remain the unique exact identity', async () => {
+  const taskId = 'a'.repeat(32);
+  const created = {
+    id: 'created-folder', name: 'Task', mimeType: 'application/vnd.google-apps.folder',
+    trashed: false, parents: [rootId], appProperties: { elementsTaskPageId: taskId }
+  };
+  let listCalls = 0;
+  const drive = client(async (_url, options = {}) => {
+    if (options.method === 'POST') return response(created);
+    listCalls += 1;
+    return response({ files: listCalls === 1 ? [] : [created] });
+  });
+  assert.deepEqual(await drive.ensureTaskFolder(rootId, taskId, 'Task'), created);
+  assert.equal(listCalls, 2);
+
+  let raceListCalls = 0;
+  const raced = client(async (_url, options = {}) => {
+    if (options.method === 'POST') return response(created);
+    raceListCalls += 1;
+    return response({ files: raceListCalls === 1 ? [] : [{ ...created, id: 'other-folder' }] });
+  });
+  await assert.rejects(raced.ensureTaskFolder(rootId, taskId, 'Task'), { code: 'task_folder_creation_race' });
+});
+
 test('Drive client exposes no trash or permanent-delete capability', () => {
   const drive = client(async () => response({}));
   assert.equal(typeof drive.trashFile, 'undefined');

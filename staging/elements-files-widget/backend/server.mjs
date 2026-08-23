@@ -29,7 +29,7 @@ import {
   assertCanaryFormulaOutputs,
   assertContextDataSources
 } from './lib/schema.mjs';
-import { driveBinaryBaselineChanged, reconcileTaskFiles, startTaskMetadataSync } from './lib/sync.mjs';
+import { driveBinaryIntegrityError, reconcileTaskFiles, startTaskMetadataSync } from './lib/sync.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const frontendDir = join(here, '..', 'frontend');
@@ -231,14 +231,24 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
   async function ensureWriteReady() {
     assertWriteGate(config);
     if (!writePreflight) {
-      writePreflight = Promise.all([
+      const pending = Promise.allSettled([
         drive.assertStagingRoot({
           folderId: config.stagingDriveFolderId,
           expectedAccountEmail: config.googleExpectedAccountEmail,
           expectedMarker: config.stagingDriveMarker
         }),
         targetPreflight()
-      ]).catch((error) => { writePreflight = null; throw error; });
+      ]).then((results) => {
+        const failed = results.find((result) => result.status === 'rejected');
+        if (failed) throw failed.reason;
+        return results.map((result) => result.value);
+      });
+      writePreflight = pending;
+      try {
+        return await pending;
+      } finally {
+        if (writePreflight === pending) writePreflight = null;
+      }
     }
     return writePreflight;
   }
@@ -256,7 +266,22 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     const pending = drive.ensureTaskFolder(config.stagingDriveFolderId, key, name);
     folderCache.set(key, pending);
     try { return await pending; }
-    catch (error) { folderCache.delete(key); throw error; }
+    finally { if (folderCache.get(key) === pending) folderCache.delete(key); }
+  }
+
+  async function assertTaskFolderBoundary(folderId, taskId) {
+    invariant(folderId, 409, 'unsafe_drive_folder_identity', 'Task folder не имеет точного Folder ID');
+    const folder = await drive.getFile(folderId);
+    invariant(String(folder?.id || '') === String(folderId), 409, 'unsafe_drive_folder_identity',
+      'Google Drive вернул другой Folder ID');
+    invariant(folder?.trashed === false, 410, 'drive_folder_trashed', 'Task folder находится в корзине или trash-state неизвестен');
+    invariant(folder?.mimeType === DRIVE_FOLDER_MIME, 409, 'unsafe_drive_folder_type',
+      'Task folder ID не является Google Drive folder');
+    invariant(hasExactParent(folder, config.stagingDriveFolderId), 409, 'unsafe_drive_folder_parent',
+      'Task folder не является прямым потомком staging root');
+    invariant(normalizeId(folder?.appProperties?.elementsTaskPageId) === normalizeId(taskId), 409,
+      'unsafe_drive_folder_binding', 'Task folder не привязан к этой задаче');
+    return folder;
   }
 
   async function assertDriveRecordBoundary(record, taskId) {
@@ -265,7 +290,7 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     const file = await drive.getFile(record.googleFileId);
     invariant(String(file?.id || '') === String(record.googleFileId), 409, 'unsafe_drive_file_identity',
       'Google Drive вернул другой File ID');
-    invariant(file?.trashed !== true, 410, 'drive_file_trashed', 'Google-файл находится в корзине');
+    invariant(file?.trashed === false, 410, 'drive_file_trashed', 'Google-файл находится в корзине или trash-state неизвестен');
     invariant(hasExactParent(file, record.googleFolderId), 409, 'unsafe_drive_parent',
       'Google-файл не находится непосредственно в task folder');
     invariant(normalizeId(file?.appProperties?.elementsTaskPageId) === normalizeId(taskId), 409,
@@ -273,16 +298,7 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     invariant(String(file?.appProperties?.elementsIdempotencyKey || '') === String(record.idempotencyKey), 409,
       'unsafe_drive_idempotency_binding', 'Google-файл не совпадает с Idempotency key записи');
 
-    const folder = await drive.getFile(record.googleFolderId);
-    invariant(String(folder?.id || '') === String(record.googleFolderId), 409, 'unsafe_drive_folder_identity',
-      'Google Drive вернул другой Folder ID');
-    invariant(folder?.trashed !== true, 410, 'drive_folder_trashed', 'Task folder находится в корзине');
-    invariant(folder?.mimeType === DRIVE_FOLDER_MIME, 409, 'unsafe_drive_folder_type',
-      'SYS Folder ID не является Google Drive folder');
-    invariant(hasExactParent(folder, config.stagingDriveFolderId), 409, 'unsafe_drive_folder_parent',
-      'Task folder не является прямым потомком staging root');
-    invariant(normalizeId(folder?.appProperties?.elementsTaskPageId) === normalizeId(taskId), 409,
-      'unsafe_drive_folder_binding', 'Task folder не привязан к этой задаче');
+    const folder = await assertTaskFolderBoundary(record.googleFolderId, taskId);
     return { file, folder };
   }
 
@@ -295,6 +311,93 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
       integrity: integrity || 'ok',
       syncError: syncError || ''
     };
+  }
+
+  function verifiedUploadPlacement(file, placement) {
+    const md5 = String(file?.md5Checksum || '').trim().toLowerCase();
+    if (/^[a-f0-9]{32}$/.test(md5)) return { md5, placement };
+    return {
+      md5: '',
+      placement: {
+        ...placement,
+        status: 'needs_review',
+        integrity: 'sync_error',
+        syncError: 'drive_content_unverifiable',
+        syncedAt: null
+      }
+    };
+  }
+
+  function canonicalAncestorIds(value) {
+    try {
+      const ids = JSON.parse(String(value || '[]'));
+      if (Array.isArray(ids)) return JSON.stringify(ids.map(normalizeId));
+    } catch {}
+    return String(value || '[]');
+  }
+
+  function exactInheritedRelation(current, key, expectedId) {
+    const ids = current?.[key + 'Ids'];
+    if (!Array.isArray(ids)) return normalizeId(current?.[key + 'Id']) === normalizeId(expectedId);
+    if (current?.[key + 'HasMore'] === true) return false;
+    const expected = normalizeId(expectedId);
+    return expected
+      ? ids.length === 1 && normalizeId(ids[0]) === expected
+      : ids.length === 0;
+  }
+
+  function hasContextTimestamp(value) {
+    const time = value instanceof Date ? value.getTime() : Date.parse(String(value || ''));
+    return Number.isFinite(time);
+  }
+
+  function sameInheritedContext(current = {}, expected = {}) {
+    return exactInheritedRelation(current, 'sphere', expected.sphereId) &&
+      exactInheritedRelation(current, 'direction', expected.directionId) &&
+      exactInheritedRelation(current, 'project', expected.projectId) &&
+      String(current.path || '') === String(expected.path || '') &&
+      canonicalAncestorIds(current.ancestorIds) === canonicalAncestorIds(expected.ancestorIds) &&
+      current.depthHasValue !== false &&
+      Number(current.depth || 0) === Number(expected.depth || 0) &&
+      hasContextTimestamp(current.updatedAt);
+  }
+
+  function exactTaskRecord(record, taskId) {
+    const expected = normalizeId(taskId);
+    if (normalizeId(record?.taskId) !== expected || record?.insideHasMore === true) return false;
+    return Array.isArray(record?.taskIds) && record.taskIds.length === 1 &&
+      normalizeId(record.taskIds[0]) === expected;
+  }
+
+  async function refreshInheritedContext(taskPage, taskId) {
+    const placement = await recordPlacement(taskPage);
+    const rows = (await records.listActiveKnowledgeForTask(taskId))
+      .filter((record) => exactTaskRecord(record, taskId));
+    let changed = 0;
+    let recovered = 0;
+    for (const record of rows) {
+      const contextChanged = !sameInheritedContext(record.context, placement.context);
+      const contextRecovered = record.integrity === 'context_error';
+      if (!contextChanged && !contextRecovered) continue;
+      const changes = {
+        context: { ...placement.context, updatedAt: placement.context.updatedAt || new Date() }
+      };
+      if (contextRecovered) {
+        changes.status = placement.status;
+        changes.integrity = placement.integrity;
+        changes.syncError = placement.syncError;
+        recovered += 1;
+      }
+      await records.patch(taskId, record.id, changes);
+      changed += 1;
+    }
+    return { scanned: rows.length, changed, recovered };
+  }
+
+  async function refreshTaskState(taskPage, taskId) {
+    const context = await refreshInheritedContext(taskPage, taskId);
+    const driveSync = await reconcileTaskFiles(config, taskId, drive, records, logger);
+    return { ...driveSync, context };
   }
 
   function assertNativeMatch(existing, { name, kind }) {
@@ -314,14 +417,23 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
   }
 
   async function recoverUploadFile(file, expected) {
-    invariant(file?.id && (file.parents || []).includes(expected.folderId), 502, 'unsafe_drive_parent', 'Recovered Drive file находится вне task folder');
-    invariant(normalizeId(file.appProperties?.elementsTaskPageId) === normalizeId(expected.taskId) &&
-      file.appProperties?.elementsIdempotencyKey === expected.idempotencyKey,
-    502, 'unsafe_drive_metadata', 'Recovered Drive file не привязан к операции');
-    invariant(file.mimeType === expected.mimeType &&
-      file.appProperties?.elementsPayloadFingerprint === expected.payloadFingerprint &&
-      file.appProperties?.elementsDeclaredSha256 === expected.sha256,
-    409, 'idempotency_conflict', 'Idempotency-Key уже использован для другого upload payload');
+    const recoveredFileId = String(file?.id || '');
+    function assertRecoveredBoundary(candidate) {
+      invariant(recoveredFileId && String(candidate?.id || '') === recoveredFileId, 502,
+        'unsafe_drive_file_identity', 'Recovered Drive file имеет другой File ID');
+      invariant(candidate?.trashed === false, 410, 'drive_file_trashed', 'Recovered Drive file находится в корзине');
+      invariant(hasExactParent(candidate, expected.folderId), 502, 'unsafe_drive_parent',
+        'Recovered Drive file находится вне task folder');
+      invariant(normalizeId(candidate.appProperties?.elementsTaskPageId) === normalizeId(expected.taskId) &&
+        candidate.appProperties?.elementsIdempotencyKey === expected.idempotencyKey,
+      502, 'unsafe_drive_metadata', 'Recovered Drive file не привязан к операции');
+      invariant(candidate.mimeType === expected.mimeType &&
+        candidate.appProperties?.elementsPayloadFingerprint === expected.payloadFingerprint &&
+        candidate.appProperties?.elementsDeclaredSha256 === expected.sha256,
+      409, 'idempotency_conflict', 'Idempotency-Key уже использован для другого upload payload');
+      return candidate;
+    }
+    assertRecoveredBoundary(file);
 
     const metadataSize = Number(file.size);
     const verified = file.appProperties?.elementsVerified === 'v1' &&
@@ -348,15 +460,24 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
       throw new AppError(422, 'upload_recovery_checksum_mismatch',
         'Recovered Drive file не прошёл SHA-256; файл сохранён для ручной проверки');
     }
-    const marked = await drive.markFileVerified({
-      fileId: file.id,
+    await assertTaskFolderBoundary(expected.folderId, expected.taskId);
+    const freshFile = assertRecoveredBoundary(await drive.getFile(recoveredFileId));
+    invariant(Number(freshFile.size) === expected.size, 422, 'upload_recovery_size_mismatch',
+      'Recovered Drive file изменился до verification marker');
+    const marked = assertRecoveredBoundary(await drive.markFileVerified({
+      fileId: recoveredFileId,
       taskId: normalizeId(expected.taskId),
       idempotencyKey: expected.idempotencyKey,
       payloadFingerprint: expected.payloadFingerprint,
       sha256: actualSha256,
       size: actualSize
-    });
-    return { file: { ...file, ...marked }, sha256: actualSha256 };
+    }));
+    invariant(marked.appProperties?.elementsVerified === 'v1' &&
+      marked.appProperties?.elementsVerifiedSha256 === actualSha256 &&
+      marked.appProperties?.elementsVerifiedSize === String(actualSize),
+    502, 'unsafe_drive_metadata', 'Drive verification marker не совпадает с recovered upload');
+    await assertTaskFolderBoundary(expected.folderId, expected.taskId);
+    return { file: marked, sha256: actualSha256 };
   }
 
   async function createNativeFile(request, taskId) {
@@ -371,11 +492,14 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
       const existing = await records.findByIdempotency(taskId, key);
       if (existing) { assertNativeMatch(existing, { name, kind }); return existing; }
       const placement = await recordPlacement(task);
-      const folder = await taskFolder(task, taskId);
+      const ensuredFolder = await taskFolder(task, taskId);
+      const folder = await assertTaskFolderBoundary(ensuredFolder?.id, taskId);
       const recovered = await drive.findFileByIdempotency({ folderId: folder.id, taskId: normalizeId(taskId), idempotencyKey: key });
+      if (!recovered) await assertTaskFolderBoundary(folder.id, taskId);
       const file = recovered || await drive.createNative({ name, kind, folderId: folder.id, taskId: normalizeId(taskId), idempotencyKey: key });
+      await assertTaskFolderBoundary(folder.id, taskId);
       const classified = classifyFile(file.name, file.mimeType);
-      invariant((file.parents || []).includes(folder.id) && normalizeId(file.appProperties?.elementsTaskPageId) === normalizeId(taskId) &&
+      invariant(file.trashed === false && hasExactParent(file, folder.id) && normalizeId(file.appProperties?.elementsTaskPageId) === normalizeId(taskId) &&
         file.appProperties?.elementsIdempotencyKey === key && classified.format === GOOGLE_KIND_FORMAT[kind],
       502, 'unsafe_native_file', 'Google Drive вернул native file вне ожидаемой операции');
       return await records.create(taskId, {
@@ -443,19 +567,23 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     if (cached && cached.expiresAt > Date.now()) {
       invariant(cached.name === name && cached.mimeType === mimeType && cached.size === size && cached.sha256 === sha256,
         409, 'idempotency_conflict', 'Idempotency-Key уже используется для другого файла');
+      await assertTaskFolderBoundary(cached.upload?.folderId, taskId);
       return cached.response;
     }
     return onceMutation('upload-init:' + operationKey, async () => {
       const existing = await records.findByIdempotency(taskId, key);
       if (existing) { assertUploadRecordMatch(existing, { name, mimeType, size, sha256 }); return { completed: true, record: existing }; }
       const placement = await recordPlacement(task);
-      const folder = await taskFolder(task, taskId);
+      const ensuredFolder = await taskFolder(task, taskId);
+      const folder = await assertTaskFolderBoundary(ensuredFolder?.id, taskId);
       const recovered = await drive.findFileByIdempotency({ folderId: folder.id, taskId: normalizeId(taskId), idempotencyKey: key });
       if (recovered) {
         const recovery = await recoverUploadFile(recovered, {
           taskId, folderId: folder.id, idempotencyKey: key, payloadFingerprint, name, mimeType, size, sha256
         });
+        await assertTaskFolderBoundary(folder.id, taskId);
         const safeFile = recovery.file;
+        const uploadState = verifiedUploadPlacement(safeFile, placement);
         const classified = classifyFile(safeFile.name, safeFile.mimeType);
         const record = await records.create(taskId, {
           name: safeFile.name,
@@ -468,10 +596,10 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
           mimeType: safeFile.mimeType,
           downloadName: name,
           size,
-          md5: safeFile.md5Checksum || '',
+          md5: uploadState.md5,
           sha256: recovery.sha256,
           idempotencyKey: key,
-          ...placement
+          ...uploadState.placement
         });
         return { completed: true, record };
       }
@@ -479,6 +607,7 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
 
       async function initiateUploadSession() {
         const classified = classifyFile(name, mimeType);
+        await assertTaskFolderBoundary(folder.id, taskId);
         const sessionUrl = await drive.initiateResumable({
           name, mimeType, size, folderId: folder.id, taskId: normalizeId(taskId), idempotencyKey: key, sha256, payloadFingerprint
         });
@@ -511,6 +640,7 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
       return mutationInflight.get(inflightKey);
     }
     return onceMutation(inflightKey, async () => {
+      await assertTaskFolderBoundary(upload.folderId, taskId);
       const existing = await records.findByIdempotency(taskId, upload.idempotencyKey);
       if (existing) {
         request.resume();
@@ -523,7 +653,9 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
         request.resume();
         let recovery;
         recovery = await recoverUploadFile(recovered, upload);
+        await assertTaskFolderBoundary(upload.folderId, taskId);
         const safeFile = recovery.file;
+        const uploadState = verifiedUploadPlacement(safeFile, placement);
         const classified = classifyFile(safeFile.name, safeFile.mimeType);
         const record = await records.create(taskId, {
           name: safeFile.name,
@@ -536,10 +668,10 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
           mimeType: safeFile.mimeType,
           downloadName: upload.name,
           size: upload.size,
-          md5: safeFile.md5Checksum || '',
+          md5: uploadState.md5,
           sha256: recovery.sha256,
           idempotencyKey: upload.idempotencyKey,
-          ...placement
+          ...uploadState.placement
         });
         uploadSessions.delete(operationKey);
         return { record, sha256: recovery.sha256 };
@@ -555,6 +687,7 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
       });
       const uploadAbort = new AbortController();
       const abortUpload = () => uploadAbort.abort();
+      await assertTaskFolderBoundary(upload.folderId, taskId);
       request.once('aborted', abortUpload);
       request.pipe(tee);
       let file;
@@ -570,12 +703,13 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
         throw new AppError(422, 'sha256_mismatch',
           'Контрольная сумма загруженного файла не совпала; Drive object сохранён для ручной проверки');
       }
-      invariant(file.id && (file.parents || []).includes(upload.folderId), 502, 'unsafe_drive_parent', 'Drive вернул файл вне task folder');
+      await assertTaskFolderBoundary(upload.folderId, taskId);
+      invariant(file.id && file.trashed === false && hasExactParent(file, upload.folderId), 502, 'unsafe_drive_parent', 'Drive вернул файл вне task folder');
       invariant(normalizeId(file.appProperties?.elementsTaskPageId) === normalizeId(taskId), 502, 'unsafe_drive_metadata', 'Drive вернул файл без task binding');
       invariant(file.appProperties?.elementsIdempotencyKey === upload.idempotencyKey &&
         file.appProperties?.elementsPayloadFingerprint === upload.payloadFingerprint && file.mimeType === upload.mimeType && Number(file.size) === upload.size,
       502, 'unsafe_drive_metadata', 'Drive вернул файл вне ожидаемой upload operation');
-      await drive.markFileVerified({
+      const marked = await drive.markFileVerified({
         fileId: file.id,
         taskId: normalizeId(taskId),
         idempotencyKey: upload.idempotencyKey,
@@ -583,21 +717,32 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
         sha256: actualSha256,
         size: upload.size
       });
+      const safeFile = { ...file, ...marked };
+      await assertTaskFolderBoundary(upload.folderId, taskId);
+      invariant(safeFile.id === file.id && safeFile.trashed === false && hasExactParent(safeFile, upload.folderId) &&
+        normalizeId(safeFile.appProperties?.elementsTaskPageId) === normalizeId(taskId) &&
+        safeFile.appProperties?.elementsIdempotencyKey === upload.idempotencyKey &&
+        safeFile.appProperties?.elementsPayloadFingerprint === upload.payloadFingerprint &&
+        safeFile.appProperties?.elementsVerifiedSha256 === actualSha256 &&
+        safeFile.appProperties?.elementsVerifiedSize === String(upload.size) &&
+        safeFile.appProperties?.elementsVerified === 'v1',
+      502, 'unsafe_drive_metadata', 'Drive verification marker не совпадает с upload operation');
+      const uploadState = verifiedUploadPlacement(safeFile, placement);
       const record = await records.create(taskId, {
-        name: file.name || upload.name,
+        name: safeFile.name || upload.name,
         section: upload.section,
         format: upload.format,
         provider: 'Google Drive',
-        googleFileId: file.id,
+        googleFileId: safeFile.id,
         googleFolderId: upload.folderId,
-        url: file.webViewLink || '',
-        mimeType: file.mimeType || upload.mimeType,
+        url: safeFile.webViewLink || '',
+        mimeType: safeFile.mimeType || upload.mimeType,
         downloadName: upload.name,
-        size: Number(file.size || upload.size),
-        md5: file.md5Checksum || '',
+        size: Number(safeFile.size || upload.size),
+        md5: uploadState.md5,
         sha256: actualSha256,
         idempotencyKey: upload.idempotencyKey,
-        ...placement
+        ...uploadState.placement
       });
       uploadSessions.delete(operationKey);
       return { record, sha256: actualSha256 };
@@ -629,7 +774,9 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
       await assertDriveRecordBoundary(current, taskId);
       await drive.renameFile(current.googleFileId, changes.name);
     }
-    changes.syncedAt = new Date();
+    if (!['drive_content_changed', 'drive_content_unverifiable'].includes(current.syncError)) {
+      changes.syncedAt = new Date();
+    }
     return records.patch(taskId, recordId, changes);
   }
 
@@ -660,8 +807,8 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
 
   async function refreshTaskFromRequest(request, taskId) {
     await requireWrite(request, taskId);
-    await requireTask(request, taskId);
-    const sync = await reconcileTaskFiles(config, taskId, drive, records, logger);
+    const task = await requireTask(request, taskId);
+    const sync = await refreshTaskState(task, taskId);
     return { items: await records.listForTask(taskId), sync };
   }
 
@@ -670,7 +817,7 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     await ensureWriteReady();
     const task = await notion.retrievePage(normalizeId(taskId));
     assertAuthorizedTask(task, config.elementsDataSourceId);
-    return reconcileTaskFiles(config, taskId, drive, records, logger);
+    return refreshTaskState(task, taskId);
   }
 
   async function recordAction(request, taskId, recordId, action) {
@@ -701,22 +848,25 @@ export function createApplication(config = loadConfig(), dependencies = {}) {
     invariant(record.googleFileId === token.fileId, 403, 'wrong_file', 'Download token не совпадает с File ID');
     assertDownloadHealthy(record);
     const { file } = await assertDriveRecordBoundary(record, token.taskId);
-    invariant(!isGoogleNativeMime(file.mimeType), 422, 'google_native_file', 'Google-native файл нужно открыть по ссылке');
-    if (driveBinaryBaselineChanged(record, file)) {
+    const integrityError = driveBinaryIntegrityError(record, file);
+    if (integrityError) {
       try {
         assertTaskWriteAllowed(config, token.taskId);
         await ensureWriteReady();
         await records.patch(token.taskId, recordId, {
-          status: 'needs_review', syncError: 'drive_content_changed', integrity: 'sync_error'
+          status: 'needs_review', syncError: integrityError, integrity: 'sync_error'
         });
       } catch (error) {
         logger.error('[download] integrity diagnostic patch failed', {
           recordId: normalizeId(recordId), code: error?.code, message: error?.message
         });
       }
-      throw new AppError(409, 'drive_content_changed',
-        'Содержимое Google-файла изменилось; сначала выполните безопасное обновление метаданных');
+      throw new AppError(409, integrityError,
+        integrityError === 'drive_content_changed'
+          ? 'Содержимое Google-файла изменилось; сначала выполните безопасное обновление метаданных'
+          : 'Целостность Google-файла нельзя подтвердить по MD5; скачивание заблокировано');
     }
+    invariant(!isGoogleNativeMime(file.mimeType), 422, 'google_native_file', 'Google-native файл нужно открыть по ссылке');
     const source = await drive.downloadFile(record.googleFileId);
     response.writeHead(200, {
       'Content-Type': source.headers.get('content-type') || record.mimeType || 'application/octet-stream',

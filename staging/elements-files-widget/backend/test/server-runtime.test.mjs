@@ -6,6 +6,7 @@ import { AUTHORIZED_MAIN, loadConfig } from '../lib/config.mjs';
 import { issueTaskToken } from '../lib/auth.mjs';
 import { P } from '../lib/records.mjs';
 import { createApplication } from '../server.mjs';
+import { AppError } from '../lib/errors.mjs';
 
 const taskId = AUTHORIZED_MAIN.canaryTaskPageId;
 const recordId = '11111111111111111111111111111111';
@@ -50,10 +51,25 @@ function headers(id = taskId) {
   return { Authorization: 'Bearer ' + issueTaskToken(id, AUTHORIZED_MAIN.elementsDataSourceId, secret, 60) };
 }
 
+function inheritedContext(overrides = {}) {
+  return {
+    sphereId: AUTHORIZED_MAIN.spheresDataSourceId,
+    directionId: AUTHORIZED_MAIN.directionsDataSourceId,
+    projectId: AUTHORIZED_MAIN.projectsDataSourceId,
+    path: 'Sphere / Direction / Project / Task',
+    ancestorIds: '[]',
+    depth: 0,
+    updatedAt: new Date('2026-08-23T00:00:00.000Z'),
+    status: 'synced', integrity: 'ok', syncError: '',
+    ...overrides
+  };
+}
+
 async function withServer(dependencies, run, configOverrides = {}) {
   const app = createApplication(config(configOverrides), {
     ...dependencies,
-    targetPreflight: async () => true,
+    contextResolver: dependencies.contextResolver || (async () => inheritedContext()),
+    targetPreflight: dependencies.targetPreflight || (async () => true),
     logger: { info() {}, warn() {}, error() {} }
   });
   const server = createServer(app.handler);
@@ -65,10 +81,14 @@ async function withServer(dependencies, run, configOverrides = {}) {
 }
 
 test('manual refresh reconciles only the authenticated task before returning its list', async () => {
-  const current = record({ name: 'old.docx', status: 'error', syncError: 'old_error', integrity: 'sync_error' });
+  const current = record({
+    name: 'old.docx', status: 'error', syncError: 'old_error', integrity: 'sync_error',
+    context: inheritedContext()
+  });
   const patches = [];
   let queryArgs;
   const records = {
+    listActiveKnowledgeForTask: async () => [current],
     listGoogleDriveForTask: async (...args) => { queryArgs = args; return [current]; },
     patch: async (_task, _record, changes) => { patches.push(changes); return { ...current, ...changes }; },
     listForTask: async () => [{ ...current, ...patches.at(-1) }]
@@ -76,10 +96,13 @@ test('manual refresh reconciles only the authenticated task before returning its
   const notion = { retrievePage: async (id) => taskPage(id) };
   const drive = {
     assertStagingRoot: async () => ({}),
-    getFile: async () => ({
-      id: current.googleFileId, name: 'fresh.docx', webViewLink: current.url, mimeType: current.mimeType,
+    getFile: async (id) => id === current.googleFileId ? ({
+      id, name: 'fresh.docx', webViewLink: current.url, mimeType: current.mimeType,
       size: '3', md5Checksum: current.md5, parents: [current.googleFolderId], trashed: false,
-       appProperties: { elementsTaskPageId: taskId, elementsIdempotencyKey: current.idempotencyKey }
+      appProperties: { elementsTaskPageId: taskId, elementsIdempotencyKey: current.idempotencyKey }
+    }) : ({
+      id, mimeType: 'application/vnd.google-apps.folder', parents: ['drive-staging-folder'], trashed: false,
+      appProperties: { elementsTaskPageId: taskId }
     })
   };
   await withServer({ notion, drive, records }, async (base) => {
@@ -92,6 +115,77 @@ test('manual refresh reconciles only the authenticated task before returning its
     assert.equal(patches[0].syncError, '');
     assert.equal(payload.items[0].name, 'fresh.docx');
     assert.equal(payload.sync.scanned, 1);
+  });
+});
+
+test('refresh resolves placement once, updates every scoped active provider, then reconciles Drive', async () => {
+  const moved = inheritedContext({
+    sphereId: '1'.repeat(32), directionId: '2'.repeat(32), projectId: '3'.repeat(32),
+    path: 'New Sphere / New Direction / New Project / Task',
+    ancestorIds: JSON.stringify(['1'.repeat(32), '2'.repeat(32), '3'.repeat(32)]), depth: 1
+  });
+  const oldContext = inheritedContext({
+    sphereId: '4'.repeat(32), directionId: '5'.repeat(32), projectId: '6'.repeat(32),
+    path: 'Old placement', ancestorIds: '[]', depth: 0
+  });
+  const external = {
+    ...record({ id: '7'.repeat(32), provider: 'External URL', googleFileId: '', googleFolderId: '', context: oldContext }),
+    taskIds: [taskId]
+  };
+  const driveRecord = { ...record({ id: '8'.repeat(32), context: oldContext }), taskIds: [taskId] };
+  const foreign = {
+    ...record({ id: '9'.repeat(32), taskId: 'a'.repeat(32), context: oldContext }),
+    taskIds: ['a'.repeat(32)]
+  };
+  const events = [];
+  const patches = [];
+  let resolverCalls = 0;
+  const records = {
+    listActiveKnowledgeForTask: async () => { events.push('list-context'); return [external, driveRecord, foreign]; },
+    listForTask: async () => [external, driveRecord],
+    listGoogleDriveForTask: async () => { events.push('reconcile-drive'); return []; },
+    patch: async (_task, id, changes) => { events.push('patch-' + id); patches.push({ id, changes }); return changes; }
+  };
+  const notion = { retrievePage: async (id) => taskPage(id) };
+  const drive = { assertStagingRoot: async () => ({}) };
+  const contextResolver = async () => { resolverCalls += 1; events.push('resolve'); return moved; };
+  await withServer({ notion, drive, records, contextResolver }, async (base) => {
+    const response = await fetch(base + '/api/v1/tasks/' + taskId + '/refresh', { method: 'POST', headers: headers() });
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(resolverCalls, 1);
+    assert.deepEqual(patches.map((entry) => entry.id), [external.id, driveRecord.id]);
+    assert.deepEqual(patches.map((entry) => entry.changes.context.path), [moved.path, moved.path]);
+    assert.ok(patches.every((entry) => entry.changes.context.updatedAt instanceof Date));
+    assert.ok(events.indexOf('reconcile-drive') > events.indexOf('patch-' + driveRecord.id));
+    assert.deepEqual(payload.sync.context, { scanned: 2, changed: 2, recovered: 0 });
+  });
+});
+
+test('unchanged inherited context is a no-op and does not churn its timestamp', async () => {
+  const context = inheritedContext();
+  const external = {
+    ...record({ provider: 'External URL', googleFileId: '', googleFolderId: '', context }),
+    taskIds: [taskId]
+  };
+  let patchCalls = 0;
+  let resolverCalls = 0;
+  const records = {
+    listActiveKnowledgeForTask: async () => [external],
+    listForTask: async () => [external],
+    listGoogleDriveForTask: async () => [],
+    patch: async () => { patchCalls += 1; }
+  };
+  const notion = { retrievePage: async (id) => taskPage(id) };
+  const drive = { assertStagingRoot: async () => ({}) };
+  const contextResolver = async () => { resolverCalls += 1; return { ...context, updatedAt: new Date() }; };
+  await withServer({ notion, drive, records, contextResolver }, async (base) => {
+    const response = await fetch(base + '/api/v1/tasks/' + taskId + '/refresh', { method: 'POST', headers: headers() });
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(resolverCalls, 1);
+    assert.equal(patchCalls, 0);
+    assert.deepEqual(payload.sync.context, { scanned: 1, changed: 0, recovered: 0 });
   });
 });
 
@@ -137,7 +231,9 @@ test('Drive rename validates the exact file/folder boundary before any rename si
     { name: 'folder MIME', folderMime: 'application/octet-stream' },
     { name: 'folder outside staging root', folderParent: 'other-root' },
     { name: 'folder task binding', folderTask: 'e'.repeat(32) },
-    { name: 'trashed file', fileTrashed: true }
+    { name: 'trashed file', fileTrashed: true },
+    { name: 'unknown file trash state', omitFileTrashed: true },
+    { name: 'unknown folder trash state', omitFolderTrashed: true }
   ];
   for (const scenario of scenarios) {
     const current = scenario.record || baseRecord;
@@ -152,14 +248,15 @@ test('Drive rename validates the exact file/folder boundary before any rename si
       assertStagingRoot: async () => ({}),
       getFile: async (id) => id === current.googleFileId ? ({
         id: current.googleFileId, mimeType: current.mimeType, parents: [scenario.fileParent || current.googleFolderId],
-        trashed: scenario.fileTrashed === true,
+        trashed: scenario.omitFileTrashed ? undefined : scenario.fileTrashed === true,
         appProperties: {
           elementsTaskPageId: scenario.fileTask || taskId,
           elementsIdempotencyKey: scenario.fileKey || baseRecord.idempotencyKey
         }
       }) : ({
         id: current.googleFolderId, mimeType: scenario.folderMime || 'application/vnd.google-apps.folder',
-        parents: [scenario.folderParent || 'drive-staging-folder'], trashed: false,
+        parents: [scenario.folderParent || 'drive-staging-folder'],
+        trashed: scenario.omitFolderTrashed ? undefined : false,
         appProperties: { elementsTaskPageId: scenario.folderTask || taskId }
       }),
       renameFile: async () => { renameCalls += 1; }
@@ -208,6 +305,40 @@ test('Drive rename proceeds only after a complete valid boundary re-fetch', asyn
   });
 });
 
+test('metadata edits never advance successful-sync time for sticky binary quarantine', async () => {
+  for (const syncError of ['drive_content_changed', 'drive_content_unverifiable']) {
+    const current = record({ status: 'needs_review', integrity: 'sync_error', syncError });
+    let renameCalls = 0;
+    let changes;
+    const notion = { retrievePage: async (id) => taskPage(id) };
+    const records = {
+      getForTask: async () => current,
+      patch: async (_task, _record, input) => { changes = input; return { ...current, ...input }; }
+    };
+    const drive = {
+      assertStagingRoot: async () => ({}),
+      getFile: async (id) => id === current.googleFileId ? ({
+        id, mimeType: current.mimeType, parents: [current.googleFolderId], trashed: false,
+        appProperties: { elementsTaskPageId: taskId, elementsIdempotencyKey: current.idempotencyKey }
+      }) : ({
+        id, mimeType: 'application/vnd.google-apps.folder', parents: ['drive-staging-folder'], trashed: false,
+        appProperties: { elementsTaskPageId: taskId }
+      }),
+      renameFile: async () => { renameCalls += 1; }
+    };
+    await withServer({ notion, drive, records }, async (base) => {
+      const response = await fetch(base + '/api/v1/tasks/' + taskId + '/files/' + recordId, {
+        method: 'PATCH', headers: { ...headers(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'review-name.docx' })
+      });
+      assert.equal(response.status, 200, syncError);
+      assert.equal(renameCalls, 1, syncError);
+      assert.equal(changes.name, 'review-name.docx', syncError);
+      assert.equal('syncedAt' in changes, false, syncError);
+    });
+  }
+});
+
 test('download is blocked for every non-clean record before Drive access', async () => {
   for (const overrides of [
     { status: 'error' }, { status: 'needs_review' }, { status: 'archived' },
@@ -231,6 +362,15 @@ test('download is blocked for every non-clean record before Drive access', async
 test('download stream rechecks binary baseline and full staging folder boundary', async () => {
   for (const scenario of [
     { name: 'binary changed', size: '4', md5: 'c'.repeat(32), folderParent: 'drive-staging-folder', code: 'drive_content_changed', diagnostic: true },
+    {
+      name: 'Drive MD5 missing', size: '3', md5: undefined,
+      folderParent: 'drive-staging-folder', code: 'drive_content_unverifiable', diagnostic: true
+    },
+    {
+      name: 'fresh Google-native MIME cannot bypass a stored SHA baseline',
+      fileMime: 'application/vnd.google-apps.document', size: undefined, md5: undefined,
+      folderParent: 'drive-staging-folder', code: 'drive_content_unverifiable', diagnostic: true
+    },
     {
       name: 'stale native SYS MIME cannot bypass fresh binary metadata',
       recordMime: 'application/vnd.google-apps.document', fileMime: 'application/octet-stream',
@@ -275,7 +415,7 @@ test('download stream rechecks binary baseline and full staging folder boundary'
       assert.equal((await response.json()).error.code, scenario.code);
       assert.equal(downloadCalls, 0, scenario.name);
       assert.deepEqual(patches, scenario.diagnostic ? [{
-        status: 'needs_review', syncError: 'drive_content_changed', integrity: 'sync_error'
+        status: 'needs_review', syncError: scenario.code, integrity: 'sync_error'
       }] : [], scenario.name);
     });
   }
@@ -326,4 +466,100 @@ test('post-acceptance test-task scope allows CRUD only on the exact copied task'
     assert.equal(allowed.status, 200);
     assert.equal(preflightCalls, 1);
   }, scope);
+});
+
+test('every sequential mutation reruns Drive and Notion preflight and later drift closes the gate', async () => {
+  for (const drift of ['drive', 'notion']) {
+    const current = record();
+    let driveChecks = 0;
+    let notionChecks = 0;
+    let patchCalls = 0;
+    const notion = { retrievePage: async (id) => taskPage(id) };
+    const records = {
+      getForTask: async () => current,
+      patch: async () => { patchCalls += 1; return current; }
+    };
+    const drive = {
+      assertStagingRoot: async () => {
+        driveChecks += 1;
+        if (drift === 'drive' && driveChecks === 2) {
+          throw new AppError(503, 'staging_marker_drift', 'marker changed');
+        }
+        return {};
+      }
+    };
+    const targetPreflight = async () => {
+      notionChecks += 1;
+      if (drift === 'notion' && notionChecks === 2) {
+        throw new AppError(503, 'wrong_formula_expression', 'formula changed');
+      }
+      return true;
+    };
+    await withServer({ notion, drive, records, targetPreflight }, async (base) => {
+      const url = base + '/api/v1/tasks/' + taskId + '/files/' + recordId + '/archive';
+      assert.equal((await fetch(url, { method: 'POST', headers: headers() })).status, 200);
+      const blocked = await fetch(url, { method: 'POST', headers: headers() });
+      assert.equal(blocked.status, 503, drift);
+      assert.equal(patchCalls, 1, drift);
+      assert.equal(driveChecks, 2, drift);
+      assert.equal(notionChecks, 2, drift);
+    });
+  }
+});
+
+test('concurrent mutations share only their in-flight write preflight', async () => {
+  const current = record();
+  let driveChecks = 0;
+  let notionChecks = 0;
+  let patchCalls = 0;
+  const notion = { retrievePage: async (id) => taskPage(id) };
+  const records = {
+    getForTask: async () => current,
+    patch: async () => { patchCalls += 1; return current; }
+  };
+  const drive = {
+    assertStagingRoot: async () => {
+      driveChecks += 1;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return {};
+    }
+  };
+  const targetPreflight = async () => {
+    notionChecks += 1;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  };
+  await withServer({ notion, drive, records, targetPreflight }, async (base) => {
+    const url = base + '/api/v1/tasks/' + taskId + '/files/' + recordId + '/archive';
+    const responses = await Promise.all([
+      fetch(url, { method: 'POST', headers: headers() }),
+      fetch(url, { method: 'POST', headers: headers() })
+    ]);
+    assert.deepEqual(responses.map((response) => response.status), [200, 200]);
+    assert.equal(driveChecks, 1);
+    assert.equal(notionChecks, 1);
+    assert.equal(patchCalls, 2);
+  });
+});
+
+test('a failed write preflight is discarded and retried on the next mutation', async () => {
+  const current = record();
+  let gateCalls = 0;
+  let patchCalls = 0;
+  const notion = { retrievePage: async (id) => taskPage(id) };
+  const records = {
+    getForTask: async () => current,
+    patch: async () => { patchCalls += 1; return current; }
+  };
+  const drive = { assertStagingRoot: async () => ({}) };
+  const targetPreflight = async () => {
+    gateCalls += 1;
+    if (gateCalls === 1) throw new AppError(503, 'schema_temporarily_unavailable', 'schema unavailable');
+  };
+  await withServer({ notion, drive, records, targetPreflight }, async (base) => {
+    const url = base + '/api/v1/tasks/' + taskId + '/files/' + recordId + '/archive';
+    assert.equal((await fetch(url, { method: 'POST', headers: headers() })).status, 503);
+    assert.equal((await fetch(url, { method: 'POST', headers: headers() })).status, 200);
+    assert.equal(gateCalls, 2);
+    assert.equal(patchCalls, 1);
+  });
 });

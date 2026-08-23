@@ -22,8 +22,10 @@ Legacy-виджет, Apps Script и production deployment остаются не�
   отдельным full-cutover решением.
 - Все остальные основные/Legacy databases, data sources, templates и pages
   остаются вне write-scope.
-- До первой mutation сверяются все 19 widget-полей, core/context schema,
-  relation targets и фактические formula outputs точного canary material.
+- Перед каждой mutation заново сверяются все 19 widget-полей, core/context
+  schema, relation targets, обе точные `formula.expression` и фактические
+  formula outputs точного canary material. Успешный preflight не живёт дольше
+  одной mutation; параллельные вызовы делят только in-flight Promise.
 - Массового обхода страниц и массовой замены embed нет.
 - Повторяющиеся widget embed-блоки не удаляются: один детерминированный блок
   может быть обновлён, остальные сохраняются, а task получает
@@ -34,6 +36,9 @@ Legacy-виджет, Apps Script и production deployment остаются не�
 - Перед rename/download повторно проверяются File ID, единственный task-folder
   parent, idempotency/task appProperties и folder MIME/direct staging-root
   parent/task binding.
+- Task-folder не кэшируется после завершения lookup. Та же точная folder
+  boundary повторно проверяется до и после native create/upload promotion, при
+  upload completion и при reconciliation.
 - Отсутствующий, malformed, non-Notion или mismatched referrer отклоняется до
   API и task-scoped browser storage.
 - Перед первой mutation проверяются ожидаемый Google account, точный staging
@@ -45,6 +50,9 @@ Legacy-виджет, Apps Script и production deployment остаются не�
 - Upload ограничен по размеру; размер и SHA-256 проверяются.
 - Crash recovery принимает Drive-файл только с server-written verified marker
   либо после повторной проверки содержимого.
+- SHA-bearing binary без обеих MD5/size/fresh MIME, либо после смены на
+  Google-native MIME, переводится в sticky `drive_content_unverifiable`; такой
+  record нельзя скачать или автоматически вернуть в `synced/ok`.
 - Server secrets исключаются из frontend, логов и Git.
 
 ## Перед canary deploy

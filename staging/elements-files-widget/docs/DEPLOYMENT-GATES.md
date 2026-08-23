@@ -9,8 +9,10 @@ Staging frontend/backend и staging Drive предназначены для яв
 
 1. Не подтверждены точный Elements data source ID и минимальный Notion
    write-scope только для него.
-2. Не сверены в live-схеме все runtime properties, relation targets контекста
-   и фактические outputs обеих формул точной canary Knowledge row.
+2. Не раскрыты и не совпали обе точные `formula.expression`, не сверены все
+   runtime properties/relation targets контекста или фактические outputs обеих
+   формул точной canary Knowledge row. Canary output не заменяет expression
+   gate: обе проверки обязательны перед каждой mutation.
 3. Не зафиксированы точные ID canary-задачи, canary material и тестового
    шаблона; для `test-task` также нужен точный ID одной скопированной задачи;
    unknown page должен fail closed.

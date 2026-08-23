@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AUTHORIZED_MAIN, loadConfig } from '../lib/config.mjs';
 import { createApplication } from '../server.mjs';
-import { ELEMENTS_RUNTIME_SCHEMA_CONTRACT, WIDGET_PROPERTY, WIDGET_SCHEMA_CONTRACT } from '../lib/schema.mjs';
+import { ELEMENTS_RUNTIME_SCHEMA_CONTRACT, FORMULA_EXPRESSIONS, WIDGET_PROPERTY, WIDGET_SCHEMA_CONTRACT } from '../lib/schema.mjs';
 
 const config = loadConfig({
   APP_ENV: 'staging', TARGET_PROFILE: 'authorized-main',
@@ -35,6 +35,9 @@ function elementsDataSource() {
     '[SYS] Контекст: Направление': relation(config.directionsDataSourceId),
     '[SYS] Контекст: Проект': relation(config.projectsDataSourceId)
   });
+  for (const [name, expression] of Object.entries(FORMULA_EXPRESSIONS)) {
+    properties[name].formula.expression = expression;
+  }
   return {
     id: config.elementsDataSourceId,
     parent: { database_id: config.authorizedElementsDatabaseId },
@@ -73,10 +76,14 @@ function canaryMaterial(knowledgeKeySuffix = '') {
   };
 }
 
-function application({ corruptProject = false, corruptCanary = false } = {}) {
+function application({ corruptProject = false, corruptCanary = false, omitExpressions = false } = {}) {
   const sources = contextSources();
   if (corruptProject) sources[config.projectsDataSourceId].properties['1.Cферы'] = relation(config.directionsDataSourceId);
-  const dataSources = { [config.elementsDataSourceId]: elementsDataSource(), ...sources };
+  const elements = elementsDataSource();
+  if (omitExpressions) {
+    for (const name of Object.keys(FORMULA_EXPRESSIONS)) delete elements.properties[name].formula.expression;
+  }
+  const dataSources = { [config.elementsDataSourceId]: elements, ...sources };
   const calls = { dataSources: [], pages: [] };
   const notion = {
     retrieveDatabase: async (id) => ({ id, data_sources: [{ id: config.elementsDataSourceId }] }),
@@ -89,13 +96,19 @@ function application({ corruptProject = false, corruptCanary = false } = {}) {
   };
 }
 
-test('runtime preflight fetches all four exact data sources and exact canary output fallback', async () => {
+test('runtime preflight fetches all four exact data sources and exact canary outputs', async () => {
   const { app, calls } = application();
   await app.targetPreflight();
   assert.deepEqual(new Set(calls.dataSources), new Set([
     config.elementsDataSourceId, config.spheresDataSourceId, config.directionsDataSourceId, config.projectsDataSourceId
   ]));
   assert.deepEqual(calls.pages, [config.authorizedCanaryMaterialPageId]);
+});
+
+test('runtime preflight fails closed when formula expressions are not exposed', async () => {
+  const hidden = application({ omitExpressions: true });
+  await assert.rejects(hidden.app.targetPreflight(), { code: 'formula_expression_unavailable' });
+  assert.deepEqual(hidden.calls.pages, []);
 });
 
 test('runtime preflight fails before mutations on a corrupt context relation or canary formula output', async () => {

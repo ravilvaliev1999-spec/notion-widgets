@@ -28,8 +28,10 @@
 - target data source не равен точному main Elements ID: отказ.
 - page ID не равен текущей canary/template allowlist: отказ.
 - allowlist пересекается с защищённым Legacy/production denylist: отказ.
-- отсутствует/отличается runtime property, relation target либо output одной
-  из двух canary-формул: отказ.
+- отсутствует/отличается runtime property, relation target, точное
+  `formula.expression` либо output одной из двух canary-формул: отказ; повторная
+  mutation после permission/marker/schema/formula drift снова проходит
+  preflight и блокируется.
 - отсутствует, не разбирается, не принадлежит Notion или не совпадает с token
   referrer page ID: отказ до fetch/cache.
 - source/read-only adapter не экспонирует write methods.
@@ -96,6 +98,13 @@ Legacy должны совпасть с ожидаемой дельтой canary
 - изменение size/MD5 сохранённого бинарного baseline даёт
   `needs_review/drive_content_changed`, не меняет baseline/время успеха и
   блокирует download;
+- missing stored/Drive MD5, size или fresh MIME и смена SHA-bearing row на
+  Google-native дают sticky `needs_review/drive_content_unverifiable`;
+- перемещение/rebind/trash task-folder между init и create/upload completion
+  даёт ноль новых Drive side effects и ноль Notion promotion;
+- task move обновляет inherited context у Drive и external-link rows до Drive
+  reconciliation; неизменившийся контекст не пишет новый timestamp, а foreign
+  task row не затрагивается;
 - rename cycle измеряется live; SLA нельзя считать доказанным заранее.
 
 ## Production regression

@@ -67,7 +67,10 @@ ID скопированной задачи; scope `elements` зарезерви�
 
 Перед открытием записи backend сверяет не только 19 widget-полей, но и все
 используемые core/context properties, точные relation targets трёх контекстных
-data sources и значения обеих формул на точном canary material. Виджет не
+data sources, обе точные formula expressions из документированного API-поля и
+значения обеих формул на точном canary material. Успешный preflight не
+кэшируется между mutations: permission/marker/schema/formula drift закрывает
+следующую запись. Виджет не
 читает task-cache и не вызывает API без parseable Notion referrer с тем же
 page ID, что и подписанный task token.
 

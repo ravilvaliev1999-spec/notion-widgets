@@ -98,17 +98,12 @@ function assertProperty(properties, name, expected) {
 }
 
 function normalizeFormula(value) {
-  return String(value || '').replace(/\s+/g, ' ').trim();
+  return String(value || '').replace(/\r\n/g, '\n').trim();
 }
 
 function formulaExpression(property) {
-  const candidates = [
-    property?.formula?.expression,
-    property?.formula?.formula,
-    property?.formula?.code,
-    property?.expression
-  ];
-  return candidates.find((value) => typeof value === 'string' && value.trim()) || '';
+  const value = property?.formula?.expression;
+  return typeof value === 'string' && value.trim() ? value : '';
 }
 
 function formulaString(property) {
@@ -142,11 +137,10 @@ function assertFormulaExpressions(dataSource) {
   const exposed = Object.entries(FORMULA_EXPRESSIONS).map(([name, expected]) => ({
     name, expected, actual: formulaExpression(properties[name])
   }));
-  const count = exposed.filter((item) => item.actual).length;
-  invariant(count === 0 || count === exposed.length, 503, 'partial_formula_schema',
-    'Notion раскрыл выражение только одной из двух обязательных формул');
+  const missing = exposed.filter((item) => !item.actual).map((item) => item.name);
+  invariant(missing.length === 0, 503, 'formula_expression_unavailable',
+    'Notion API не раскрыл обе обязательные формулы; write gate закрыт', { missing });
   for (const item of exposed) {
-    if (!item.actual) continue;
     invariant(normalizeFormula(item.actual) === normalizeFormula(item.expected), 503, 'wrong_formula_expression',
       `Формула «${item.name}» не совпадает с утверждённым выражением`, { property: item.name });
   }

@@ -46,10 +46,11 @@ display-filter. Parent/Sub-item и `3. Проекты` остаются task-onl
 ID, Google Folder ID, MIME type, download name, размер, SHA-256, Drive MD5,
 позиция, sync status, время и текст ошибки sync, normalized URL, idempotency
 key, Task Page ID, Knowledge key и Integrity. Перед canary проверяются имена,
-типы, select options и формулы всех 19 полей. Тот же preflight проверяет
-`Name/Тип/Формат знания/Архив/Ссылка`, placement/context properties,
-Projects/Directions/Spheres schemas и фактические значения обеих формул на
-одной точной canary Knowledge row.
+типы, select options и обе точные `formula.expression` всех 19 полей. Если API
+не раскрывает хотя бы одно выражение, write gate закрыт. Тот же preflight
+всегда проверяет и фактические outputs точной canary row, а также
+`Name/Тип/Формат знания/Архив/Ссылка`, placement/context properties и
+Projects/Directions/Spheres schemas.
 
 ## Виджет
 
@@ -74,7 +75,10 @@ Google refresh token, OAuth secret, Notion token и webhook verification token
    фаза может обновить ровно сам шаблон. Scope `elements` в этот этап не входит.
 5. Массовый поиск/замена embed по существующим страницам не выполняется.
 6. Виджет читает `Тип=Знание + Внутри=current task`.
-7. Docs/Sheets/Slides создаются в стабильной task-folder staging Drive.
+7. Docs/Sheets/Slides создаются в task-folder staging Drive. Кэш папки
+   дедуплицирует только одновременно выполняемые lookup; перед Drive create,
+   началом resumable upload, его завершением и promotion записи folder заново
+   читается и проверяется как прямой потомок staging root.
 8. Запись «Элементы» создаётся только после проверки ответа Drive,
    parent/appProperties и контрольных сумм.
 9. Retry с тем же `Idempotency-Key` восстанавливает ту же операцию, а другой
@@ -110,8 +114,19 @@ Name, canonical URL, MIME, size и Drive MD5, а после восстановл
 `error/sync_error`. Если у non-native файла с сохранённым SHA-256 изменились
 size или Drive MD5, baseline и время последней успешной синхронизации не
 перезаписываются: запись получает `needs_review/sync_error` с
-`drive_content_changed`, а download блокируется. SLA не считается
-подтверждённым до live E2E.
+`drive_content_changed`, а download блокируется. Отсутствующий stored/Drive MD5,
+size или fresh MIME даёт `drive_content_unverifiable`; переход SHA-bearing row
+в Google-native MIME также не снимает проверку. Оба quarantine-состояния
+остаются до отдельного audited rebaseline и не обновляют время успеха.
+
+Перед Drive reconciliation placement задачи разрешается ровно один раз.
+Изменившийся унаследованный Sphere/Direction/Project, path, ancestors, depth и
+context timestamp записываются во все активные scoped Knowledge rows, включая
+external links. Неизменившийся контекст не вызывает PATCH.
+
+Каждая mutation заново выполняет Drive-root и Notion schema/formula/canary
+preflight; общий Promise существует только пока одна такая проверка выполняется
+параллельно. SLA не считается подтверждённым до live E2E.
 
 ## Границы адаптеров
 

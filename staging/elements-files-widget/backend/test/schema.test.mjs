@@ -57,6 +57,9 @@ function dataSource() {
     '[SYS] Контекст: Направление': relation(config.directionsDataSourceId),
     '[SYS] Контекст: Проект': relation(config.projectsDataSourceId)
   });
+  for (const [name, expression] of Object.entries(FORMULA_EXPRESSIONS)) {
+    properties[name].formula.expression = expression;
+  }
   return {
     id: config.elementsDataSourceId,
     parent: { type: 'database_id', database_id: config.authorizedElementsDatabaseId },
@@ -137,13 +140,25 @@ test('resolver data sources and mixed-script project relation names fail closed'
   assert.throws(() => assertAuthorizedDataSource(elements, config), { code: 'wrong_relation_schema' });
 });
 
-test('formula expressions are exact when API exposes them', () => {
+test('both canonical formula expressions are mandatory and exact', () => {
   const source = dataSource();
-  for (const [name, expression] of Object.entries(FORMULA_EXPRESSIONS)) source.properties[name].formula.expression = expression;
   assert.equal(formulasExposeExpressions(source), true);
   assert.equal(assertAuthorizedDataSource(source, config), true);
   source.properties[P.knowledgeKey].formula.expression += ' + "corrupt"';
   assert.throws(() => assertAuthorizedDataSource(source, config), { code: 'wrong_formula_expression' });
+
+  const absent = dataSource();
+  for (const name of Object.keys(FORMULA_EXPRESSIONS)) {
+    delete absent.properties[name].formula.expression;
+    absent.properties[name].formula.code = FORMULA_EXPRESSIONS[name];
+  }
+  assert.equal(formulasExposeExpressions(absent), false);
+  assert.throws(() => assertAuthorizedDataSource(absent, config), { code: 'formula_expression_unavailable' });
+
+  const literalCorruption = dataSource();
+  literalCorruption.properties[P.taskPageId].formula.expression =
+    FORMULA_EXPRESSIONS[P.taskPageId].replace('prop("Внутри")', 'prop("Внутри  ")');
+  assert.throws(() => assertAuthorizedDataSource(literalCorruption, config), { code: 'wrong_formula_expression' });
 });
 
 test('canary formula fallback verifies one exact material and both exact outputs', () => {

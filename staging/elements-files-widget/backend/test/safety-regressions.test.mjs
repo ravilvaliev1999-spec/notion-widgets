@@ -73,7 +73,20 @@ function widgetHeaders(extra = {}) {
   };
 }
 
+function safeTaskFolder(id = taskFolderId) {
+  return {
+    id,
+    mimeType: 'application/vnd.google-apps.folder',
+    trashed: false,
+    parents: ['drive-staging-folder'],
+    appProperties: { elementsTaskPageId: taskId }
+  };
+}
+
 async function withServer(config, dependencies, run) {
+  const drive = dependencies.drive?.ensureTaskFolder && !dependencies.drive?.getFile
+    ? { getFile: async (id) => safeTaskFolder(id), ...dependencies.drive }
+    : dependencies.drive;
   const app = createApplication(config, {
     targetPreflight: async () => true,
     contextResolver: async () => ({
@@ -89,6 +102,7 @@ async function withServer(config, dependencies, run) {
       syncError: ''
     }),
     ...dependencies,
+    ...(drive ? { drive } : {}),
     logger: { error() {}, info() {}, warn() {} }
   });
   const server = createServer(app.handler);
@@ -230,6 +244,7 @@ test('concurrent duplicate native requests create one Drive side effect', async 
         id: 'drive-native-1',
         name: 'Concurrent document',
         mimeType: 'application/vnd.google-apps.document',
+        trashed: false,
         webViewLink: 'https://drive.google.com/open?id=drive-native-1',
         parents: [taskFolderId],
         appProperties: {
@@ -283,6 +298,7 @@ test('ambiguous Notion failure preserves the Drive file and retry recovers it by
         id: 'drive-native-recoverable',
         name: 'Concurrent document',
         mimeType: 'application/vnd.google-apps.document',
+        trashed: false,
         webViewLink: 'https://drive.google.com/open?id=drive-native-recoverable',
         parents: [taskFolderId],
         appProperties: {
@@ -402,7 +418,7 @@ test('crash after verified upload is recovered without uploading bytes twice', a
       uploadCalls += 1;
       for await (const _chunk of stream) {}
       uploadedFile = {
-        id: 'uploaded-file', name: uploadArgs.name, mimeType: uploadArgs.mimeType, size: String(uploadArgs.size),
+        id: 'uploaded-file', name: uploadArgs.name, mimeType: uploadArgs.mimeType, size: String(uploadArgs.size), trashed: false,
         webViewLink: 'https://drive.google.com/file/d/uploaded-file/view', parents: [taskFolderId],
         appProperties: {
           elementsTaskPageId: taskId,
@@ -454,6 +470,10 @@ test('crash after verified upload is recovered without uploading bytes twice', a
     const payload = await retry.json();
     assert.equal(retry.status, 201);
     assert.equal(payload.record.googleFileId, uploadedFile.id);
+    assert.equal(payload.record.status, 'needs_review');
+    assert.equal(payload.record.integrity, 'sync_error');
+    assert.equal(payload.record.syncError, 'drive_content_unverifiable');
+    assert.equal(payload.record.syncedAt, null);
     assert.equal(uploadCalls, 1);
     assert.equal(markCalls, 1);
     assert.equal(createAttempts, 2);
@@ -472,7 +492,7 @@ test('unverified corrupt recovery is preserved for review and never promoted', a
     assertStagingRoot: async () => ({ root: { id: 'drive-staging-folder' }, principal: { emailAddress: 'sandbox@example.test' } }),
     ensureTaskFolder: async () => ({ id: taskFolderId }),
     findFileByIdempotency: async () => exposeCorrupt ? ({
-      id: 'corrupt-file', name: uploadArgs.name, mimeType: uploadArgs.mimeType, size: String(uploadArgs.size), parents: [taskFolderId],
+      id: 'corrupt-file', name: uploadArgs.name, mimeType: uploadArgs.mimeType, size: String(uploadArgs.size), trashed: false, parents: [taskFolderId],
       appProperties: {
         elementsTaskPageId: taskId, elementsIdempotencyKey: uploadArgs.idempotencyKey,
         elementsPayloadFingerprint: uploadArgs.payloadFingerprint, elementsDeclaredSha256: uploadArgs.sha256
@@ -503,5 +523,250 @@ test('unverified corrupt recovery is preserved for review and never promoted', a
       assert.equal((await result.json()).error.code, 'upload_recovery_checksum_mismatch');
     }
     assert.equal(createCalls, 0);
+  });
+});
+
+test('folder move during recovered-file hashing causes zero marker or Notion side effects', async () => {
+  const body = Buffer.from('abc');
+  const sha256 = createHash('sha256').update(body).digest('hex');
+  const key = 'recovery-folder-move-1234';
+  const payloadFingerprint = createHash('sha256')
+    .update(JSON.stringify(['a.bin', 'application/octet-stream', body.length, sha256])).digest('hex');
+  const recoveredFile = {
+    id: 'recovered-before-folder-move', name: 'a.bin', mimeType: 'application/octet-stream',
+    size: String(body.length), md5Checksum: 'a'.repeat(32), trashed: false, parents: [taskFolderId],
+    appProperties: {
+      elementsTaskPageId: taskId, elementsIdempotencyKey: key,
+      elementsPayloadFingerprint: payloadFingerprint, elementsDeclaredSha256: sha256
+    }
+  };
+  let moved = false;
+  let markCalls = 0;
+  let createCalls = 0;
+  const notion = { retrievePage: async () => taskPage() };
+  const drive = {
+    assertStagingRoot: async () => ({}),
+    ensureTaskFolder: async () => ({ id: taskFolderId }),
+    getFile: async (id) => id === taskFolderId
+      ? { ...safeTaskFolder(), ...(moved ? { parents: ['other-root'] } : {}) }
+      : recoveredFile,
+    findFileByIdempotency: async () => recoveredFile,
+    downloadFile: async () => { moved = true; return new Response(body); },
+    markFileVerified: async () => { markCalls += 1; throw new Error('must not mark'); }
+  };
+  const records = {
+    findByIdempotency: async () => null,
+    create: async () => { createCalls += 1; throw new Error('must not create'); }
+  };
+  await withServer(stagingConfig({ writeEnabled: true }), { notion, drive, records }, async (base) => {
+    const response = await fetch(base + '/api/v1/tasks/' + taskId + '/uploads', {
+      method: 'POST',
+      headers: widgetHeaders({ 'Content-Type': 'application/json', 'Idempotency-Key': key }),
+      body: JSON.stringify({ name: 'a.bin', mimeType: 'application/octet-stream', size: body.length, sha256 })
+    });
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error.code, 'unsafe_drive_folder_parent');
+    assert.equal(markCalls, 0);
+    assert.equal(createCalls, 0);
+  });
+});
+
+test('task-folder cache is in-flight-only and a later move blocks native creation', async () => {
+  const notion = { retrievePage: async () => taskPage() };
+  let moved = false;
+  let ensureCalls = 0;
+  let createCalls = 0;
+  const drive = {
+    assertStagingRoot: async () => ({}),
+    ensureTaskFolder: async () => { ensureCalls += 1; return { id: taskFolderId }; },
+    findFileByIdempotency: async () => null,
+    createNative: async ({ name, taskId: actualTaskId, idempotencyKey }) => {
+      createCalls += 1;
+      return {
+        id: 'native-' + createCalls, name, mimeType: 'application/vnd.google-apps.document', trashed: false,
+        parents: [taskFolderId],
+        appProperties: { elementsTaskPageId: actualTaskId, elementsIdempotencyKey: idempotencyKey }
+      };
+    }
+  };
+  drive.getFile = async () => ({
+    ...safeTaskFolder(),
+    ...(moved ? { parents: ['other-root'] } : {})
+  });
+  const records = {
+    findByIdempotency: async () => null,
+    create: async (actualTaskId, input) => ({ id: recordId, taskId: actualTaskId, taskIds: [actualTaskId], ...input })
+  };
+
+  await withServer(stagingConfig({ writeEnabled: true }), { notion, drive, records }, async (base) => {
+    assert.equal((await nativeRequest(base, 'native-first-12345678')).status, 201);
+    moved = true;
+    const blocked = await nativeRequest(base, 'native-second-12345678');
+    assert.equal(blocked.status, 409);
+    assert.equal((await blocked.json()).error.code, 'unsafe_drive_folder_parent');
+    assert.equal(ensureCalls, 2);
+    assert.equal(createCalls, 1);
+  });
+});
+
+test('folder drift between lookup and side effect causes zero native/create-upload side effects', async () => {
+  for (const operation of ['native', 'upload-init']) {
+    const notion = { retrievePage: async () => taskPage() };
+    let folderReads = 0;
+    let createCalls = 0;
+    let initiateCalls = 0;
+    const drive = {
+      assertStagingRoot: async () => ({}),
+      ensureTaskFolder: async () => ({ id: taskFolderId }),
+      getFile: async () => {
+        folderReads += 1;
+        return {
+          ...safeTaskFolder(),
+          ...(folderReads >= 2 ? { parents: ['other-root'] } : {})
+        };
+      },
+      findFileByIdempotency: async () => null,
+      createNative: async () => { createCalls += 1; throw new Error('must not create'); },
+      initiateResumable: async () => { initiateCalls += 1; throw new Error('must not initiate'); }
+    };
+    const records = { findByIdempotency: async () => null };
+    await withServer(stagingConfig({ writeEnabled: true }), { notion, drive, records }, async (base) => {
+      const response = operation === 'native'
+        ? await nativeRequest(base, 'folder-drift-native-1234')
+        : await fetch(base + '/api/v1/tasks/' + taskId + '/uploads', {
+            method: 'POST',
+            headers: widgetHeaders({ 'Content-Type': 'application/json', 'Idempotency-Key': 'folder-drift-upload-1234' }),
+            body: JSON.stringify({ name: 'a.bin', mimeType: 'application/octet-stream', size: 3, sha256: 'a'.repeat(64) })
+          });
+      assert.equal(response.status, 409, operation);
+      assert.equal((await response.json()).error.code, 'unsafe_drive_folder_parent', operation);
+      assert.equal(createCalls, 0, operation);
+      assert.equal(initiateCalls, 0, operation);
+    });
+  }
+});
+
+test('folder move after Drive native create blocks Notion promotion and preserves the Drive object for review', async () => {
+  const notion = { retrievePage: async () => taskPage() };
+  let moved = false;
+  let driveCreates = 0;
+  let recordCreates = 0;
+  const key = 'post-create-folder-move-1234';
+  const drive = {
+    assertStagingRoot: async () => ({}),
+    ensureTaskFolder: async () => ({ id: taskFolderId }),
+    getFile: async () => ({ ...safeTaskFolder(), ...(moved ? { parents: ['other-root'] } : {}) }),
+    findFileByIdempotency: async () => null,
+    createNative: async ({ name }) => {
+      driveCreates += 1;
+      moved = true;
+      return {
+        id: 'preserved-native', name, mimeType: 'application/vnd.google-apps.document', trashed: false, parents: [taskFolderId],
+        appProperties: { elementsTaskPageId: taskId, elementsIdempotencyKey: key }
+      };
+    }
+  };
+  const records = {
+    findByIdempotency: async () => null,
+    create: async () => { recordCreates += 1; throw new Error('must not promote'); }
+  };
+  await withServer(stagingConfig({ writeEnabled: true }), { notion, drive, records }, async (base) => {
+    const response = await nativeRequest(base, key);
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error.code, 'unsafe_drive_folder_parent');
+    assert.equal(driveCreates, 1);
+    assert.equal(recordCreates, 0);
+  });
+});
+
+test('resumable completion revalidates its stored folder and uploads zero bytes after a move', async () => {
+  const body = Buffer.from('abc');
+  const sha256 = createHash('sha256').update(body).digest('hex');
+  const notion = { retrievePage: async () => taskPage() };
+  let moved = false;
+  let uploadCalls = 0;
+  let createCalls = 0;
+  const drive = {
+    assertStagingRoot: async () => ({}),
+    ensureTaskFolder: async () => ({ id: taskFolderId }),
+    getFile: async () => ({ ...safeTaskFolder(), ...(moved ? { parents: ['other-root'] } : {}) }),
+    findFileByIdempotency: async () => null,
+    initiateResumable: async () => 'https://upload.example.test/session',
+    uploadSession: async () => { uploadCalls += 1; throw new Error('must not upload'); }
+  };
+  const records = {
+    findByIdempotency: async () => null,
+    create: async () => { createCalls += 1; throw new Error('must not create'); }
+  };
+  await withServer(stagingConfig({ writeEnabled: true }), { notion, drive, records }, async (base) => {
+    const init = await fetch(base + '/api/v1/tasks/' + taskId + '/uploads', {
+      method: 'POST',
+      headers: widgetHeaders({ 'Content-Type': 'application/json', 'Idempotency-Key': 'moved-completion-12345678' }),
+      body: JSON.stringify({ name: 'a.bin', mimeType: 'application/octet-stream', size: body.length, sha256 })
+    });
+    const session = await init.json();
+    assert.equal(init.status, 200);
+    moved = true;
+    const completion = await fetch(base + '/api/v1/tasks/' + taskId + '/uploads', {
+      method: 'PUT',
+      headers: widgetHeaders({ 'X-Upload-Token': session.uploadToken, 'Content-Type': 'application/octet-stream' }),
+      body
+    });
+    assert.equal(completion.status, 409);
+    assert.equal((await completion.json()).error.code, 'unsafe_drive_folder_parent');
+    assert.equal(uploadCalls, 0);
+    assert.equal(createCalls, 0);
+  });
+});
+
+test('folder move during byte upload blocks verification and Notion promotion', async () => {
+  const body = Buffer.from('abc');
+  const sha256 = createHash('sha256').update(body).digest('hex');
+  const notion = { retrievePage: async () => taskPage() };
+  let moved = false;
+  let markCalls = 0;
+  let recordCreates = 0;
+  const key = 'move-during-upload-12345678';
+  const drive = {
+    assertStagingRoot: async () => ({}),
+    ensureTaskFolder: async () => ({ id: taskFolderId }),
+    getFile: async () => ({ ...safeTaskFolder(), ...(moved ? { parents: ['other-root'] } : {}) }),
+    findFileByIdempotency: async () => null,
+    initiateResumable: async () => 'https://upload.example.test/session',
+    uploadSession: async (_url, stream) => {
+      for await (const _chunk of stream) {}
+      moved = true;
+      return {
+        id: 'uploaded-before-move-detected', name: 'a.bin', mimeType: 'application/octet-stream', trashed: false,
+        size: String(body.length), md5Checksum: 'a'.repeat(32), parents: [taskFolderId],
+        appProperties: {
+          elementsTaskPageId: taskId, elementsIdempotencyKey: key,
+          elementsPayloadFingerprint: createHash('sha256').update(JSON.stringify(['a.bin', 'application/octet-stream', body.length, sha256])).digest('hex')
+        }
+      };
+    },
+    markFileVerified: async () => { markCalls += 1; throw new Error('must not mark'); }
+  };
+  const records = {
+    findByIdempotency: async () => null,
+    create: async () => { recordCreates += 1; throw new Error('must not promote'); }
+  };
+  await withServer(stagingConfig({ writeEnabled: true }), { notion, drive, records }, async (base) => {
+    const init = await fetch(base + '/api/v1/tasks/' + taskId + '/uploads', {
+      method: 'POST',
+      headers: widgetHeaders({ 'Content-Type': 'application/json', 'Idempotency-Key': key }),
+      body: JSON.stringify({ name: 'a.bin', mimeType: 'application/octet-stream', size: body.length, sha256 })
+    });
+    const session = await init.json();
+    assert.equal(init.status, 200);
+    const completion = await fetch(base + '/api/v1/tasks/' + taskId + '/uploads', {
+      method: 'PUT',
+      headers: widgetHeaders({ 'X-Upload-Token': session.uploadToken, 'Content-Type': 'application/octet-stream' }),
+      body
+    });
+    assert.equal(completion.status, 409);
+    assert.equal((await completion.json()).error.code, 'unsafe_drive_folder_parent');
+    assert.equal(markCalls, 0);
+    assert.equal(recordCreates, 0);
   });
 });

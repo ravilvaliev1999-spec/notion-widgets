@@ -103,6 +103,10 @@ export function pageToRecord(page) {
   const p = page.properties || {};
   const inside = propertyRelation(p[P.inside]).map(normalizeId);
   const insideHasMore = p[P.inside]?.has_more === true;
+  const contextSphereIds = propertyRelation(p[P.contextSphere]).map(normalizeId);
+  const contextDirectionIds = propertyRelation(p[P.contextDirection]).map(normalizeId);
+  const contextProjectIds = propertyRelation(p[P.contextProject]).map(normalizeId);
+  const contextDepth = propertyNumber(p[P.depth]);
   return {
     id: normalizeId(page.id),
     dataSourceId: pageParentDataSource(page),
@@ -130,12 +134,20 @@ export function pageToRecord(page) {
     sha256: propertyText(p[P.sha256]),
     md5: propertyText(p[P.md5]),
     context: {
-      sphereId: propertyRelation(p[P.contextSphere]).map(normalizeId)[0] || '',
-      directionId: propertyRelation(p[P.contextDirection]).map(normalizeId)[0] || '',
-      projectId: propertyRelation(p[P.contextProject]).map(normalizeId)[0] || '',
+      sphereId: contextSphereIds[0] || '',
+      sphereIds: contextSphereIds,
+      sphereHasMore: p[P.contextSphere]?.has_more === true,
+      directionId: contextDirectionIds[0] || '',
+      directionIds: contextDirectionIds,
+      directionHasMore: p[P.contextDirection]?.has_more === true,
+      projectId: contextProjectIds[0] || '',
+      projectIds: contextProjectIds,
+      projectHasMore: p[P.contextProject]?.has_more === true,
       path: propertyText(p[P.contextPath]),
       ancestorIds: propertyText(p[P.ancestorIds]),
-      depth: propertyNumber(p[P.depth]) || 0
+      depth: contextDepth || 0,
+      depthHasValue: contextDepth !== null,
+      updatedAt: p[P.contextUpdatedAt]?.date?.start || ''
     },
     notionUrl: page.url,
     lastEditedTime: page.last_edited_time
@@ -170,7 +182,7 @@ export function recordProperties(record) {
     [P.md5]: richTextValue(record.md5),
     [P.position]: { number: finiteNumber(record.position) || 0 },
     [P.syncStatus]: selectValue(record.status || 'synced'),
-    [P.syncedAt]: dateValue(record.syncedAt || new Date()),
+    [P.syncedAt]: dateValue(record.syncedAt === null ? null : (record.syncedAt || new Date())),
     [P.syncError]: richTextValue(record.syncError || ''),
     [P.normalizedUrl]: richTextValue(record.url),
     [P.idempotencyKey]: richTextValue(record.idempotencyKey),
@@ -183,6 +195,13 @@ export class RecordRepository {
     this.config = config;
     this.notion = notion;
     this.inflight = new Map();
+  }
+
+  async listActiveKnowledgeForTask(taskId) {
+    const rows = await this.notion.queryDataSource(this.config.elementsDataSourceId, {
+      filter: { and: activeLookupFilters(taskId) }
+    });
+    return activeLookupRecords(rows, taskId, this.config.elementsDataSourceId);
   }
 
   async listForTask(taskId, includeArchived = false) {
@@ -290,7 +309,7 @@ export class RecordRepository {
         status: input.status || 'synced',
         integrity: input.integrity || 'ok',
         syncError: input.syncError || '',
-        syncedAt: new Date()
+        syncedAt: input.syncedAt === null ? null : (input.syncedAt || new Date())
       };
       const page = await this.notion.createPage(this.config.elementsDataSourceId, recordProperties(record));
       const created = pageToRecord(page);
@@ -321,6 +340,16 @@ export class RecordRepository {
     if (changes.syncedAt !== undefined) properties[P.syncedAt] = dateValue(changes.syncedAt);
     if (changes.syncError !== undefined) properties[P.syncError] = richTextValue(changes.syncError);
     if (changes.integrity !== undefined) properties[P.integrity] = selectValue(changes.integrity);
+    if (changes.context !== undefined) {
+      const context = changes.context || {};
+      properties[P.contextSphere] = relationValue(context.sphereId ? [context.sphereId] : []);
+      properties[P.contextDirection] = relationValue(context.directionId ? [context.directionId] : []);
+      properties[P.contextProject] = relationValue(context.projectId ? [context.projectId] : []);
+      properties[P.contextPath] = richTextValue(context.path || '');
+      properties[P.ancestorIds] = richTextValue(context.ancestorIds || '[]');
+      properties[P.depth] = { number: finiteNumber(context.depth) || 0 };
+      properties[P.contextUpdatedAt] = dateValue(context.updatedAt || new Date());
+    }
     if (changes.url !== undefined) {
       properties[P.normalizedUrl] = richTextValue(changes.url);
       properties[P.link] = { url: changes.url || null };

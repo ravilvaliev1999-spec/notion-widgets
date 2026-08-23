@@ -4,7 +4,10 @@ import { AUTHORIZED_MAIN } from '../lib/config.mjs';
 import { metadataSyncTargetId, reconcileTaskFiles } from '../lib/sync.mjs';
 
 const taskId = AUTHORIZED_MAIN.canaryTaskPageId;
-const config = { taskWriteScope: 'canary', authorizedCanaryTaskPageId: taskId };
+const config = {
+  taskWriteScope: 'canary', authorizedCanaryTaskPageId: taskId,
+  stagingDriveFolderId: 'drive-staging-folder'
+};
 
 function record(overrides = {}) {
   return {
@@ -35,6 +38,17 @@ function record(overrides = {}) {
 
 const quietLogger = { info() {}, warn() {}, error() {} };
 
+function safeFolder(current, overrides = {}) {
+  return {
+    id: current.googleFolderId,
+    mimeType: 'application/vnd.google-apps.folder',
+    trashed: false,
+    parents: [config.stagingDriveFolderId],
+    appProperties: { elementsTaskPageId: taskId },
+    ...overrides
+  };
+}
+
 test('background metadata refresh remains a one-task scope during template testing', () => {
   const templateTestTask = 'a1'.repeat(16);
   assert.equal(metadataSyncTargetId({ taskWriteScope: 'canary', authorizedCanaryTaskPageId: taskId }), taskId);
@@ -58,6 +72,7 @@ test('task-scoped refresh patches complete mutable Drive metadata and clears rec
   const drive = {
     getFile: async (id) => {
       driveCalls.push(id);
+      if (id === valid.googleFolderId) return safeFolder(valid);
       return {
         id,
         name: 'renamed-in-drive.docx',
@@ -74,7 +89,7 @@ test('task-scoped refresh patches complete mutable Drive metadata and clears rec
 
   const result = await reconcileTaskFiles(config, taskId, drive, repository, quietLogger);
   assert.deepEqual(queryCalls, [[taskId, false]]);
-  assert.deepEqual(driveCalls, [valid.googleFileId]);
+  assert.deepEqual(driveCalls, [valid.googleFileId, valid.googleFolderId]);
   assert.equal(patchCalls.length, 1);
   const changes = patchCalls[0][2];
   assert.equal(changes.name, 'renamed-in-drive.docx');
@@ -92,18 +107,22 @@ test('task-scoped refresh patches complete mutable Drive metadata and clears rec
   assert.deepEqual(result, { taskId, scanned: 1, changed: 1, recovered: 1, errors: 1 });
 });
 
-test('Google-native omissions preserve good size and MD5 metadata', async () => {
-  const current = record({ mimeType: 'application/vnd.google-apps.document', size: 77, md5: 'd'.repeat(32), status: 'synced', syncError: '', integrity: 'ok' });
+test('true Google-native rows with no SHA preserve good size and MD5 metadata', async () => {
+  const current = record({
+    mimeType: 'application/vnd.google-apps.document', size: 77, md5: 'd'.repeat(32), sha256: '',
+    status: 'synced', syncError: '', integrity: 'ok'
+  });
   let changes;
   const repository = {
     listGoogleDriveForTask: async () => [current],
     patch: async (_task, _record, input) => { changes = input; return { ...current, ...input }; }
   };
-  const drive = { getFile: async () => ({
+  const drive = { getFile: async (id) => id === current.googleFolderId ? safeFolder(current) : ({
     id: current.googleFileId,
     name: current.name,
     webViewLink: current.url,
     mimeType: current.mimeType,
+    trashed: false,
     parents: [current.googleFolderId],
     appProperties: { elementsTaskPageId: taskId, elementsIdempotencyKey: current.idempotencyKey }
   }) };
@@ -116,7 +135,7 @@ test('unsafe Drive binding and Drive exceptions persist diagnostic metadata', as
   for (const scenario of [
     {
       drive: { getFile: async () => ({
-        id: 'different-file', parents: ['different-folder'], appProperties: { elementsTaskPageId: '4'.repeat(32) }
+        id: 'different-file', trashed: false, parents: ['different-folder'], appProperties: { elementsTaskPageId: '4'.repeat(32) }
       }) }, expected: 'unsafe_drive_parent'
     },
     {
@@ -151,7 +170,7 @@ test('changed binary content is quarantined without overwriting the good baselin
       listGoogleDriveForTask: async () => [current],
       patch: async (_task, _record, changes) => { patches.push(changes); return { ...current, ...changes }; }
     };
-    const drive = { getFile: async () => ({
+    const drive = { getFile: async (id) => id === current.googleFolderId ? safeFolder(current) : ({
       id: current.googleFileId, name: 'changed.docx', webViewLink: 'https://drive.google.com/changed',
       mimeType: current.mimeType, ...fileChanges, parents: [current.googleFolderId], trashed: false,
       appProperties: { elementsTaskPageId: taskId, elementsIdempotencyKey: current.idempotencyKey }
@@ -177,7 +196,7 @@ test('fresh Drive binary MIME cannot be bypassed by a stale Google-native SYS MI
     listGoogleDriveForTask: async () => [current],
     patch: async (_task, _record, changes) => { diagnostic = changes; return { ...current, ...changes }; }
   };
-  const drive = { getFile: async () => ({
+  const drive = { getFile: async (id) => id === current.googleFolderId ? safeFolder(current) : ({
     id: current.googleFileId, mimeType: 'application/octet-stream', size: '13', md5Checksum: 'c'.repeat(32),
     parents: [current.googleFolderId], trashed: false,
     appProperties: { elementsTaskPageId: taskId, elementsIdempotencyKey: current.idempotencyKey }
@@ -186,4 +205,104 @@ test('fresh Drive binary MIME cannot be bypassed by a stale Google-native SYS MI
   assert.deepEqual(diagnostic, {
     status: 'needs_review', syncError: 'drive_content_changed', integrity: 'sync_error'
   });
+});
+
+test('missing MD5 or fresh MIME makes a SHA-bearing binary baseline unverifiable', async () => {
+  for (const scenario of [
+    { name: 'stored MD5 missing', record: { md5: '' } },
+    { name: 'Drive MD5 missing', file: { md5Checksum: undefined } },
+    {
+      name: 'fresh MIME missing despite stale native SYS MIME',
+      record: { mimeType: 'application/vnd.google-apps.document' },
+      file: { mimeType: undefined }
+    },
+    {
+      name: 'fresh Google-native MIME cannot erase a stored binary SHA baseline',
+      file: { mimeType: 'application/vnd.google-apps.document', size: undefined, md5Checksum: undefined }
+    },
+    { name: 'Drive size missing', file: { size: undefined } }
+  ]) {
+    const current = record({ status: 'synced', syncError: '', integrity: 'ok', ...scenario.record });
+    const patches = [];
+    const repository = {
+      listGoogleDriveForTask: async () => [current],
+      patch: async (_task, _record, changes) => { patches.push(changes); return { ...current, ...changes }; }
+    };
+    const file = {
+      id: current.googleFileId, mimeType: 'application/octet-stream', size: String(current.size),
+      md5Checksum: 'a'.repeat(32), parents: [current.googleFolderId], trashed: false,
+      appProperties: { elementsTaskPageId: taskId, elementsIdempotencyKey: current.idempotencyKey },
+      ...scenario.file
+    };
+    const drive = { getFile: async (id) => id === current.googleFolderId ? safeFolder(current) : file };
+    const result = await reconcileTaskFiles(config, taskId, drive, repository, quietLogger);
+    assert.deepEqual(patches, [{
+      status: 'needs_review', syncError: 'drive_content_unverifiable', integrity: 'sync_error'
+    }], scenario.name);
+    assert.equal('syncedAt' in patches[0], false, scenario.name);
+    assert.equal(result.errors, 1, scenario.name);
+  }
+});
+
+test('binary integrity quarantine is sticky until an explicit audited rebaseline', async () => {
+  let current = record({ status: 'synced', syncError: '', integrity: 'ok' });
+  let changed = true;
+  let folderMoved = false;
+  const patches = [];
+  const repository = {
+    listGoogleDriveForTask: async () => [current],
+    patch: async (_task, _record, changes) => {
+      patches.push(changes);
+      current = { ...current, ...changes };
+      return current;
+    }
+  };
+  const drive = { getFile: async (id) => id === current.googleFolderId
+    ? safeFolder(current, folderMoved ? { parents: ['other-root'] } : {})
+    : ({
+    id: current.googleFileId, mimeType: current.mimeType, size: String(current.size),
+    md5Checksum: changed ? 'c'.repeat(32) : current.md5,
+    parents: [current.googleFolderId], trashed: false,
+    appProperties: { elementsTaskPageId: taskId, elementsIdempotencyKey: current.idempotencyKey }
+  }) };
+
+  await reconcileTaskFiles(config, taskId, drive, repository, quietLogger);
+  changed = false;
+  await reconcileTaskFiles(config, taskId, drive, repository, quietLogger);
+  folderMoved = true;
+  await reconcileTaskFiles(config, taskId, drive, repository, quietLogger);
+  folderMoved = false;
+  await reconcileTaskFiles(config, taskId, drive, repository, quietLogger);
+  assert.deepEqual(patches, [{
+    status: 'needs_review', syncError: 'drive_content_changed', integrity: 'sync_error'
+  }]);
+  assert.equal(current.status, 'needs_review');
+  assert.equal(current.syncError, 'drive_content_changed');
+  assert.equal('syncedAt' in patches[0], false);
+});
+
+test('reconciliation rejects moved or unknown-trash-state task folders without restoring sync metadata', async () => {
+  for (const scenario of [
+    { folder: { parents: ['other-root'] }, expected: 'unsafe_drive_folder_parent' },
+    { folder: { trashed: undefined }, expected: 'drive_folder_trashed' }
+  ]) {
+    const current = record({ status: 'synced', syncError: '', integrity: 'ok' });
+    const patches = [];
+    const repository = {
+      listGoogleDriveForTask: async () => [current],
+      patch: async (_task, _record, changes) => { patches.push(changes); return { ...current, ...changes }; }
+    };
+    const drive = { getFile: async (id) => id === current.googleFolderId
+      ? safeFolder(current, scenario.folder)
+      : ({
+          id: current.googleFileId, mimeType: current.mimeType, size: String(current.size), md5Checksum: current.md5,
+          parents: [current.googleFolderId], trashed: false,
+          appProperties: { elementsTaskPageId: taskId, elementsIdempotencyKey: current.idempotencyKey }
+        }) };
+    await reconcileTaskFiles(config, taskId, drive, repository, quietLogger);
+    assert.deepEqual(patches, [{
+      status: 'error', syncError: scenario.expected, integrity: 'sync_error'
+    }]);
+    assert.equal('syncedAt' in patches[0], false);
+  }
 });

@@ -151,7 +151,7 @@ export class DriveClient {
   createNative({ name, kind, folderId, taskId, idempotencyKey }) {
     const mimeType = GOOGLE_MIME[kind];
     invariant(mimeType, 422, 'invalid_google_kind', 'Поддерживаются только Docs, Sheets и Slides');
-    const fields = 'id,name,mimeType,webViewLink,modifiedTime,size,md5Checksum,parents,appProperties';
+    const fields = 'id,name,mimeType,webViewLink,modifiedTime,size,md5Checksum,trashed,parents,appProperties';
     return this.request(DRIVE_API + '/files?fields=' + encodeURIComponent(fields), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -176,7 +176,7 @@ export class DriveClient {
       q: query,
       pageSize: '2',
       spaces: 'drive',
-      fields: 'files(id,name,mimeType,webViewLink,modifiedTime,size,md5Checksum,parents,appProperties)'
+      fields: 'files(id,name,mimeType,webViewLink,modifiedTime,size,md5Checksum,trashed,parents,appProperties)'
     }).toString());
     invariant((result.files || []).length <= 1, 409, 'duplicate_drive_identity',
       'По Idempotency-Key найдено несколько Google-файлов; автоматический выбор запрещён');
@@ -191,17 +191,18 @@ export class DriveClient {
       'trashed = false',
       "appProperties has { key='elementsTaskPageId' and value='" + safeTaskId + "' }"
     ].join(' and ');
-    const existing = await this.request(DRIVE_API + '/files?' + new URLSearchParams({
+    const listUrl = DRIVE_API + '/files?' + new URLSearchParams({
       q: query,
       pageSize: '2',
       spaces: 'drive',
-      fields: 'files(id,name,parents,appProperties)'
-    }).toString());
+      fields: 'files(id,name,mimeType,trashed,parents,appProperties)'
+    }).toString();
+    const existing = await this.request(listUrl);
     invariant((existing.files || []).length <= 1, 409, 'duplicate_task_folder',
       'Для задачи найдено несколько Google Drive folders; автоматический выбор запрещён');
     if (existing.files && existing.files[0]) return existing.files[0];
     const label = String(taskName || 'Task').replace(/[\\/:*?"<>|]/g, ' ').trim().slice(0, 80);
-    return this.request(DRIVE_API + '/files?fields=' + encodeURIComponent('id,name,parents,appProperties'), {
+    const created = await this.request(DRIVE_API + '/files?fields=' + encodeURIComponent('id,name,mimeType,trashed,parents,appProperties'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -211,10 +212,16 @@ export class DriveClient {
         appProperties: { elementsTaskPageId: safeTaskId }
       })
     });
+    const confirmed = await this.request(listUrl);
+    invariant((confirmed.files || []).length === 1, 409, 'duplicate_task_folder',
+      'После создания task folder не удалось подтвердить его единственность');
+    invariant(String(confirmed.files[0]?.id || '') === String(created?.id || ''), 409, 'task_folder_creation_race',
+      'Во время создания task folder появился другой folder; автоматический выбор запрещён');
+    return confirmed.files[0];
   }
 
   async initiateResumable({ name, mimeType, size, folderId, taskId, idempotencyKey, sha256, payloadFingerprint }) {
-    const response = await this.request(DRIVE_UPLOAD + '/files?uploadType=resumable&fields=' + encodeURIComponent('id,name,mimeType,webViewLink,modifiedTime,size,md5Checksum,parents,appProperties'), {
+    const response = await this.request(DRIVE_UPLOAD + '/files?uploadType=resumable&fields=' + encodeURIComponent('id,name,mimeType,webViewLink,modifiedTime,size,md5Checksum,trashed,parents,appProperties'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json; charset=UTF-8',
@@ -239,7 +246,7 @@ export class DriveClient {
   }
 
   markFileVerified({ fileId, taskId, idempotencyKey, payloadFingerprint, sha256, size }) {
-    return this.request(DRIVE_API + '/files/' + encodeURIComponent(fileId) + '?fields=' + encodeURIComponent('id,name,mimeType,webViewLink,modifiedTime,size,md5Checksum,parents,appProperties'), {
+    return this.request(DRIVE_API + '/files/' + encodeURIComponent(fileId) + '?fields=' + encodeURIComponent('id,name,mimeType,webViewLink,modifiedTime,size,md5Checksum,trashed,parents,appProperties'), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
