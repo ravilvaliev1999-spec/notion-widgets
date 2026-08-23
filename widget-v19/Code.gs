@@ -80,7 +80,7 @@ W19Error_.prototype.constructor = W19Error_;
 
 function doGet() {
   return HtmlService.createHtmlOutputFromFile('Index')
-    .setTitle('Файлы задачи — v19 TEST')
+    .setTitle('Файлы задачи — v19 стенд')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
     .addMetaTag('viewport', 'width=device-width, initial-scale=1, viewport-fit=cover');
 }

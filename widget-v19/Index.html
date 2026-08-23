@@ -5,7 +5,7 @@
   <meta name="robots" content="noindex,nofollow">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="color-scheme" content="dark light">
-  <title>Файлы задачи — v19 TEST</title>
+  <title>Файлы задачи — v19 стенд</title>
   <style>
     :root {
       color-scheme: dark;
@@ -354,7 +354,7 @@
       ];
       const ok=(data)=>new Promise((resolve)=>setTimeout(()=>resolve({ok:true,data}),180));
       return { call(method,payload) {
-        if (method==='apiBootstrap') return ok({version:'v19-mock',task:{id:payload.taskPageId,name:'[TEST] Файлы задачи'},folderUrl:'https://drive.google.com/',maxUploadBytes:8388608,materials:items.slice()});
+      if (method==='apiBootstrap') return ok({version:'v19-mock',task:{id:payload.taskPageId,name:'Виджет файлов v19 — стенд'},folderUrl:'https://drive.google.com/',maxUploadBytes:8388608,materials:items.slice()});
         if (method==='apiSyncTask') return ok({materials:items.slice(),syncedAt:new Date().toISOString()});
         if (method==='apiCreateGoogle') { const format=payload.section==='Docs'?'Google Docs':payload.section==='Sheets'?'Google Sheets':'Google Slides'; const item={id:uid(),name:payload.name||`Новый ${format}`,section:payload.section,format,provider:'Google Drive',openUrl:'https://docs.google.com/',canDownload:false,position:items.filter(x=>x.section===payload.section).length,syncStatus:'synced',updatedAt:new Date().toISOString()}; items.push(item); return ok({material:item,duplicate:false}); }
         if (method==='apiAddLink') { const section=payload.section||classify('', '', payload.url); const item={id:uid(),name:payload.name||new URL(payload.url).hostname,section,format:'Link',provider:'External URL',openUrl:payload.url,canDownload:false,position:items.filter(x=>x.section===section).length,syncStatus:'synced',updatedAt:new Date().toISOString()}; items.push(item); return ok({material:item,duplicate:false}); }
