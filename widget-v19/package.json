@@ -1,6 +1,6 @@
 {
   "name": "notion-task-files-widget-v19",
-  "version": "19.0.0-test",
+  "version": "19.0.0-staging",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,4 +10,3 @@
     "node": ">=20"
   }
 }
-

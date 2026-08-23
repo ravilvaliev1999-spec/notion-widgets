@@ -1,4 +1,4 @@
-# Файловый виджет v19 — изолированная тестовая версия
+# Файловый виджет v19 — изолированный стенд
 
 Эта папка — новый контур. Она не заменяет и не импортирует старые HTML/Apps Script-файлы. Никакие секреты, deployment URL или OAuth-токены здесь не хранятся.
 
@@ -32,7 +32,7 @@
    - `DENIED_NOTION_PAGE_IDS` / `DENIED_NOTION_DATA_SOURCE_IDS` — необязательные denylist через запятую;
    - `MAX_UPLOAD_BYTES` — явный лимит; по умолчанию 8 MiB;
    - `NOTION_VERSION` — `2026-03-11`.
-3. В редакторе вручную запустить `adminSetupRootFolder()`. Функция создаст отдельную папку `Notion Widget v19 — TEST`, сохранит её ID в Script Properties и не сделает папку публичной.
+3. В редакторе вручную запустить `adminSetupRootFolder()`. Функция создаст отдельную папку `Notion Widget v19 — STAGING`, сохранит её ID в Script Properties и не сделает папку публичной.
 4. Запустить `adminPreflight()`. Ожидаемый результат: `ok: true`, schema check без отсутствующих свойств.
 5. При необходимости фоновой сверки переименований раз в минуту запустить `adminInstallSyncTrigger()`.
 6. Deploy → New deployment → Web app. Настройки: **Execute as user accessing the web app**, **Who has access: Only myself**. Не выбирать anonymous access.
@@ -62,7 +62,7 @@ node --test tests/*.test.mjs
 
 `Index.html?mock=1&task=11111111-1111-4111-8111-111111111111`
 
-Mock включается только для `file:`/localhost и помечает экран `TEST`. Он не обращается к Notion или Drive и не является проверкой реальной интеграции.
+Mock включается только для `file:`/localhost и точного canary-домена `ravilvaliev1999-spec.github.io`. На экране нет служебной метки `TEST`; режим не обращается к Notion или Drive и не является проверкой реальной интеграции.
 
 ## Известные границы этой минимально безопасной версии
 
@@ -74,4 +74,3 @@ Mock включается только для `file:`/localhost и помеча�
 ## Rollback
 
 Удалить новый embed с тестовой страницы и отключить staging deployment/trigger. Старые файлы и production deployment не менялись. Записи v19 имеют `[SYS] Sync status` и `[SYS] Idempotency key`, поэтому их можно отфильтровать и архивировать отдельно; физические Drive-файлы не удаляются при обычном архивировании карточки.
-

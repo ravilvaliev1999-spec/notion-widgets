@@ -26,6 +26,12 @@ test('mock mode is limited to local preview and the published canary host', () =
   assert.match(frontend, /mockRequested\s*=\s*requestedMock\s*&&\s*\(isLocal\s*\|\|\s*isPublishedCanary\)/);
 });
 
+test('new staging runtime creates no visible TEST-labelled objects', () => {
+  const runtime = ['Index.html', 'Code.gs'].map(text).join('\n');
+  assert.doesNotMatch(runtime, />\s*TEST(?:\s|<)/i);
+  assert.doesNotMatch(runtime, /Notion Widget v19\s*[—-]\s*TEST/i);
+});
+
 test('backend is fail-closed on identity, data source and task ownership', () => {
   const backend = text('Code.gs');
   assert.match(backend, /w19AssertViewer_/);

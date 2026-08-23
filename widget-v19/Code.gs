@@ -1,7 +1,7 @@
 /* global Drive, HtmlService, Session, PropertiesService, CacheService, LockService,
           ScriptApp, UrlFetchApp, Utilities, WidgetV19Core */
 
-var W19_VERSION = 'v19-test';
+var W19_VERSION = 'v19-staging';
 var W19_NOTION_DEFAULT_VERSION = '2026-03-11';
 var W19_LEDGER_PREFIX = 'w19:idem:';
 var W19_SYNC_CURSOR = 'w19:sync:cursor';
@@ -368,7 +368,7 @@ function adminSetupRootFolder() {
   }
   var folder = w19DriveRetry_(function () {
     return Drive.Files.create({
-      name: 'Notion Widget v19 — TEST',
+      name: 'Notion Widget v19 — STAGING',
       mimeType: 'application/vnd.google-apps.folder',
       appProperties: { widgetVersion: 'v19-root' }
     }, null, { fields: 'id,name,mimeType,trashed' });
@@ -468,7 +468,7 @@ function w19Config_() {
 function w19AssertViewer_(cfg) {
   var email = String(Session.getActiveUser().getEmail() || '').trim().toLowerCase();
   if (!email) throw new W19Error_('AUTH_REQUIRED', 'Google не передал подтверждённую учётную запись. Откройте staging URL в обычной вкладке и авторизуйтесь.', true);
-  if (email !== cfg.allowedEmail) throw new W19Error_('FORBIDDEN', 'Эта тестовая версия доступна только владельцу.', false);
+  if (email !== cfg.allowedEmail) throw new W19Error_('FORBIDDEN', 'Этот стенд доступен только владельцу.', false);
 }
 
 function w19AssertAllowedDataSource_(id, cfg) {
