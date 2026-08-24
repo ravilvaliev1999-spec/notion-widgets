@@ -5,6 +5,7 @@ var W19_VERSION = 'v19-staging';
 var W19_NOTION_DEFAULT_VERSION = '2026-03-11';
 var W19_LEDGER_PREFIX = 'w19:idem:';
 var W19_SYNC_CURSOR = 'w19:sync:cursor';
+var W19_SYNC_LEASE = 'w19:sync:lease';
 
 var W19_P = Object.freeze({
   NAME: 'Name',
@@ -64,7 +65,14 @@ var W19_REQUIRED_SCHEMA = Object.freeze({
   '[SYS] Download name': 'rich_text',
   '[SYS] Normalized URL': 'rich_text',
   '[SYS] Ошибка sync': 'rich_text',
-  '[SYS] Integrity': 'select'
+  '[SYS] Integrity': 'select',
+  '[SYS] Context path': 'rich_text',
+  '[SYS] Ancestor IDs': 'rich_text',
+  '[SYS] Глубина': 'number',
+  '[SYS] Контекст: Сфера': 'relation',
+  '[SYS] Контекст: Направление': 'relation',
+  '[SYS] Контекст: Проект': 'relation',
+  '[SYS] Контекст обновлён': 'date'
 });
 
 function W19Error_(code, message, retryable, details) {
@@ -92,7 +100,9 @@ function apiBootstrap(input) {
     var cfg = w19AuthorizedConfig_();
     w19AssertSchema_(cfg);
     var task = w19AssertTaskPage_(input && input.taskPageId, cfg);
-    var folder = w19EnsureTaskFolder_(task, cfg);
+    var folder = w19WithMutationLock_(function () {
+      return w19EnsureTaskFolder_(task, cfg);
+    });
     var pages = w19QueryTaskMaterials_(task.id, cfg);
     pages = w19SyncPageList_(pages, cfg, 30);
     return {
@@ -115,37 +125,39 @@ function apiCreateGoogle(input) {
     var name = WidgetV19Core.cleanName(input && input.name, w19DefaultGoogleName_(section));
     var idem = w19CanonicalIdempotency_(task.id, 'create-google-' + section, input && input.idempotencyKey);
     return w19WithIdempotency_(idem, function () {
-      var existing = w19FindMaterialByIdempotency_(task.id, idem, cfg);
-      if (existing) return { material: w19MaterialFromPage_(existing), duplicate: true };
+      return w19WithMutationLock_(function () {
+        var existing = w19FindMaterialByIdempotency_(task.id, idem, cfg);
+        if (existing) return { material: w19MaterialFromPage_(existing), duplicate: true };
 
-      var folder = w19EnsureTaskFolder_(task, cfg);
-      var idemHash = w19Hash_(idem).slice(0, 40);
-      var driveFile = w19FindDriveByIdempotency_(task.id, idemHash);
-      if (!driveFile) driveFile = w19CreateGoogleFile_(task, folder.id, section, name, idemHash);
+        var folder = w19EnsureTaskFolder_(task, cfg);
+        var idemHash = w19Hash_(idem).slice(0, 40);
+        var driveFile = w19FindDriveByIdempotency_(task.id, idemHash);
+        if (!driveFile) driveFile = w19CreateGoogleFile_(task, folder.id, section, name, idemHash);
 
-      var byFile = w19FindMaterialByGoogleFile_(task.id, driveFile.id, cfg);
-      if (byFile) return { material: w19MaterialFromPage_(byFile), duplicate: true };
+        var byFile = w19FindMaterialByGoogleFile_(task.id, driveFile.id, cfg);
+        if (byFile) return { material: w19MaterialFromPage_(byFile), duplicate: true };
 
-      var format = section === 'Docs' ? 'Google Docs' : (section === 'Sheets' ? 'Google Sheets' : 'Google Slides');
-      var page = w19CreateNotionMaterial_(task, {
-        name: driveFile.name || name,
-        sourceUrl: driveFile.webViewLink || WidgetV19Core.makeDriveOpenUrl(driveFile.id, format),
-        normalizedUrl: '',
-        knowledgeFormat: 'Файл',
-        format: format,
-        section: section,
-        provider: 'Google Drive',
-        googleFileId: driveFile.id,
-        googleFolderId: folder.id,
-        mimeType: driveFile.mimeType || WidgetV19Core.GOOGLE_MIME[section],
-        size: driveFile.size ? Number(driveFile.size) : null,
-        driveMd5: driveFile.md5Checksum || '',
-        sha256: '',
-        downloadName: driveFile.name || name,
-        position: w19NextPosition_(task.id, section, cfg),
-        idempotency: idem
-      }, cfg);
-      return { material: w19MaterialFromPage_(page), duplicate: false };
+        var format = section === 'Docs' ? 'Google Docs' : (section === 'Sheets' ? 'Google Sheets' : 'Google Slides');
+        var page = w19CreateNotionMaterial_(task, {
+          name: driveFile.name || name,
+          sourceUrl: driveFile.webViewLink || WidgetV19Core.makeDriveOpenUrl(driveFile.id, format),
+          normalizedUrl: '',
+          knowledgeFormat: 'Файл',
+          format: format,
+          section: section,
+          provider: 'Google Drive',
+          googleFileId: driveFile.id,
+          googleFolderId: folder.id,
+          mimeType: driveFile.mimeType || WidgetV19Core.GOOGLE_MIME[section],
+          size: driveFile.size ? Number(driveFile.size) : null,
+          driveMd5: driveFile.md5Checksum || '',
+          sha256: '',
+          downloadName: driveFile.name || name,
+          position: w19NextPosition_(task.id, section, cfg),
+          idempotency: idem
+        }, cfg);
+        return { material: w19MaterialFromPage_(page), duplicate: false };
+      });
     });
   });
 }
@@ -160,29 +172,50 @@ function apiAddLink(input) {
     var detected = WidgetV19Core.classify({ url: normalized, isLink: true });
     var section = input && input.section ? WidgetV19Core.assertSection(input.section) : detected.section;
     var name = WidgetV19Core.cleanName(input && input.name, w19HostLabel_(normalized));
+    var googleFileId = WidgetV19Core.extractGoogleFileId(normalized) || '';
     var idem = w19CanonicalIdempotency_(task.id, 'add-link', input && input.idempotencyKey);
     return w19WithIdempotency_(idem, function () {
-      var existing = w19FindMaterialByIdempotency_(task.id, idem, cfg) || w19FindMaterialByNormalizedUrl_(task.id, normalized, cfg);
-      if (existing) return { material: w19MaterialFromPage_(existing), duplicate: true };
-      var page = w19CreateNotionMaterial_(task, {
-        name: name,
-        sourceUrl: normalized,
-        normalizedUrl: normalized,
-        knowledgeFormat: 'Ссылка',
-        format: detected.format,
-        section: section,
-        provider: detected.provider,
-        googleFileId: WidgetV19Core.extractGoogleFileId(normalized) || '',
-        googleFolderId: '',
-        mimeType: '',
-        size: null,
-        driveMd5: '',
-        sha256: '',
-        downloadName: name,
-        position: w19NextPosition_(task.id, section, cfg),
-        idempotency: idem
-      }, cfg);
-      return { material: w19MaterialFromPage_(page), duplicate: false };
+      return w19WithMutationLock_(function () {
+        var existing = w19FindMaterialByIdempotency_(task.id, idem, cfg) ||
+          (googleFileId ? w19FindMaterialByGoogleFile_(task.id, googleFileId, cfg) : null) ||
+          w19FindMaterialByNormalizedUrl_(task.id, normalized, cfg);
+        if (existing) {
+          var existingMaterial = w19MaterialFromPage_(existing);
+          if (existingMaterial.syncStatus === 'deleted') {
+            throw new W19Error_('MATERIAL_DELETED', 'Эта ссылка относится к физически удалённому материалу и не может быть восстановлена.', false);
+          }
+          if (existingMaterial.archived) {
+            var restoreProps = {};
+            restoreProps[W19_P.ARCHIVE] = { checkbox: false };
+            restoreProps[W19_P.SYNC_STATUS] = w19Select_('synced');
+            restoreProps[W19_P.SYNC_ERROR] = w19Text_('');
+            restoreProps[W19_P.LAST_SYNC] = w19DateNow_();
+            restoreProps[W19_P.POSITION] = { number: w19NextPosition_(task.id, existingMaterial.section, cfg) };
+            existing = w19UpdateNotionPage_(existing.id, restoreProps, cfg);
+            return { material: w19MaterialFromPage_(existing), duplicate: true, restored: true };
+          }
+          return { material: existingMaterial, duplicate: true };
+        }
+        var page = w19CreateNotionMaterial_(task, {
+          name: name,
+          sourceUrl: normalized,
+          normalizedUrl: normalized,
+          knowledgeFormat: 'Ссылка',
+          format: detected.format,
+          section: section,
+          provider: detected.provider,
+          googleFileId: googleFileId,
+          googleFolderId: '',
+          mimeType: '',
+          size: null,
+          driveMd5: '',
+          sha256: '',
+          downloadName: name,
+          position: w19NextPosition_(task.id, section, cfg),
+          idempotency: idem
+        }, cfg);
+        return { material: w19MaterialFromPage_(page), duplicate: false };
+      });
     });
   });
 }
@@ -204,37 +237,39 @@ function apiUpload(input) {
     var section = input && input.section ? WidgetV19Core.assertSection(input.section) : detected.section;
     var idem = w19CanonicalIdempotency_(task.id, 'upload', input && input.idempotencyKey);
     return w19WithIdempotency_(idem, function () {
-      var existing = w19FindMaterialByIdempotency_(task.id, idem, cfg);
-      if (existing) return { material: w19MaterialFromPage_(existing), duplicate: true };
+      return w19WithMutationLock_(function () {
+        var existing = w19FindMaterialByIdempotency_(task.id, idem, cfg);
+        if (existing) return { material: w19MaterialFromPage_(existing), duplicate: true };
 
-      var folder = w19EnsureTaskFolder_(task, cfg);
-      var idemHash = w19Hash_(idem).slice(0, 40);
-      var driveFile = w19FindDriveByIdempotency_(task.id, idemHash);
-      var sha256 = w19DigestHex_(bytes, Utilities.DigestAlgorithm.SHA_256);
-      if (!driveFile) driveFile = w19CreateBinaryFile_(task, folder.id, name, mime, bytes, idemHash);
+        var folder = w19EnsureTaskFolder_(task, cfg);
+        var idemHash = w19Hash_(idem).slice(0, 40);
+        var driveFile = w19FindDriveByIdempotency_(task.id, idemHash);
+        var sha256 = w19DigestHex_(bytes, Utilities.DigestAlgorithm.SHA_256);
+        if (!driveFile) driveFile = w19CreateBinaryFile_(task, folder.id, name, mime, bytes, idemHash);
 
-      var byFile = w19FindMaterialByGoogleFile_(task.id, driveFile.id, cfg);
-      if (byFile) return { material: w19MaterialFromPage_(byFile), duplicate: true };
-      var openUrl = driveFile.webViewLink || WidgetV19Core.makeDriveOpenUrl(driveFile.id, detected.format);
-      var page = w19CreateNotionMaterial_(task, {
-        name: driveFile.name || name,
-        sourceUrl: openUrl,
-        normalizedUrl: '',
-        knowledgeFormat: 'Файл',
-        format: detected.format,
-        section: section,
-        provider: 'Google Drive',
-        googleFileId: driveFile.id,
-        googleFolderId: folder.id,
-        mimeType: driveFile.mimeType || mime,
-        size: driveFile.size ? Number(driveFile.size) : bytes.length,
-        driveMd5: driveFile.md5Checksum || '',
-        sha256: sha256,
-        downloadName: driveFile.name || name,
-        position: w19NextPosition_(task.id, section, cfg),
-        idempotency: idem
-      }, cfg);
-      return { material: w19MaterialFromPage_(page), duplicate: false };
+        var byFile = w19FindMaterialByGoogleFile_(task.id, driveFile.id, cfg);
+        if (byFile) return { material: w19MaterialFromPage_(byFile), duplicate: true };
+        var openUrl = driveFile.webViewLink || WidgetV19Core.makeDriveOpenUrl(driveFile.id, detected.format);
+        var page = w19CreateNotionMaterial_(task, {
+          name: driveFile.name || name,
+          sourceUrl: openUrl,
+          normalizedUrl: '',
+          knowledgeFormat: 'Файл',
+          format: detected.format,
+          section: section,
+          provider: 'Google Drive',
+          googleFileId: driveFile.id,
+          googleFolderId: folder.id,
+          mimeType: driveFile.mimeType || mime,
+          size: driveFile.size ? Number(driveFile.size) : bytes.length,
+          driveMd5: driveFile.md5Checksum || '',
+          sha256: sha256,
+          downloadName: driveFile.name || name,
+          position: w19NextPosition_(task.id, section, cfg),
+          idempotency: idem
+        }, cfg);
+        return { material: w19MaterialFromPage_(page), duplicate: false };
+      });
     });
   });
 }
@@ -243,37 +278,69 @@ function apiUpdateMaterial(input) {
   return w19ApiResult_(function () {
     var cfg = w19AuthorizedConfig_();
     var task = w19AssertTaskPage_(input && input.taskPageId, cfg);
-    var material = w19AssertMaterialForTask_(input && input.pageId, task.id, cfg);
-    var idem = w19CanonicalIdempotency_(task.id, 'update-material-' + material.id, input && input.idempotencyKey);
+    var materialId = WidgetV19Core.normalizeUuid(input && input.pageId);
+    if (!materialId) throw new W19Error_('MATERIAL_ID_REQUIRED', 'Не указан материал.', false);
+    var idem = w19CanonicalIdempotency_(task.id, 'update-material-' + materialId, input && input.idempotencyKey);
     return w19WithIdempotency_(idem, function () {
-      material = w19AssertMaterialForTask_(material.id, task.id, cfg);
-      var props = {};
-      var current = w19MaterialFromPage_(material);
-      if (input && input.section) {
-        var nextSection = WidgetV19Core.assertSection(input.section);
-        props[W19_P.SECTION] = w19Select_(nextSection);
-        if (nextSection !== current.section) props[W19_P.POSITION] = { number: w19NextPosition_(task.id, nextSection, cfg) };
-      }
-      if (input && Object.prototype.hasOwnProperty.call(input, 'name')) {
-        var nextName = WidgetV19Core.cleanName(input.name, current.name);
-        if (current.provider === 'Google Drive' && current.googleFileId && input.renameDrive !== false) {
-          w19DriveRetry_(function () { Drive.Files.update({ name: nextName }, current.googleFileId, null, { fields: 'id,name' }); });
+      return w19WithMutationLock_(function () {
+        var material = w19AssertMaterialForTask_(materialId, task.id, cfg);
+        var props = {};
+        var current = w19MaterialFromPage_(material);
+        var displayName = current.name;
+        if (current.syncStatus === 'deleting') throw new W19Error_('BUSY', 'Материал сейчас удаляется. Повторите через несколько секунд.', true);
+        if (current.syncStatus === 'deleted') throw new W19Error_('MATERIAL_DELETED', 'Физически удалённый материал нельзя изменить.', false);
+        if (input && input.section) {
+          var nextSection = WidgetV19Core.assertSection(input.section);
+          props[W19_P.SECTION] = w19Select_(nextSection);
+          if (nextSection !== current.section) props[W19_P.POSITION] = { number: w19NextPosition_(task.id, nextSection, cfg) };
         }
-        props[W19_P.NAME] = w19Title_(nextName);
-        props[W19_P.DOWNLOAD_NAME] = w19Text_(nextName);
-      }
-      if (input && Object.prototype.hasOwnProperty.call(input, 'url')) {
-        if (current.provider !== 'External URL') throw new W19Error_('URL_REPLACE_FORBIDDEN', 'Ссылку Google Drive нельзя заменить как внешнюю URL.', false);
-        var url = WidgetV19Core.normalizeExternalUrl(input.url);
-        if (!url) throw new W19Error_('INVALID_URL', 'Нужна корректная HTTPS-ссылка.', false);
-        props[W19_P.SOURCE] = { url: url };
-        props[W19_P.NORMALIZED_URL] = w19Text_(url);
-      }
-      props[W19_P.SYNC_STATUS] = w19Select_('synced');
-      props[W19_P.SYNC_ERROR] = w19Text_('');
-      props[W19_P.LAST_SYNC] = w19DateNow_();
-      var updated = w19UpdateNotionPage_(material.id, props, cfg);
-      return { material: w19MaterialFromPage_(updated) };
+        if (input && Object.prototype.hasOwnProperty.call(input, 'name')) {
+          var nextName = WidgetV19Core.cleanName(input.name, current.name);
+          displayName = nextName;
+          if (current.provider === 'Google Drive' && current.googleFileId && input.renameDrive !== false) {
+            w19DriveRetry_(function () { Drive.Files.update({ name: nextName }, current.googleFileId, null, { fields: 'id,name' }); });
+          }
+          props[W19_P.NAME] = w19Title_(nextName);
+          props[W19_P.DOWNLOAD_NAME] = w19Text_(nextName);
+        }
+        if (input && Object.prototype.hasOwnProperty.call(input, 'url')) {
+          if (current.provider !== 'External URL') throw new W19Error_('URL_REPLACE_FORBIDDEN', 'Ссылку Google Drive нельзя заменить как внешнюю URL.', false);
+          var url = WidgetV19Core.normalizeExternalUrl(input.url);
+          if (!url) throw new W19Error_('INVALID_URL', 'Нужна корректная HTTPS-ссылка.', false);
+          var detected = WidgetV19Core.classify({ url: url, isLink: true });
+          var googleFileId = WidgetV19Core.extractGoogleFileId(url) || '';
+          var collision = w19FindMaterialCollision_(task.id, material.id, googleFileId, url, cfg);
+          if (collision) {
+            var collisionMaterial = w19MaterialFromPage_(collision);
+            throw new W19Error_('DUPLICATE_MATERIAL', collisionMaterial.archived ?
+              'Такая ссылка уже есть в архиве. Восстановите исходную карточку вместо создания дубля.' :
+              'Такая ссылка уже сохранена в этой задаче.', false);
+          }
+          props[W19_P.SOURCE] = { url: url };
+          props[W19_P.ATTACHMENTS] = { files: [{ name: WidgetV19Core.cleanName(displayName, 'Ссылка'), type: 'external', external: { url: url } }] };
+          props[W19_P.NORMALIZED_URL] = w19Text_(url);
+          props[W19_P.KNOWLEDGE_FORMAT] = w19Select_(detected.knowledgeFormat);
+          props[W19_P.FILE_FORMAT] = w19Select_(detected.format);
+          props[W19_P.PROVIDER] = w19Select_(detected.provider);
+          props[W19_P.GOOGLE_FILE_ID] = w19Text_(googleFileId);
+          props[W19_P.GOOGLE_FOLDER_ID] = w19Text_('');
+          props[W19_P.MIME] = w19Text_('');
+          props[W19_P.SIZE] = { number: null };
+          props[W19_P.DRIVE_MD5] = w19Text_('');
+          props[W19_P.SHA256] = w19Text_('');
+          props[W19_P.DOWNLOAD_NAME] = w19Text_(displayName);
+          props[W19_P.INTEGRITY] = w19Select_('ok');
+          if (!(input && input.section)) {
+            props[W19_P.SECTION] = w19Select_(detected.section);
+            if (detected.section !== current.section) props[W19_P.POSITION] = { number: w19NextPosition_(task.id, detected.section, cfg) };
+          }
+        }
+        props[W19_P.SYNC_STATUS] = w19Select_('synced');
+        props[W19_P.SYNC_ERROR] = w19Text_('');
+        props[W19_P.LAST_SYNC] = w19DateNow_();
+        var updated = w19UpdateNotionPage_(material.id, props, cfg);
+        return { material: w19MaterialFromPage_(updated) };
+      });
     });
   });
 }
@@ -289,21 +356,27 @@ function apiReorder(input) {
       var id = WidgetV19Core.normalizeUuid(item && item.pageId);
       if (!id || seen[id]) throw new W19Error_('INVALID_ORDER', 'В сортировке есть неверный или повторяющийся ID.', false);
       seen[id] = true;
-      w19AssertMaterialForTask_(id, task.id, cfg);
       var position = Number(item.position);
       if (!isFinite(position) || position < 0) throw new W19Error_('INVALID_ORDER', 'Позиция должна быть неотрицательным числом.', false);
       return { pageId: id, position: Math.round(position), section: WidgetV19Core.assertSection(item.section) };
     });
     var idem = w19CanonicalIdempotency_(task.id, 'reorder', input && input.idempotencyKey);
     return w19WithIdempotency_(idem, function () {
-      normalized.forEach(function (item) {
-        var props = {};
-        props[W19_P.POSITION] = { number: item.position };
-        props[W19_P.SECTION] = w19Select_(item.section);
-        props[W19_P.LAST_SYNC] = w19DateNow_();
-        w19UpdateNotionPage_(item.pageId, props, cfg);
+      return w19WithMutationLock_(function () {
+        normalized.forEach(function (item) {
+          var current = w19MaterialFromPage_(w19AssertMaterialForTask_(item.pageId, task.id, cfg));
+          if (current.syncStatus === 'deleting') throw new W19Error_('BUSY', 'Один из материалов сейчас удаляется. Повторите через несколько секунд.', true);
+          if (current.syncStatus === 'deleted') throw new W19Error_('MATERIAL_DELETED', 'Физически удалённый материал нельзя перемещать.', false);
+        });
+        normalized.forEach(function (item) {
+          var props = {};
+          props[W19_P.POSITION] = { number: item.position };
+          props[W19_P.SECTION] = w19Select_(item.section);
+          props[W19_P.LAST_SYNC] = w19DateNow_();
+          w19UpdateNotionPage_(item.pageId, props, cfg);
+        });
+        return { count: normalized.length };
       });
-      return { count: normalized.length };
     });
   });
 }
@@ -320,20 +393,40 @@ function apiDeletePhysical(input) {
   return w19ApiResult_(function () {
     var cfg = w19AuthorizedConfig_();
     var task = w19AssertTaskPage_(input && input.taskPageId, cfg);
-    var page = w19AssertMaterialForTask_(input && input.pageId, task.id, cfg);
-    var material = w19MaterialFromPage_(page);
-    if (material.provider !== 'Google Drive' || !material.googleFileId) throw new W19Error_('NO_PHYSICAL_FILE', 'У этой карточки нет физического файла Google Drive.', false);
-    if (String(input && input.confirmName || '') !== material.name) throw new W19Error_('CONFIRMATION_REQUIRED', 'Для удаления нужно точно ввести название файла.', false);
-    var driveFile = w19GetDriveMetadata_(material.googleFileId);
-    var driveProps = driveFile && driveFile.appProperties || {};
-    if (!driveFile || driveProps.widgetVersion !== 'v19' || driveProps.taskPageId !== WidgetV19Core.compactUuid(task.id)) {
-      throw new W19Error_('DELETE_NOT_OWNED_BY_WIDGET', 'Физически удалять можно только файлы, созданные этим виджетом v19 для текущей задачи.', false);
-    }
-    var idem = w19CanonicalIdempotency_(task.id, 'delete-file-' + material.id, input && input.idempotencyKey);
+    var materialId = WidgetV19Core.normalizeUuid(input && input.pageId);
+    if (!materialId) throw new W19Error_('MATERIAL_ID_REQUIRED', 'Не указан материал.', false);
+    var idem = w19StableIdempotency_(task.id, 'delete-file-' + materialId, input && input.idempotencyKey);
     return w19WithIdempotency_(idem, function () {
-      try { w19DriveRetry_(function () { Drive.Files.delete(material.googleFileId); }); }
-      catch (err) {
-        if (!/not.?found|File not found/i.test(String(err && err.message || err))) throw err;
+      return w19WithMutationLock_(function () {
+      var page = w19AssertMaterialForTask_(materialId, task.id, cfg, true);
+      var material = w19MaterialFromPage_(page);
+      if (material.archived && material.syncStatus === 'deleted') return { material: material, deleted: true, duplicate: true };
+      if (material.provider !== 'Google Drive' || !material.googleFileId) throw new W19Error_('NO_PHYSICAL_FILE', 'У этой карточки нет физического файла Google Drive.', false);
+      if (String(input && input.confirmName || '') !== material.name) throw new W19Error_('CONFIRMATION_REQUIRED', 'Для удаления нужно точно ввести название файла.', false);
+      if (material.archived && material.syncStatus !== 'deleting') throw new W19Error_('MATERIAL_ARCHIVED', 'Материал уже архивирован.', false);
+
+      var prepared = material.syncStatus === 'deleting';
+      var driveFile = w19GetDriveMetadata_(material.googleFileId);
+      var driveProps = driveFile && driveFile.appProperties || {};
+      if (driveFile && (driveProps.widgetVersion !== 'v19' || driveProps.taskPageId !== WidgetV19Core.compactUuid(task.id))) {
+        throw new W19Error_('DELETE_NOT_OWNED_BY_WIDGET', 'Физически удалять можно только файлы, созданные этим виджетом v19 для текущей задачи.', false);
+      }
+      if (!driveFile && !prepared) {
+        throw new W19Error_('DELETE_NOT_OWNED_BY_WIDGET', 'Файл уже отсутствует, а подтверждённой операции удаления для него нет.', false);
+      }
+      if (!prepared) {
+        var preparing = {};
+        preparing[W19_P.SYNC_STATUS] = w19Select_('deleting');
+        preparing[W19_P.SYNC_ERROR] = w19Text_('');
+        preparing[W19_P.LAST_SYNC] = w19DateNow_();
+        page = w19UpdateNotionPage_(page.id, preparing, cfg);
+        material = w19MaterialFromPage_(page);
+      }
+      if (driveFile) {
+        try { w19DriveRetry_(function () { Drive.Files.delete(material.googleFileId); }); }
+        catch (err) {
+          if (!w19IsDriveNotFound_(err)) throw err;
+        }
       }
       var props = {};
       props[W19_P.ARCHIVE] = { checkbox: true };
@@ -342,6 +435,7 @@ function apiDeletePhysical(input) {
       props[W19_P.LAST_SYNC] = w19DateNow_();
       var updated = w19UpdateNotionPage_(page.id, props, cfg);
       return { material: w19MaterialFromPage_(updated), deleted: true };
+      });
     });
   });
 }
@@ -398,32 +492,71 @@ function adminInstallSyncTrigger() {
 function scheduledSync() {
   var cfg = w19Config_();
   w19AssertSchema_(cfg);
-  var props = PropertiesService.getScriptProperties();
-  var cursor = props.getProperty(W19_SYNC_CURSOR) || null;
-  var body = {
-    page_size: 50,
-    filter: {
-      and: [
-        { property: W19_P.TYPE, select: { equals: 'Знание' } },
-        { property: W19_P.PROVIDER, select: { equals: 'Google Drive' } },
-        { property: W19_P.ARCHIVE, checkbox: { equals: false } }
-      ]
-    },
-    sorts: [{ timestamp: 'last_edited_time', direction: 'ascending' }]
-  };
-  if (cursor) body.start_cursor = cursor;
-  var result = w19NotionRequest_('post', '/v1/data_sources/' + cfg.dataSourceId + '/query', body, cfg);
-  var ok = 0;
-  var errors = 0;
-  (result.results || []).forEach(function (page) {
-    try { w19SyncOnePage_(page, cfg); ok += 1; }
-    catch (err) { errors += 1; w19MarkSyncError_(page, err, cfg); }
-  });
-  if (result.has_more && result.next_cursor) props.setProperty(W19_SYNC_CURSOR, result.next_cursor);
-  else props.deleteProperty(W19_SYNC_CURSOR);
-  w19PruneLedger_();
-  w19Audit_('scheduled_sync', { checked: (result.results || []).length, ok: ok, errors: errors });
-  return { ok: true, checked: (result.results || []).length, synced: ok, errors: errors };
+  var lease = w19ClaimScheduledSync_();
+  if (!lease) return { ok: true, skipped: true, reason: 'already_running' };
+  var commitCursor = false;
+  var nextCursor = lease.cursor;
+  try {
+    var body = {
+      page_size: 50,
+      filter: {
+        and: [
+          { property: W19_P.TYPE, select: { equals: 'Знание' } },
+          { property: W19_P.PROVIDER, select: { equals: 'Google Drive' } },
+          { property: W19_P.ARCHIVE, checkbox: { equals: false } }
+        ]
+      },
+      sorts: [{ timestamp: 'created_time', direction: 'ascending' }]
+    };
+    if (lease.cursor) body.start_cursor = lease.cursor;
+    var result = w19NotionRequest_('post', '/v1/data_sources/' + cfg.dataSourceId + '/query', body, cfg);
+    var ok = 0;
+    var errors = 0;
+    (result.results || []).forEach(function (page) {
+      try { w19SyncOnePage_(page, cfg); ok += 1; }
+      catch (err) { errors += 1; w19MarkSyncError_(page, err, cfg); }
+    });
+    nextCursor = result.has_more && result.next_cursor ? result.next_cursor : null;
+    commitCursor = true;
+    w19PruneLedger_();
+    w19Audit_('scheduled_sync', { checked: (result.results || []).length, ok: ok, errors: errors });
+    return { ok: true, checked: (result.results || []).length, synced: ok, errors: errors };
+  } finally {
+    w19FinishScheduledSync_(lease.token, commitCursor, nextCursor);
+  }
+}
+
+function w19ClaimScheduledSync_() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return null;
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var now = Date.now();
+    var current = w19ReadLedger_(props, W19_SYNC_LEASE);
+    if (current && now - Number(current.at || 0) < 10 * 60 * 1000) return null;
+    var token = Utilities.getUuid();
+    props.setProperty(W19_SYNC_LEASE, JSON.stringify({ token: token, at: now }));
+    return { token: token, cursor: props.getProperty(W19_SYNC_CURSOR) || null };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function w19FinishScheduledSync_(token, commitCursor, nextCursor) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) return;
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var current = w19ReadLedger_(props, W19_SYNC_LEASE);
+    if (!current || current.token !== token) return;
+    if (commitCursor) {
+      if (nextCursor) props.setProperty(W19_SYNC_CURSOR, nextCursor);
+      else props.deleteProperty(W19_SYNC_CURSOR);
+    }
+    props.deleteProperty(W19_SYNC_LEASE);
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 /* ========================= Authorization/config ========================= */
@@ -508,16 +641,29 @@ function w19SetArchiveState_(input, archived) {
   return w19ApiResult_(function () {
     var cfg = w19AuthorizedConfig_();
     var task = w19AssertTaskPage_(input && input.taskPageId, cfg);
-    var page = w19AssertMaterialForTask_(input && input.pageId, task.id, cfg, true);
-    var idem = w19CanonicalIdempotency_(task.id, (archived ? 'archive-' : 'restore-') + page.id, input && input.idempotencyKey);
+    var materialId = WidgetV19Core.normalizeUuid(input && input.pageId);
+    if (!materialId) throw new W19Error_('MATERIAL_ID_REQUIRED', 'Не указан материал.', false);
+    var idem = w19CanonicalIdempotency_(task.id, (archived ? 'archive-' : 'restore-') + materialId, input && input.idempotencyKey);
     return w19WithIdempotency_(idem, function () {
-      var props = {};
-      props[W19_P.ARCHIVE] = { checkbox: archived };
-      props[W19_P.SYNC_STATUS] = w19Select_(archived ? 'archived' : 'synced');
-      props[W19_P.SYNC_ERROR] = w19Text_('');
-      props[W19_P.LAST_SYNC] = w19DateNow_();
-      var updated = w19UpdateNotionPage_(page.id, props, cfg);
-      return { material: w19MaterialFromPage_(updated), archived: archived };
+      return w19WithMutationLock_(function () {
+        var page = w19AssertMaterialForTask_(materialId, task.id, cfg, true);
+        if (page.in_trash) throw new W19Error_('MATERIAL_ARCHIVED', 'Материал находится в корзине.', false);
+        var material = w19MaterialFromPage_(page);
+        if (material.syncStatus === 'deleting') throw new W19Error_('BUSY', 'Материал сейчас удаляется. Повторите через несколько секунд.', true);
+        if (material.syncStatus === 'deleted') {
+          if (!archived) throw new W19Error_('MATERIAL_DELETED', 'Физически удалённый материал нельзя восстановить.', false);
+          return { material: material, archived: true, deleted: true, duplicate: true };
+        }
+        if (material.archived === archived) return { material: material, archived: archived, duplicate: true };
+        var props = {};
+        props[W19_P.ARCHIVE] = { checkbox: archived };
+        props[W19_P.SYNC_STATUS] = w19Select_(archived ? 'archived' : 'synced');
+        props[W19_P.SYNC_ERROR] = w19Text_('');
+        props[W19_P.LAST_SYNC] = w19DateNow_();
+        if (!archived) props[W19_P.POSITION] = { number: w19NextPosition_(task.id, material.section, cfg) };
+        var updated = w19UpdateNotionPage_(page.id, props, cfg);
+        return { material: w19MaterialFromPage_(updated), archived: archived };
+      });
     });
   });
 }
@@ -675,6 +821,29 @@ function w19FindMaterialByGoogleFile_(taskId, fileId, cfg) {
 function w19FindMaterialByNormalizedUrl_(taskId, url, cfg) {
   if (!url) return null;
   return w19FindOneMaterial_(taskId, { property: W19_P.NORMALIZED_URL, rich_text: { equals: url } }, cfg);
+}
+
+function w19FindMaterialCollision_(taskId, currentPageId, fileId, url, cfg) {
+  var alternatives = [];
+  if (fileId) alternatives.push({ property: W19_P.GOOGLE_FILE_ID, rich_text: { equals: fileId } });
+  if (url) alternatives.push({ property: W19_P.NORMALIZED_URL, rich_text: { equals: url } });
+  if (!alternatives.length) return null;
+  var result = w19NotionRequest_('post', '/v1/data_sources/' + cfg.dataSourceId + '/query', {
+    page_size: 20,
+    filter: {
+      and: [
+        { property: W19_P.TYPE, select: { equals: 'Знание' } },
+        { property: W19_P.INSIDE, relation: { contains: taskId } },
+        alternatives.length === 1 ? alternatives[0] : { or: alternatives }
+      ]
+    }
+  }, cfg);
+  var currentId = WidgetV19Core.normalizeUuid(currentPageId);
+  var pages = result.results || [];
+  for (var i = 0; i < pages.length; i += 1) {
+    if (WidgetV19Core.normalizeUuid(pages[i].id) !== currentId) return pages[i];
+  }
+  return null;
 }
 
 function w19FindOneMaterial_(taskId, extraFilter, cfg) {
@@ -840,15 +1009,33 @@ function w19RelationIds_(property) {
 
 /* ========================= Durable idempotency ========================= */
 
+function w19WithMutationLock_(fn) {
+  var lock = LockService.getUserLock();
+  if (!lock.tryLock(30000)) throw new W19Error_('BUSY', 'Другая операция ещё фиксирует изменения. Повторите через несколько секунд.', true);
+  try { return fn(); }
+  finally { lock.releaseLock(); }
+}
+
 function w19CanonicalIdempotency_(taskId, operation, clientKey) {
+  var key = w19ValidateClientKey_(clientKey);
+  return WidgetV19Core.compactUuid(taskId) + '|' + String(operation).slice(0, 100) + '|' + key;
+}
+
+function w19StableIdempotency_(taskId, operation, clientKey) {
+  w19ValidateClientKey_(clientKey);
+  return WidgetV19Core.compactUuid(taskId) + '|' + String(operation).slice(0, 100) + '|stable';
+}
+
+function w19ValidateClientKey_(clientKey) {
   var key = String(clientKey || '').trim();
   if (!/^[A-Za-z0-9._:-]{8,128}$/.test(key)) throw new W19Error_('IDEMPOTENCY_REQUIRED', 'Операции создания и изменения требуют новый idempotency key.', false);
-  return WidgetV19Core.compactUuid(taskId) + '|' + String(operation).slice(0, 100) + '|' + key;
+  return key;
 }
 
 function w19WithIdempotency_(canonicalKey, fn) {
   var props = PropertiesService.getScriptProperties();
   var ledgerKey = W19_LEDGER_PREFIX + w19Hash_(canonicalKey).slice(0, 44);
+  var attemptId = Utilities.getUuid();
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(15000)) throw new W19Error_('BUSY', 'Сервис занят другой операцией. Повторите через несколько секунд.', true);
   try {
@@ -861,7 +1048,7 @@ function w19WithIdempotency_(canonicalKey, fn) {
         throw new W19Error_('OPERATION_IN_PROGRESS', 'Эта операция уже выполняется. Обновите список через несколько секунд.', true);
       }
     }
-    props.setProperty(ledgerKey, JSON.stringify({ status: 'pending', at: Date.now() }));
+    props.setProperty(ledgerKey, JSON.stringify({ status: 'pending', at: Date.now(), attemptId: attemptId }));
   } finally {
     lock.releaseLock();
   }
@@ -870,17 +1057,32 @@ function w19WithIdempotency_(canonicalKey, fn) {
     var data = fn();
     lock.waitLock(15000);
     try {
-      var serialized = JSON.stringify({ status: 'done', at: Date.now(), data: data });
-      if (serialized.length > 8500) serialized = JSON.stringify({ status: 'done', at: Date.now(), data: { completed: true } });
-      props.setProperty(ledgerKey, serialized);
+      var currentDone = w19ReadLedger_(props, ledgerKey);
+      if (currentDone && currentDone.status === 'pending' && currentDone.attemptId === attemptId) {
+        var serialized = JSON.stringify({ status: 'done', at: Date.now(), attemptId: attemptId, data: data });
+        if (serialized.length > 8500) serialized = JSON.stringify({ status: 'done', at: Date.now(), attemptId: attemptId, data: { completed: true } });
+        props.setProperty(ledgerKey, serialized);
+      }
     } finally { lock.releaseLock(); }
     return data;
   } catch (err) {
     lock.waitLock(15000);
-    try { props.setProperty(ledgerKey, JSON.stringify({ status: 'failed', at: Date.now(), code: err && err.code || 'UNEXPECTED' })); }
+    try {
+      var currentFailed = w19ReadLedger_(props, ledgerKey);
+      if (currentFailed && currentFailed.status === 'pending' && currentFailed.attemptId === attemptId) {
+        props.setProperty(ledgerKey, JSON.stringify({ status: 'failed', at: Date.now(), attemptId: attemptId, code: err && err.code || 'UNEXPECTED' }));
+      }
+    }
     finally { lock.releaseLock(); }
     throw err;
   }
+}
+
+function w19ReadLedger_(props, ledgerKey) {
+  var raw = props.getProperty(ledgerKey);
+  if (!raw) return null;
+  try { return JSON.parse(raw); }
+  catch (_err) { return null; }
 }
 
 function w19PruneLedger_() {
@@ -992,9 +1194,15 @@ function w19GetDriveMetadata_(fileId) {
       });
     });
   } catch (err) {
-    if (/not.?found|File not found/i.test(String(err && err.message || err))) return null;
+    if (w19IsDriveNotFound_(err)) return null;
     throw err;
   }
+}
+
+function w19IsDriveNotFound_(err) {
+  var detail = err && err.details && err.details.reason;
+  var text = String(err && err.message || err || '') + ' ' + String(detail || '');
+  return Boolean(err && err.code === 'DRIVE_NOT_FOUND') || /not.?found|file not found|\b404\b/i.test(text);
 }
 
 function w19DriveRetry_(fn) {
@@ -1003,11 +1211,15 @@ function w19DriveRetry_(fn) {
     try { return fn(); }
     catch (err) {
       last = err;
-      if (attempt < 2 && /rate|quota|backend|internal|timeout|temporar|service unavailable/i.test(String(err && err.message || err))) {
+      var driveMessage = String(err && err.message || err);
+      if (/not.?found|file not found|\b404\b/i.test(driveMessage)) {
+        throw new W19Error_('DRIVE_NOT_FOUND', 'Файл Google Drive не найден.', false, { reason: driveMessage.slice(0, 300) });
+      }
+      if (attempt < 2 && /rate|quota|backend|internal|timeout|temporar|service unavailable/i.test(driveMessage)) {
         Utilities.sleep(500 * Math.pow(2, attempt) + Math.floor(Math.random() * 200));
         continue;
       }
-      throw new W19Error_('DRIVE_ERROR', 'Google Drive не выполнил операцию.', attempt < 2, { reason: String(err && err.message || err).slice(0, 300) });
+      throw new W19Error_('DRIVE_ERROR', 'Google Drive не выполнил операцию.', attempt < 2, { reason: driveMessage.slice(0, 300) });
     }
   }
   throw last;
@@ -1030,8 +1242,16 @@ function w19SyncPageList_(pages, cfg, limit) {
 }
 
 function w19SyncOnePage_(page, cfg) {
+  return w19WithMutationLock_(function () {
+    var current = w19NotionRequest_('get', '/v1/pages/' + page.id, null, cfg);
+    return w19SyncOnePageUnlocked_(current, cfg);
+  });
+}
+
+function w19SyncOnePageUnlocked_(page, cfg) {
   var material = w19MaterialFromPage_(page);
   if (material.provider !== 'Google Drive' || !material.googleFileId || material.archived) return page;
+  if (material.syncStatus === 'deleting') return page;
   var drive = w19GetDriveMetadata_(material.googleFileId);
   if (!drive || drive.trashed) throw new W19Error_('DRIVE_FILE_MISSING', 'Файл не найден или перемещён в корзину Google Drive.', false);
   var detected = WidgetV19Core.classify({ name: drive.name, mimeType: drive.mimeType, url: drive.webViewLink || material.openUrl });
@@ -1055,11 +1275,17 @@ function w19SyncOnePage_(page, cfg) {
 }
 
 function w19MarkSyncError_(page, err, cfg) {
-  var props = {};
-  props[W19_P.SYNC_STATUS] = w19Select_('error');
-  props[W19_P.SYNC_ERROR] = w19Text_(String(err && err.message || 'Ошибка синхронизации').slice(0, 500));
-  props[W19_P.LAST_SYNC] = w19DateNow_();
-  props[W19_P.INTEGRITY] = w19Select_('sync_error');
-  try { return w19UpdateNotionPage_(page.id, props, cfg); }
-  catch (_updateErr) { return page; }
+  try {
+    return w19WithMutationLock_(function () {
+      var current = w19NotionRequest_('get', '/v1/pages/' + page.id, null, cfg);
+      var material = w19MaterialFromPage_(current);
+      if (material.archived || material.syncStatus === 'deleting' || material.syncStatus === 'deleted') return current;
+      var props = {};
+      props[W19_P.SYNC_STATUS] = w19Select_('error');
+      props[W19_P.SYNC_ERROR] = w19Text_(String(err && err.message || 'Ошибка синхронизации').slice(0, 500));
+      props[W19_P.LAST_SYNC] = w19DateNow_();
+      props[W19_P.INTEGRITY] = w19Select_('sync_error');
+      return w19UpdateNotionPage_(current.id, props, cfg);
+    });
+  } catch (_updateErr) { return page; }
 }

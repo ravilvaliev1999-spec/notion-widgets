@@ -298,6 +298,8 @@
     const mockRequested = requestedMock && (isLocal || isPublishedCanary);
     const bridge = createBridge();
     let toastTimer = 0;
+    let orderSaveRunning = false;
+    let queuedOrder = null;
 
     function normalizeUuid(value) {
       const raw = String(value || '').toLowerCase().replace(/[^0-9a-f]/g,'');
@@ -308,10 +310,41 @@
     function sectionFor(item) { return SECTIONS.includes(item.section) ? item.section : 'Drive'; }
     function classify(name,mime,url) {
       const n=String(name||'').toLowerCase(), m=String(mime||'').toLowerCase(), u=String(url||'').toLowerCase();
-      if (/docs\.google\.com\/document\//.test(u) || /wordprocessingml|msword/.test(m) || /\.(doc|docx|odt|rtf)$/.test(n)) return 'Docs';
-      if (/docs\.google\.com\/spreadsheets\//.test(u) || /spreadsheetml|ms-excel|text\/csv/.test(m) || /\.(xls|xlsx|ods|csv)$/.test(n)) return 'Sheets';
-      if (/docs\.google\.com\/presentation\//.test(u) || /presentationml|ms-powerpoint/.test(m) || /\.(ppt|pptx|odp)$/.test(n)) return 'Slides';
+      const host=(u.match(/^https:\/\/([^/?#]+)/i)||[])[1]?.replace(/:443$/,'')||'';
+      if ((host==='docs.google.com'&&/\/document\//.test(u)) || /wordprocessingml|msword/.test(m) || /\.(doc|docx|odt|rtf)$/.test(n)) return 'Docs';
+      if ((host==='docs.google.com'&&/\/spreadsheets\//.test(u)) || /spreadsheetml|ms-excel|text\/csv/.test(m) || /\.(xls|xlsx|ods|csv)$/.test(n)) return 'Sheets';
+      if ((host==='docs.google.com'&&/\/presentation\//.test(u)) || /presentationml|ms-powerpoint/.test(m) || /\.(ppt|pptx|odp)$/.test(n)) return 'Slides';
       return 'Drive';
+    }
+    function mockGoogleFileId(url) {
+      const value=String(url||'');
+      const host=(value.match(/^https:\/\/([^/?#]+)/i)||[])[1]?.toLowerCase().replace(/:443$/,'')||'';
+      if(host!=='drive.google.com'&&host!=='docs.google.com')return null;
+      const match=value.match(/\/d\/([a-zA-Z0-9_-]{10,})/)||value.match(/\/folders\/([a-zA-Z0-9_-]{10,})/)||value.match(/[?&]id=([a-zA-Z0-9_-]{10,})/);
+      return match ? match[1] : null;
+    }
+    function mockNormalizeUrl(value) {
+      let raw=String(value||'').trim();if(!/^https:\/\//i.test(raw))return null;
+      let fragment='';const hashIndex=raw.indexOf('#');if(hashIndex>=0){fragment=raw.slice(hashIndex);raw=raw.slice(0,hashIndex);}
+      const match=raw.match(/^(https:\/\/)([^/?#]+)([^?#]*)(?:\?([^#]*))?$/i);if(!match)return null;
+      const host=match[2].toLowerCase().replace(/:443$/,'');if(!host||/[\s\\]/.test(host))return null;
+      let path=(match[3]||'/').replace(/\/{2,}/g,'/');if(path.length>1)path=path.replace(/\/+$/,'');
+      const query=[];(match[4]||'').split('&').forEach(pair=>{if(!pair)return;const key=(pair.split('=')[0]||'').replace(/\+/g,' ');let decoded;try{decoded=decodeURIComponent(key).toLowerCase();}catch(_err){decoded=key.toLowerCase();}if(/^utm_/.test(decoded)||/^(fbclid|gclid|yclid|mc_cid|mc_eid)$/.test(decoded))return;query.push(pair);});query.sort();
+      return `https://${host}${path}${query.length?`?${query.join('&')}`:''}${fragment}`;
+    }
+    function mockLinkMeta(url,requestedSection) {
+      const section=requestedSection||classify('', '', url);
+      const googleFileId=mockGoogleFileId(url);
+      const host=((String(url||'').match(/^https:\/\/([^/?#]+)/i)||[])[1]||'').toLowerCase().replace(/:443$/,'');
+      const nativeDocs=host==='docs.google.com'&&/\/document\//i.test(url),nativeSheets=host==='docs.google.com'&&/\/spreadsheets\//i.test(url),nativeSlides=host==='docs.google.com'&&/\/presentation\//i.test(url);
+      const format=nativeDocs?'Google Docs':nativeSheets?'Google Sheets':nativeSlides?'Google Slides':'Link';
+      return {section,format,provider:nativeDocs||nativeSheets||nativeSlides?'Google Drive':'External URL',googleFileId};
+    }
+    function mockNextPosition(items,section) {
+      return items.reduce((max,item)=>{
+        const position=Number(item.position);
+        return item.section===section&&!item.archived&&Number.isFinite(position)?Math.max(max,position):max;
+      },-1)+1;
     }
     function humanSize(value) {
       const n=Number(value); if (!Number.isFinite(n) || n<=0) return '';
@@ -320,6 +353,7 @@
     }
     function formatSub(item) {
       if (item.syncStatus === 'pending') return 'Загружается…';
+      if (item.syncStatus === 'deleting') return 'Удаление…';
       if (item.error) return item.error;
       return [item.format,item.size ? humanSize(item.size) : '',item.provider].filter(Boolean).join(' · ');
     }
@@ -345,21 +379,39 @@
     function createMockBridge() {
       const now=new Date().toISOString();
       let items=[
-        {id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',name:'Договор поставки.docx',section:'Docs',format:'Word',provider:'Google Drive',openUrl:'https://drive.google.com/',downloadUrl:'https://drive.google.com/',canDownload:true,size:184320,position:0,syncStatus:'synced',updatedAt:now},
-        {id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',name:'Финансовая модель',section:'Sheets',format:'Google Sheets',provider:'Google Drive',openUrl:'https://docs.google.com/spreadsheets/',canDownload:false,position:0,syncStatus:'synced',updatedAt:now},
+        {id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',name:'Договор поставки.docx',section:'Docs',format:'Word',provider:'Google Drive',openUrl:'https://drive.google.com/',downloadUrl:'https://drive.google.com/',canDownload:true,googleFileId:'mockdocxfile123',folderId:'mockfolder123',widgetOwned:true,size:184320,position:0,syncStatus:'synced',updatedAt:now},
+        {id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',name:'Финансовая модель',section:'Sheets',format:'Google Sheets',provider:'Google Drive',openUrl:'https://docs.google.com/spreadsheets/d/mocksheetfile123/edit',canDownload:false,googleFileId:'mocksheetfile123',folderId:'mockfolder123',widgetOwned:true,position:0,syncStatus:'synced',updatedAt:now},
         {id:'cccccccc-cccc-4ccc-8ccc-cccccccccccc',name:'Референс проекта',section:'Drive',format:'Link',provider:'External URL',openUrl:'https://example.com/',canDownload:false,position:0,syncStatus:'synced',updatedAt:now}
       ];
       const ok=(data)=>new Promise((resolve)=>setTimeout(()=>resolve({ok:true,data}),180));
+      const fail=(code,message)=>new Promise((resolve)=>setTimeout(()=>resolve({ok:false,error:{code,message,retryable:false}}),180));
       return { call(method,payload) {
-      if (method==='apiBootstrap') return ok({version:'v19-mock',task:{id:payload.taskPageId,name:'Виджет файлов v19 — стенд'},folderUrl:'https://drive.google.com/',maxUploadBytes:8388608,materials:items.slice()});
-        if (method==='apiSyncTask') return ok({materials:items.slice(),syncedAt:new Date().toISOString()});
-        if (method==='apiCreateGoogle') { const format=payload.section==='Docs'?'Google Docs':payload.section==='Sheets'?'Google Sheets':'Google Slides'; const item={id:uid(),name:payload.name||`Новый ${format}`,section:payload.section,format,provider:'Google Drive',openUrl:'https://docs.google.com/',canDownload:false,position:items.filter(x=>x.section===payload.section).length,syncStatus:'synced',updatedAt:new Date().toISOString()}; items.push(item); return ok({material:item,duplicate:false}); }
-        if (method==='apiAddLink') { const section=payload.section||classify('', '', payload.url); const item={id:uid(),name:payload.name||new URL(payload.url).hostname,section,format:'Link',provider:'External URL',openUrl:payload.url,canDownload:false,position:items.filter(x=>x.section===section).length,syncStatus:'synced',updatedAt:new Date().toISOString()}; items.push(item); return ok({material:item,duplicate:false}); }
-        if (method==='apiUpload') { const section=payload.section||classify(payload.name,payload.mimeType,''); const item={id:uid(),name:payload.name,section,format:section==='Docs'?'Word':section==='Sheets'?'Excel':section==='Slides'?'PowerPoint':'Other File',provider:'Google Drive',openUrl:'https://drive.google.com/',downloadUrl:'https://drive.google.com/',canDownload:true,size:Math.floor(payload.dataBase64.length*3/4),position:items.filter(x=>x.section===section).length,syncStatus:'synced',updatedAt:new Date().toISOString()}; items.push(item); return ok({material:item,duplicate:false}); }
-        if (method==='apiUpdateMaterial') { const item=items.find(x=>x.id===payload.pageId); if(item){item.name=payload.name||item.name;item.section=payload.section||item.section;if(payload.url)item.openUrl=payload.url;} return ok({material:item}); }
+      if (method==='apiBootstrap') return ok({version:'v19-mock',task:{id:payload.taskPageId,name:'Виджет файлов v19 — стенд'},folderUrl:'https://drive.google.com/drive/folders/mockfolder123',maxUploadBytes:8388608,materials:items.filter(x=>!x.archived)});
+        if (method==='apiSyncTask') return ok({materials:items.filter(x=>!x.archived),syncedAt:new Date().toISOString()});
+        if (method==='apiCreateGoogle') { const format=payload.section==='Docs'?'Google Docs':payload.section==='Sheets'?'Google Sheets':'Google Slides'; const googleFileId=`mock-${uid()}`; const item={id:uid(),name:payload.name||`Новый ${format}`,section:payload.section,format,provider:'Google Drive',openUrl:'https://docs.google.com/',canDownload:false,googleFileId,folderId:'mockfolder123',widgetOwned:true,position:mockNextPosition(items,payload.section),syncStatus:'synced',updatedAt:now}; items.push(item); return ok({material:item,duplicate:false}); }
+        if (method==='apiAddLink') { const normalized=mockNormalizeUrl(payload.url);if(!normalized)return fail('INVALID_URL','Нужна корректная HTTPS-ссылка.'); const meta=mockLinkMeta(normalized,payload.section); const existing=items.find(x=>(meta.googleFileId&&x.googleFileId===meta.googleFileId)||x.openUrl===normalized); if(existing){if(existing.syncStatus==='deleted')return fail('MATERIAL_DELETED','Эта ссылка относится к физически удалённому материалу и не может быть восстановлена.');if(existing.archived){const nextPosition=mockNextPosition(items,existing.section);existing.archived=false;existing.syncStatus='synced';existing.position=nextPosition;return ok({material:existing,duplicate:true,restored:true});}return ok({material:existing,duplicate:true});} const item={id:uid(),name:payload.name||new URL(normalized).hostname,section:meta.section,format:meta.format,provider:meta.provider,openUrl:normalized,canDownload:false,googleFileId:meta.googleFileId,widgetOwned:false,position:mockNextPosition(items,meta.section),syncStatus:'synced',archived:false,updatedAt:new Date().toISOString()}; items.push(item); return ok({material:item,duplicate:false}); }
+        if (method==='apiUpload') { const section=payload.section||classify(payload.name,payload.mimeType,''); const item={id:uid(),name:payload.name,section,format:section==='Docs'?'Word':section==='Sheets'?'Excel':section==='Slides'?'PowerPoint':'Other File',provider:'Google Drive',openUrl:'https://drive.google.com/',downloadUrl:'https://drive.google.com/',canDownload:true,googleFileId:`mock-${uid()}`,folderId:'mockfolder123',widgetOwned:true,size:Math.floor(payload.dataBase64.length*3/4),position:mockNextPosition(items,section),syncStatus:'synced',updatedAt:new Date().toISOString()}; items.push(item); return ok({material:item,duplicate:false}); }
+        if (method==='apiUpdateMaterial') {
+          const item=items.find(x=>x.id===payload.pageId);
+          if(!item)return fail('MATERIAL_ID_REQUIRED','Материал не найден.');
+          if(item.archived)return fail('MATERIAL_ARCHIVED','Материал уже архивирован.');
+          if(item.syncStatus==='deleted')return fail('MATERIAL_DELETED','Физически удалённый материал нельзя изменить.');
+          const candidate={...item,name:payload.name||item.name,section:payload.section||item.section};
+          if(Object.prototype.hasOwnProperty.call(payload,'url')){
+            if(item.provider!=='External URL')return fail('URL_REPLACE_FORBIDDEN','Ссылку Google Drive нельзя заменить как внешнюю URL.');
+            const normalized=mockNormalizeUrl(payload.url);if(!normalized)return fail('INVALID_URL','Нужна корректная HTTPS-ссылка.');
+            const meta=mockLinkMeta(normalized,payload.section);
+            const collision=items.find(x=>x.id!==item.id&&((meta.googleFileId&&x.googleFileId===meta.googleFileId)||x.openUrl===normalized));
+            if(collision)return fail('DUPLICATE_MATERIAL','Такая ссылка уже сохранена в этой задаче.');
+            Object.assign(candidate,{openUrl:normalized,section:meta.section,format:meta.format,provider:meta.provider,googleFileId:meta.googleFileId,folderId:null,widgetOwned:false,canDownload:false,downloadUrl:null});
+          }
+          Object.assign(item,candidate);
+          return ok({material:item});
+        }
         if (method==='apiReorder') { payload.items.forEach(row=>{const item=items.find(x=>x.id===row.pageId);if(item){item.section=row.section;item.position=row.position;}}); return ok({count:payload.items.length}); }
-        if (method==='apiArchive') { const item=items.find(x=>x.id===payload.pageId); items=items.filter(x=>x.id!==payload.pageId); return ok({material:item,archived:true}); }
-        if (method==='apiDeletePhysical') { const item=items.find(x=>x.id===payload.pageId); items=items.filter(x=>x.id!==payload.pageId); return ok({material:item,deleted:true}); }
+        if (method==='apiArchive') { const item=items.find(x=>x.id===payload.pageId);if(!item)return fail('MATERIAL_ID_REQUIRED','Материал не найден.');if(item.syncStatus==='deleted')return ok({material:item,archived:true,deleted:true,duplicate:true});item.archived=true;item.syncStatus='archived';return ok({material:item,archived:true}); }
+        if (method==='apiRestore') { const item=items.find(x=>x.id===payload.pageId);if(!item)return fail('MATERIAL_ID_REQUIRED','Материал не найден.');if(item.syncStatus==='deleted')return fail('MATERIAL_DELETED','Физически удалённый материал нельзя восстановить.');const nextPosition=mockNextPosition(items,item.section);item.archived=false;item.syncStatus='synced';item.position=nextPosition;return ok({material:item,archived:false}); }
+        if (method==='apiDeletePhysical') { const item=items.find(x=>x.id===payload.pageId); if(!item||!item.widgetOwned||!item.googleFileId)return fail('DELETE_NOT_OWNED_BY_WIDGET','Физически удалять можно только файлы, созданные этим стендом.'); if(payload.confirmName!==item.name)return fail('CONFIRMATION_REQUIRED','Введите название файла целиком.');item.archived=true;item.syncStatus='deleted';return ok({material:item,deleted:true}); }
         return Promise.resolve({ok:false,error:{code:'MOCK_METHOD',message:`Mock не знает ${method}`,retryable:false}});
       } };
     }
@@ -444,7 +496,7 @@
     async function addLink(event) {
       event.preventDefault(); const url=$('linkUrl').value.trim(); const name=$('linkName').value.trim(); const section=$('linkSection').value;
       const submit=$('linkForm').querySelector('[type="submit"]');submit.disabled=true;
-      try{const data=await call('apiAddLink',{taskPageId,url,name,section:section||undefined,idempotencyKey:uid()});upsert(data.material);render();$('linkDialog').close();$('linkForm').reset();toast(data.duplicate?'Эта ссылка уже есть в задаче':'Ссылка сохранена');}
+      try{const data=await call('apiAddLink',{taskPageId,url,name,section:section||undefined,idempotencyKey:uid()});upsert(data.material);render();$('linkDialog').close();$('linkForm').reset();toast(data.restored?'Ссылка восстановлена из архива':(data.duplicate?'Эта ссылка уже есть в задаче':'Ссылка сохранена'));}
       catch(error){toast(error.message);}
       finally{submit.disabled=false;}
     }
@@ -476,7 +528,10 @@
       try{await call('apiDeletePhysical',{taskPageId,pageId:item.id,confirmName:$('deleteConfirm').value,idempotencyKey:uid()});state.materials=state.materials.filter(x=>x.id!==item.id);$('deleteDialog').close();render();toast('Физический файл удалён');}catch(error){toast(error.message);}}
 
     function moveCurrent(delta){const item=currentItem();if(!item)return;const list=state.materials.filter(x=>sectionFor(x)===sectionFor(item)).sort((a,b)=>(a.position??0)-(b.position??0));const index=list.findIndex(x=>x.id===item.id);const next=Math.max(0,Math.min(list.length-1,index+delta));if(index===next)return;[list[index],list[next]]=[list[next],list[index]];list.forEach((x,i)=>x.position=i);$('editDialog').close();render();persistOrder();}
-    async function persistOrder(){const items=[];SECTIONS.forEach(section=>state.materials.filter(x=>sectionFor(x)===section&&!String(x.id).startsWith('pending:')).sort((a,b)=>(a.position??0)-(b.position??0)).forEach((x,i)=>{x.position=i;items.push({pageId:x.id,section,position:i});}));render();try{await call('apiReorder',{taskPageId,items,idempotencyKey:uid()});toast('Порядок сохранён');}catch(error){toast(`${error.message} Загружаю серверный порядок.`);refresh();}}
+    function captureOrder(){const items=[];SECTIONS.forEach(section=>state.materials.filter(x=>sectionFor(x)===section&&!String(x.id).startsWith('pending:')).sort((a,b)=>(a.position??0)-(b.position??0)).forEach((x,i)=>{x.position=i;items.push({pageId:x.id,section,position:i});}));return items;}
+    async function persistOrder(){queuedOrder=captureOrder();render();if(orderSaveRunning)return;orderSaveRunning=true;
+      try{while(queuedOrder){const items=queuedOrder;queuedOrder=null;try{await call('apiReorder',{taskPageId,items,idempotencyKey:uid()});}catch(error){queuedOrder=null;toast(`${error.message} Загружаю серверный порядок.`);await refresh();return;}}toast('Порядок сохранён');}
+      finally{orderSaveRunning=false;if(queuedOrder)persistOrder();}}
 
     function handleGridClick(event){const service=event.target.closest('[data-service]');if(service){const section=service.dataset.service;if(section==='Drive'){if(state.folderUrl)window.open(state.folderUrl,'_blank','noopener');else toast('Папка задачи ещё не готова');}else createGoogle(section);return;}const collapse=event.target.closest('[data-collapse]');if(collapse){const section=collapse.dataset.collapse;state.collapsed.has(section)?state.collapsed.delete(section):state.collapsed.add(section);render();return;}const edit=event.target.closest('[data-edit]');if(edit){openEdit(edit.dataset.edit);return;}const retry=event.target.closest('[data-retry]');if(retry&&retryUpload.has(retry.dataset.retry))retryUpload.get(retry.dataset.retry)();}
     function handleDragStart(event){const card=event.target.closest('.material[data-id]');if(!card)return;state.dragId=card.dataset.id;card.classList.add('dragging');event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',state.dragId);}

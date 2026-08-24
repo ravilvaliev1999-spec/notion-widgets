@@ -32,15 +32,20 @@ var WidgetV19Core = (function () {
 
   function cleanMime(value) {
     var mime = String(value || 'application/octet-stream').trim().toLowerCase();
-    return /^[a-z0-9][a-z0-9!#$&^_.+\-]*\/[a-z0-9][a-z0-9!#$&^_.+\-]*$/.test(mime)
-      ? mime
-      : 'application/octet-stream';
+    if (!/^[a-z0-9][a-z0-9!#$&^_.+\-]*\/[a-z0-9][a-z0-9!#$&^_.+\-]*$/.test(mime)) return 'application/octet-stream';
+    if (/^application\/vnd\.google-apps\./.test(mime)) return 'application/octet-stream';
+    return mime;
   }
 
   function normalizeExternalUrl(value) {
     var raw = String(value || '').trim();
     if (!/^https:\/\//i.test(raw)) return null;
-    raw = raw.replace(/#.*$/, '');
+    var fragment = '';
+    var hashIndex = raw.indexOf('#');
+    if (hashIndex >= 0) {
+      fragment = raw.slice(hashIndex);
+      raw = raw.slice(0, hashIndex);
+    }
     var match = raw.match(/^(https:\/\/)([^/?#]+)([^?#]*)(?:\?([^#]*))?$/i);
     if (!match) return null;
     var host = match[2].toLowerCase().replace(/:443$/, '');
@@ -61,11 +66,14 @@ var WidgetV19Core = (function () {
       });
       query.sort();
     }
-    return 'https://' + host + path + (query.length ? '?' + query.join('&') : '');
+    return 'https://' + host + path + (query.length ? '?' + query.join('&') : '') + fragment;
   }
 
   function extractGoogleFileId(value) {
     var url = String(value || '');
+    var hostMatch = url.match(/^https:\/\/([^/?#]+)/i);
+    var host = hostMatch ? hostMatch[1].toLowerCase().replace(/:443$/, '') : '';
+    if (host !== 'drive.google.com' && host !== 'docs.google.com') return null;
     var patterns = [
       /\/d\/([a-zA-Z0-9_-]{10,})/,
       /[?&]id=([a-zA-Z0-9_-]{10,})/,
@@ -78,19 +86,26 @@ var WidgetV19Core = (function () {
     return null;
   }
 
+  function googleHost(value) {
+    var match = String(value || '').match(/^https:\/\/([^/?#]+)/i);
+    var host = match ? match[1].toLowerCase().replace(/:443$/, '') : '';
+    return host === 'drive.google.com' || host === 'docs.google.com' ? host : '';
+  }
+
   function classify(input) {
     input = input || {};
     var name = String(input.name || '').toLowerCase();
     var mime = String(input.mimeType || '').toLowerCase();
     var url = String(input.url || '').toLowerCase();
+    var host = googleHost(url);
 
-    if (/docs\.google\.com\/document\//.test(url) || mime === GOOGLE_MIME.Docs) {
+    if ((host === 'docs.google.com' && /\/document\//.test(url)) || mime === GOOGLE_MIME.Docs) {
       return { section: 'Docs', format: 'Google Docs', provider: 'Google Drive', knowledgeFormat: 'Файл' };
     }
-    if (/docs\.google\.com\/spreadsheets\//.test(url) || mime === GOOGLE_MIME.Sheets) {
+    if ((host === 'docs.google.com' && /\/spreadsheets\//.test(url)) || mime === GOOGLE_MIME.Sheets) {
       return { section: 'Sheets', format: 'Google Sheets', provider: 'Google Drive', knowledgeFormat: 'Файл' };
     }
-    if (/docs\.google\.com\/presentation\//.test(url) || mime === GOOGLE_MIME.Slides) {
+    if ((host === 'docs.google.com' && /\/presentation\//.test(url)) || mime === GOOGLE_MIME.Slides) {
       return { section: 'Slides', format: 'Google Slides', provider: 'Google Drive', knowledgeFormat: 'Файл' };
     }
     if (/\.(doc|docx|odt|rtf)(?:$|[?#])/.test(name) || /wordprocessingml|msword/.test(mime)) {
@@ -105,7 +120,7 @@ var WidgetV19Core = (function () {
     if (/\.(ppt|pptx|odp)(?:$|[?#])/.test(name) || /presentationml|ms-powerpoint/.test(mime)) {
       return { section: 'Slides', format: 'PowerPoint', provider: 'Google Drive', knowledgeFormat: 'Файл' };
     }
-    if (url && !/drive\.google\.com|docs\.google\.com/.test(url)) {
+    if (url && !host) {
       return { section: 'Drive', format: 'Link', provider: 'External URL', knowledgeFormat: 'Ссылка' };
     }
     return { section: 'Drive', format: input.isLink ? 'Link' : 'Other File', provider: input.isLink ? 'External URL' : 'Google Drive', knowledgeFormat: input.isLink ? 'Ссылка' : 'Файл' };
@@ -145,4 +160,3 @@ var WidgetV19Core = (function () {
     makeDownloadUrl: makeDownloadUrl
   });
 }());
-
