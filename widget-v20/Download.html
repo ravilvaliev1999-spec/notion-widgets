@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <base target="_self">
+  <meta charset="utf-8">
+  <meta name="referrer" content="no-referrer">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Скачивание файла</title>
+  <style>
+    html,body{margin:0;min-height:100%;background:#191919;color:#e6e6e4;font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    body{display:grid;place-items:center;min-height:100vh;text-align:center}
+    main{padding:24px}
+    p{margin:0;max-width:340px}
+  </style>
+</head>
+<body>
+  <main><p id="status" role="status" aria-live="polite">Готовлю скачивание…</p></main>
+  <script>
+  (()=>{
+    const MAX_DOWNLOAD_BYTES=20*1024*1024;
+    const SUCCESS_SETTLE_MS=2500;
+    const status=document.getElementById('status');
+    let downloadTicket='';
+
+    function setStatus(message){status.textContent=message;}
+
+    function notifyOpener(result,message){
+      const payload={type:'notion-widget-v20-download',downloadTicket,status:result};
+      if(message)payload.message=String(message).slice(0,500);
+      try{if(window.top&&window.top!==window)window.top.postMessage(payload,'*');}catch(_error){}
+      let opener=null;
+      try{if(window.top&&window.top.opener&&!window.top.opener.closed)opener=window.top.opener;}catch(_error){}
+      try{if(!opener&&window.opener&&!window.opener.closed)opener=window.opener;}catch(_error){}
+      try{if(opener)opener.postMessage(payload,'*');}catch(_error){}
+    }
+
+    function resolveRuntimeParams(){
+      return new Promise((resolve,reject)=>{
+        const urlApi=window.google&&google.script&&google.script.url;
+        if(!urlApi||typeof urlApi.getLocation!=='function'){reject(new Error('Сервис скачивания не запущен.'));return;}
+        let settled=false;
+        const timer=setTimeout(()=>{if(settled)return;settled=true;reject(new Error('Не удалось получить параметры скачивания.'));},7000);
+        try{urlApi.getLocation((location)=>{if(settled)return;settled=true;clearTimeout(timer);resolve(location&&location.parameter||{});});}
+        catch(error){clearTimeout(timer);reject(error);}
+      });
+    }
+
+    function callDownload(input){
+      return new Promise((resolve,reject)=>{
+        const runtime=window.google&&google.script&&google.script.run;
+        if(!runtime){reject(new Error('Нет связи с сервисом скачивания.'));return;}
+        runtime.withSuccessHandler(resolve).withFailureHandler((error)=>reject(new Error(error&&error.message||'Нет связи с сервисом скачивания.'))).apiDownload(input);
+      });
+    }
+
+    function base64Blob(base64,expectedSize){
+      const encoded=String(base64||''),expected=Number(expectedSize);
+      if(!Number.isSafeInteger(expected)||expected<0||expected>MAX_DOWNLOAD_BYTES)throw new Error('Файл превышает безопасный лимит скачивания.');
+      if(encoded.length>Math.ceil(MAX_DOWNLOAD_BYTES/3)*4||encoded.length%4!==0||!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded))throw new Error('Сервис вернул повреждённый файл.');
+      const padding=encoded.endsWith('==')?2:encoded.endsWith('=')?1:0;
+      if(encoded.length/4*3-padding!==expected)throw new Error('Размер скачанного файла не совпал с ожидаемым.');
+      const binary=atob(encoded);
+      const chunks=[];
+      for(let offset=0;offset<binary.length;offset+=32768){
+        const slice=binary.slice(offset,offset+32768),bytes=new Uint8Array(slice.length);
+        for(let index=0;index<slice.length;index+=1)bytes[index]=slice.charCodeAt(index);
+        chunks.push(bytes);
+      }
+      return new Blob(chunks,{type:'application/octet-stream'});
+    }
+
+    function safeDownloadName(value){
+      const name=String(value||'Файл').replace(/[\u0000-\u001f\u007f/\\]/g,' ').replace(/\s+/g,' ').trim();
+      return (name||'Файл').slice(0,180);
+    }
+
+    async function startDownload(){
+      let objectUrl='';
+      try{
+        const params=await resolveRuntimeParams();
+        downloadTicket=String(params.downloadTicket||'');
+        const taskPageId=String(params.task||params.taskPageId||'');
+        const accessToken=String(params.accessToken||'');
+        const pageId=String(params.downloadPageId||'');
+        if(!/^[A-Za-z0-9_-]{32,160}$/.test(downloadTicket)||!/^[0-9a-fA-F-]{32,36}$/.test(taskPageId)||!/^[0-9a-fA-F-]{32,36}$/.test(pageId)||!/^[A-Za-z0-9._~-]{32,256}$/.test(accessToken))throw new Error('Параметры скачивания повреждены.');
+        const response=await callDownload({taskPageId,pageId,accessToken});
+        if(!response||!response.ok)throw new Error(response&&response.error&&response.error.message||'Файл не удалось получить.');
+        const data=response.data||{};
+        objectUrl=URL.createObjectURL(base64Blob(data.base64,data.size));
+        data.base64='';
+        const anchor=document.createElement('a');
+        anchor.href=objectUrl;anchor.download=safeDownloadName(data.name);anchor.target='_self';anchor.hidden=true;
+        document.body.appendChild(anchor);anchor.click();anchor.remove();
+        setStatus('Скачивание началось. Окно закроется автоматически.');
+        setTimeout(()=>{URL.revokeObjectURL(objectUrl);notifyOpener('success');try{window.top.close();}catch(_error){}},SUCCESS_SETTLE_MS);
+      }catch(error){
+        if(objectUrl)URL.revokeObjectURL(objectUrl);
+        const message=error&&error.message||'Не удалось скачать файл.';
+        setStatus(message);notifyOpener('error',message);
+      }
+    }
+
+    startDownload();
+  })();
+  </script>
+</body>
+</html>

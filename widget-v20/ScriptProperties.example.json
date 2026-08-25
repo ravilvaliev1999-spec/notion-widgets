@@ -1,0 +1,12 @@
+{
+  "ALLOWED_EMAIL": "owner@example.com",
+  "NOTION_TOKEN": "set-in-apps-script-properties-not-in-code",
+  "NOTION_DATA_SOURCE_ID": "00000000-0000-0000-0000-000000000000",
+  "AUTHORIZED_TASK_PAGE_ID": "00000000-0000-0000-0000-000000000000",
+  "WIDGET_ACCESS_TOKEN_SHA256": "sha256-of-a-random-32-byte-access-token",
+  "ROOT_DRIVE_FOLDER_ID": "created-by-adminSetupRootFolder",
+  "DENIED_NOTION_PAGE_IDS": "",
+  "DENIED_NOTION_DATA_SOURCE_IDS": "",
+  "MAX_UPLOAD_BYTES": "8388608",
+  "NOTION_VERSION": "2026-03-11"
+}

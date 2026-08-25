@@ -1,0 +1,333 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const text = (name) => fs.readFileSync(path.join(root, name), 'utf8');
+
+test('new runtime files contain no hard-coded deployment URL or credential-shaped assignment', () => {
+  const runtime = ['Index.html', 'Download.html', 'Code.gs', 'Core.js', 'Registry.gs'].map(text).join('\n');
+  assert.doesNotMatch(runtime, /script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+/);
+  assert.doesNotMatch(runtime, /(?:NOTION_TOKEN|SECRET|REFRESH_TOKEN)\s*=\s*['\"][^'\"]+['\"]/i);
+  assert.doesNotMatch(runtime, /Bearer\s+[A-Za-z0-9._-]{16,}/i);
+});
+
+test('frontend has no browser persistence as source of truth', () => {
+  const frontend = text('Index.html');
+  assert.doesNotMatch(frontend, /localStorage|indexedDB|sessionStorage/);
+  assert.match(frontend, /apiBootstrap/);
+});
+
+test('mock mode is limited to local preview and the published canary host', () => {
+  const frontend = text('Index.html');
+  assert.match(frontend, /ravilvaliev1999-spec\.github\.io/);
+  assert.match(frontend, /mockRequested\s*=\s*requestedMock\s*&&\s*\(isLocal\s*\|\|\s*isPublishedCanary\)/);
+});
+
+test('new staging runtime creates no visible TEST-labelled objects', () => {
+  const runtime = ['Index.html', 'Code.gs'].map(text).join('\n');
+  assert.doesNotMatch(runtime, />\s*TEST(?:\s|<)/i);
+  assert.doesNotMatch(runtime, /Notion Widget v19\s*[—-]\s*TEST/i);
+});
+
+test('backend is fail-closed on identity, data source and task ownership', () => {
+  const backend = text('Code.gs');
+  assert.match(backend, /w19AssertViewer_/);
+  assert.match(backend, /w19AssertAllowedDataSource_/);
+  assert.match(backend, /w19AssertTaskPage_/);
+  assert.match(backend, /w19AssertMaterialForTask_/);
+  assert.match(backend, /w19WithIdempotency_/);
+});
+
+test('download acceleration caches only server-derived task material coordinates for at most two minutes', () => {
+  const backend = text('Code.gs');
+  const cache = backend.slice(backend.indexOf('function w20DownloadMaterialCacheKey_'), backend.indexOf('function w19AssertMaterialForTask_'));
+  const ttl = Number((backend.match(/W20_DOWNLOAD_MATERIAL_CACHE_TTL_SECONDS\s*=\s*(\d+)/) || [])[1]);
+  assert.ok(ttl > 0 && ttl <= 120);
+  assert.match(cache, /page\.parent/);
+  assert.match(cache, /W19_P\.TYPE/);
+  assert.match(cache, /W19_P\.INSIDE/);
+  assert.match(cache, /W19_P\.ARCHIVE/);
+  assert.match(cache, /material\.widgetOwnedBinary/);
+  assert.match(cache, /cfg\.deniedPageIds/);
+  assert.match(cache, /dataSourceId/);
+  assert.doesNotMatch(cache, /accessToken|notionToken|attachmentUrl|downloadUrl|sourceUrl/);
+});
+
+test('download cache hit avoids Notion after capability authorization and always revalidates current Drive ownership', () => {
+  const backend = text('Code.gs');
+  const body = backend.slice(backend.indexOf('function apiDownload'), backend.indexOf('function apiSyncTask'));
+  const auth = body.indexOf('w19AuthorizedConfig_');
+  const cache = body.indexOf('w20GetCachedDownloadMaterial_');
+  const miss = body.indexOf('if (!material)');
+  const markers = body.indexOf('w20FindOwnedBinaryMaterialByMarkers_');
+  const task = body.indexOf('w19AssertTaskPage_');
+  const fallback = body.indexOf('w19AssertMaterialForTask_');
+  const ownership = body.indexOf('w19AssertOwnedBinary_');
+  assert.ok(auth !== -1 && auth < cache);
+  assert.ok(cache < miss && miss < markers && markers < task);
+  assert.ok(task < fallback && fallback < ownership);
+  assert.match(body, /if \(!material\)/);
+  assert.match(body, /var task = \{ id: taskId, name: 'Задача' \}/);
+});
+
+test('bootstrap and sync seed the download cache while archive, update and delete invalidate it', () => {
+  const backend = text('Code.gs');
+  const bootstrap = backend.slice(backend.indexOf('function apiBootstrap'), backend.indexOf('function apiCreateGoogle'));
+  const sync = backend.slice(backend.indexOf('function apiSyncTask'), backend.indexOf('/* ========================= Admin-only setup'));
+  const update = backend.slice(backend.indexOf('function apiUpdateMaterial'), backend.indexOf('function apiReorder'));
+  const upload = backend.slice(backend.indexOf('function apiUpload'), backend.indexOf('function apiUpdateMaterial'));
+  const remove = backend.slice(backend.indexOf('function apiDeletePhysical'), backend.indexOf('function apiDownload'));
+  const archive = backend.slice(backend.indexOf('function w19SetArchiveState_'), backend.indexOf('function w19Audit_'));
+  assert.match(bootstrap, /w20CacheDownloadMaterials_\(task\.id, pages, cfg\)/);
+  assert.match(sync, /w20CacheDownloadMaterials_\(task\.id, pages, cfg\)/);
+  assert.match(upload, /w20CacheDownloadMaterials_\(task\.id, \[freshPage\], cfg\)/);
+  assert.match(update, /w20InvalidateDownloadMaterialCache_\(task\.id, materialId\)/);
+  assert.match(remove, /w20InvalidateDownloadMaterialCache_\(task\.id, materialId\)/);
+  assert.match(archive, /w20InvalidateDownloadMaterialCache_\(task\.id, materialId\)/);
+});
+
+test('archiving revokes stale download couriers through the private Drive marker', () => {
+  const backend = text('Code.gs');
+  const archive = backend.slice(backend.indexOf('function w19SetArchiveState_'), backend.indexOf('function w19Audit_'));
+  const markerFallback = backend.slice(backend.indexOf('function w20FindOwnedBinaryMaterialByMarkers_'), backend.indexOf('function w19AssertOwnedBinary_'));
+  const ownershipGuard = backend.slice(backend.indexOf('function w19AssertOwnedBinary_'), backend.indexOf('function w19IsDriveNotFound_'));
+  const revoke = archive.indexOf("if (archived) w20SetDriveMaterialState_(material, task.id, 'archived')");
+  const notionWrite = archive.indexOf('var updated = w19UpdateNotionPage_');
+  const restore = archive.indexOf("if (!archived) w20SetDriveMaterialState_(updatedMaterial, task.id, 'active')");
+  assert.ok(revoke !== -1 && revoke < notionWrite, 'archive must revoke Drive before the Notion PATCH');
+  assert.ok(restore > notionWrite, 'restore must not reactivate Drive before the Notion PATCH succeeds');
+  assert.match(markerFallback, /w20IsDriveMaterialActive_\(driveProps\)/);
+  assert.match(ownershipGuard, /w20IsDriveMaterialActive_\(driveProps\)/);
+});
+
+test('Notion API attempts are globally paced and never hold the rate lock across UrlFetch', () => {
+  const backend = text('Code.gs');
+  const helper = backend.slice(backend.indexOf('function w19ReserveNotionRequestSlot_'), backend.indexOf('function w19NotionRequest_'));
+  const request = backend.slice(backend.indexOf('function w19NotionRequest_'), backend.indexOf('function w19CreateAndSendNotionUpload_'));
+  assert.match(backend, /W19_NOTION_RATE_INTERVAL_MS\s*=\s*350/);
+  assert.match(helper, /LockService\.getScriptLock\(\)/);
+  assert.match(helper, /CacheService\.getScriptCache\(\)/);
+  assert.match(helper, /lock\.tryLock\(W19_NOTION_RATE_LOCK_WAIT_MS\)/);
+  assert.match(helper, /NOTION_RATE_LIMIT_BUSY[\s\S]*true/);
+  assert.match(helper, /earliestAt\s*=\s*previousAt\s*\+\s*W19_NOTION_RATE_INTERVAL_MS/);
+  assert.match(helper, /Utilities\.sleep\(earliestAt\s*-\s*now\)/);
+  assert.match(helper, /finally\s*\{\s*lock\.releaseLock\(\);\s*\}/);
+  assert.doesNotMatch(helper, /UrlFetchApp|notionToken|Logger|console/);
+  assert.ok(request.indexOf('w19ReserveNotionRequestSlot_();') < request.indexOf('UrlFetchApp.fetch(url, options)'));
+});
+
+test('fast title polling uses short-lived signed server claims and skips Notion when Drive is unchanged', () => {
+  const backend = text('Code.gs');
+  const claims = backend.slice(backend.indexOf('function w20DrivePollBaseline_'), backend.indexOf('function w19AssertAllowedDataSource_'));
+  const poll = backend.slice(backend.indexOf('function apiPollDriveMetadata'), backend.indexOf('function apiSyncTask'));
+  assert.match(backend, /W20_DRIVE_POLL_CLAIM_TTL_SECONDS\s*=\s*60/);
+  assert.match(claims, /computeHmacSha256Signature/);
+  assert.match(claims, /currentName/);
+  assert.match(claims, /safeEqual/);
+  assert.ok(poll.indexOf('w20DriveMetadataNeedsNotionWrite_') < poll.indexOf('w19UpdateNotionPage_'));
+  assert.match(poll, /if \(w20DriveMetadataNeedsNotionWrite_\([\s\S]*w19UpdateNotionPage_/);
+  assert.doesNotMatch(poll, /w19AssertTaskPage_|w19AssertMaterialForTask_|w19QueryTaskMaterials_/);
+});
+
+test('scheduled sync checks Drive metadata before spending a Notion page GET', () => {
+  const backend = text('Code.gs');
+  const sync = backend.slice(backend.indexOf('function w19SyncOnePage_'), backend.indexOf('function w19MarkSyncError_'));
+  assert.ok(sync.indexOf('w20DriveMetadataNeedsNotionWrite_') < sync.indexOf("w19NotionRequest_('get'"));
+  assert.match(sync, /if \(!w20DriveMetadataNeedsNotionWrite_\(snapshot, driveData\)\) return page/);
+});
+
+test('schema preflight covers every context property written on material creation', () => {
+  const backend = text('Code.gs');
+  assert.match(backend, /'\[SYS\] Context path':\s*'rich_text'/);
+  assert.match(backend, /'\[SYS\] Ancestor IDs':\s*'rich_text'/);
+  assert.match(backend, /'\[SYS\] Глубина':\s*'number'/);
+  assert.match(backend, /'\[SYS\] Контекст: Сфера':\s*'relation'/);
+  assert.match(backend, /'\[SYS\] Контекст: Направление':\s*'relation'/);
+  assert.match(backend, /'\[SYS\] Контекст: Проект':\s*'relation'/);
+  assert.match(backend, /'\[SYS\] Контекст обновлён':\s*'date'/);
+});
+
+test('physical deletion is limited to files created by widget v19 for the task', () => {
+  const backend = text('Code.gs');
+  assert.match(backend, /DELETE_NOT_OWNED_BY_WIDGET/);
+  assert.match(backend, /driveProps\.widgetVersion\s*!==\s*'v19'/);
+  assert.match(backend, /driveProps\.taskPageId\s*!==\s*WidgetV19Core\.compactUuid\(task\.id\)/);
+});
+
+test('binary uploads cannot request Google-native conversion MIME types', () => {
+  const core = text('Core.js');
+  assert.match(core, /\^application\\\/vnd\\\.google-apps\\\./);
+  assert.match(core, /return 'application\/octet-stream'/);
+});
+
+test('physical deletion is replayable after a partial Drive or Notion failure', () => {
+  const backend = text('Code.gs');
+  const body = backend.slice(backend.indexOf('function apiDeletePhysical'), backend.indexOf('function apiSyncTask'));
+  assert.ok(body.indexOf('w19WithIdempotency_') < body.indexOf('w19AssertMaterialForTask_'));
+  assert.ok(body.indexOf("w20SetDriveMaterialState_(material, task.id, 'deleting')") < body.indexOf("w19Select_('deleting')"));
+  assert.ok(body.indexOf("w19Select_('deleting')") < body.indexOf('Drive.Files.delete'));
+  assert.match(body, /w19StableIdempotency_/);
+  assert.match(body, /w19WithMutationLock_/);
+  assert.match(body, /w19IsDriveNotFound_/);
+  assert.match(body, /material\.syncStatus\s*===\s*'deleted'/);
+});
+
+test('idempotency marker repair preserves terminal Drive material states', () => {
+  const backend = text('Code.gs');
+  const marker = backend.slice(backend.indexOf('function w19MarkDriveNotionPage_'), backend.indexOf('function w19GetDriveMetadata_'));
+  assert.match(backend, /w19MarkDriveNotionPage_\([^\n]+w20DriveStateForMaterial_\(existingMaterial\)\)/);
+  assert.match(backend, /w19MarkDriveNotionPage_\([^\n]+w20DriveStateForMaterial_\(byFileMaterial\)\)/);
+  assert.match(marker, /currentState && currentState !== 'active' && nextState === 'active'/);
+});
+
+test('Drive not-found survives retry wrapping and returns null to replay logic', () => {
+  const backend = text('Code.gs');
+  assert.match(backend, /function w19IsDriveNotFound_[\s\S]*err\.details\s*&&\s*err\.details\.reason/);
+  assert.match(backend, /DRIVE_NOT_FOUND/);
+  assert.match(backend, /if \(w19IsDriveNotFound_\(err\)\) return null/);
+});
+
+test('stale idempotency attempts cannot downgrade a newer pending or done entry', () => {
+  const backend = text('Code.gs');
+  assert.match(backend, /attemptId\s*=\s*Utilities\.getUuid\(\)/);
+  assert.match(backend, /currentFailed\.status\s*===\s*'pending'\s*&&\s*currentFailed\.attemptId\s*===\s*attemptId/);
+  assert.match(backend, /currentDone\.status\s*===\s*'pending'\s*&&\s*currentDone\.attemptId\s*===\s*attemptId/);
+});
+
+test('task-folder creation and material creation are serialized with position assignment', () => {
+  const backend = text('Code.gs');
+  const bootstrapBody = backend.slice(backend.indexOf('function apiBootstrap'), backend.indexOf('function apiCreateGoogle'));
+  const createBody = backend.slice(backend.indexOf('function apiCreateGoogle'), backend.indexOf('function apiAddLink'));
+  const uploadBody = backend.slice(backend.indexOf('function apiUpload'), backend.indexOf('function apiUpdateMaterial'));
+  assert.ok(bootstrapBody.indexOf('w19WithMutationLock_') < bootstrapBody.indexOf('w19EnsureTaskFolder_'));
+  assert.ok(createBody.indexOf('w19WithMutationLock_') < createBody.indexOf('w19EnsureTaskFolder_'));
+  assert.ok(createBody.indexOf('w19WithMutationLock_') < createBody.indexOf('w19NextPosition_'));
+  assert.ok(uploadBody.indexOf('w19WithMutationLock_') < uploadBody.indexOf('w19EnsureTaskFolder_'));
+  assert.ok(uploadBody.indexOf('w19WithMutationLock_') < uploadBody.indexOf('w19NextPosition_'));
+});
+
+test('scheduled sync uses a run lease and a stable pagination sort', () => {
+  const backend = text('Code.gs');
+  const body = backend.slice(backend.indexOf('function scheduledSync'), backend.indexOf('function w19AuthorizedConfig_'));
+  assert.match(body, /w19ClaimScheduledSync_/);
+  assert.match(body, /w19FinishScheduledSync_/);
+  assert.match(body, /property: W19_P\.INSIDE, relation: \{ contains: cfg\.authorizedTaskPageId \}/);
+  assert.match(body, /timestamp:\s*'created_time'/);
+  assert.doesNotMatch(body, /timestamp:\s*'last_edited_time'/);
+  assert.match(body, /current\.token\s*!==\s*token/);
+});
+
+test('scheduled sync claims its lease before schema access and releases it from the same try/finally', () => {
+  const backend = text('Code.gs');
+  const start = backend.indexOf('function scheduledSync');
+  const end = backend.indexOf('\nfunction w19ClaimScheduledSync_', start);
+  const body = backend.slice(start, end);
+  const claim = body.indexOf('var lease = w19ClaimScheduledSync_();');
+  const skip = body.indexOf("if (!lease) return { ok: true, skipped: true, reason: 'already_running' };");
+  const guardedTry = body.indexOf('try {', skip);
+  const schema = body.indexOf('w19AssertSchema_(cfg);');
+  const guardedFinally = body.indexOf('} finally {', schema);
+  const finish = body.indexOf('w19FinishScheduledSync_(lease.token, commitCursor, nextCursor);');
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  assert.ok(claim !== -1 && claim < skip, 'lease must be claimed before the overlap skip');
+  assert.ok(skip < guardedTry && guardedTry < schema, 'schema access must begin only inside the lease-holder try block');
+  assert.ok(schema < guardedFinally && guardedFinally < finish, 'schema access must be covered by lease release in finally');
+});
+
+test('sync and delete share the mutation lock and sync refreshes its page snapshot', () => {
+  const backend = text('Code.gs');
+  const body = backend.slice(backend.indexOf('function w19SyncOnePage_'), backend.indexOf('function w19MarkSyncError_'));
+  assert.match(body, /w19WithMutationLock_/);
+  assert.match(body, /\/v1\/pages\//);
+});
+
+test('update and reorder refresh materials under the shared mutation lock', () => {
+  const backend = text('Code.gs');
+  const updateBody = backend.slice(backend.indexOf('function apiUpdateMaterial'), backend.indexOf('function apiReorder'));
+  const reorderBody = backend.slice(backend.indexOf('function apiReorder'), backend.indexOf('function apiArchive'));
+  assert.ok(updateBody.indexOf('w19WithMutationLock_') < updateBody.indexOf('w19AssertMaterialForTask_'));
+  assert.match(updateBody, /current\.syncStatus\s*===\s*'deleting'/);
+  assert.ok(reorderBody.indexOf('w19WithMutationLock_') < reorderBody.indexOf('w19AssertMaterialForTask_'));
+  assert.match(reorderBody, /current\.syncStatus\s*===\s*'deleting'/);
+});
+
+test('external URL updates atomically reclassify metadata and reject collisions', () => {
+  const backend = text('Code.gs');
+  const body = backend.slice(backend.indexOf('function apiUpdateMaterial'), backend.indexOf('function apiReorder'));
+  assert.match(body, /WidgetV19Core\.classify\(\{ url: url, isLink: true \}\)/);
+  assert.match(body, /WidgetV19Core\.extractGoogleFileId\(url\)/);
+  assert.match(body, /w19FindMaterialCollision_/);
+  assert.match(body, /W19_P\.GOOGLE_FILE_ID/);
+  assert.match(body, /W19_P\.PROVIDER/);
+  assert.match(body, /W19_P\.FILE_FORMAT/);
+  assert.match(body, /W19_P\.KNOWLEDGE_FORMAT/);
+  assert.match(body, /DUPLICATE_MATERIAL/);
+});
+
+test('archive and restore cannot overwrite or revive deleting and deleted materials', () => {
+  const backend = text('Code.gs');
+  const body = backend.slice(backend.indexOf('function w19SetArchiveState_'), backend.indexOf('function w19Audit_'));
+  assert.ok(body.indexOf('w19WithMutationLock_') < body.indexOf('w19AssertMaterialForTask_'));
+  assert.match(body, /material\.syncStatus\s*===\s*'deleting'/);
+  assert.match(body, /material\.syncStatus\s*===\s*'deleted'/);
+  assert.match(body, /if \(!archived\) throw new W19Error_\('MATERIAL_DELETED'/);
+  assert.match(body, /if \(!archived\) props\[W19_P\.POSITION\]/);
+});
+
+test('Google links dedupe by file id under a serialized mutation lock', () => {
+  const backend = text('Code.gs');
+  const body = backend.slice(backend.indexOf('function apiAddLink'), backend.indexOf('function apiUpload'));
+  assert.match(body, /w19WithMutationLock_/);
+  assert.match(body, /w19FindMaterialByGoogleFile_\(task\.id,\s*googleFileId/);
+  assert.match(body, /existingMaterial\.archived/);
+  assert.match(body, /restored:\s*true/);
+  assert.match(body, /existingMaterial\.syncStatus\s*===\s*'deleted'/);
+  assert.match(body, /restoreProps\[W19_P\.POSITION\]/);
+});
+
+test('hosted mock exposes owned files and classifies Google links like backend', () => {
+  const frontend = text('Index.html');
+  assert.match(frontend, /widgetOwned:true/);
+  assert.match(frontend, /mockNormalizeUrl\(payload\.url\)/);
+  assert.match(frontend, /mockLinkMeta\(normalized,payload\.section\)/);
+  assert.match(frontend, /host!==['"]drive\.google\.com['"]&&host!==['"]docs\.google\.com['"]/);
+  assert.ok(frontend.includes("host==='docs.google.com'&&/\\/document\\//"));
+  assert.match(frontend, /\\\/folders\\\/\(\[a-zA-Z0-9_-\]\{10,\}\)/);
+  assert.ok(frontend.includes("folderUrl:'https:\\/\\/drive.google.com/drive/folders/mockfolder123'"));
+  assert.match(frontend, /apiUpdateMaterial[\s\S]*mockLinkMeta\(normalized,payload\.section\)/);
+  assert.match(frontend, /apiUpdateMaterial[\s\S]*DUPLICATE_MATERIAL/);
+  const mockUpdate = frontend.slice(frontend.indexOf("if (method==='apiUpdateMaterial')"), frontend.indexOf("if (method==='apiReorder')"));
+  assert.ok(mockUpdate.indexOf('DUPLICATE_MATERIAL') < mockUpdate.lastIndexOf('Object.assign(item,candidate)'));
+  assert.match(frontend, /apiAddLink[\s\S]*restored:true/);
+  assert.match(frontend, /apiDeletePhysical[\s\S]*syncStatus='deleted'/);
+  assert.match(frontend, /function mockNextPosition\(items,section\)/);
+  assert.match(frontend, /position:mockNextPosition\(items,meta\.section\)/);
+  assert.match(frontend, /DELETE_NOT_OWNED_BY_WIDGET/);
+});
+
+test('rapid reorder gestures are single-flight and coalesce to the latest snapshot', () => {
+  const frontend = text('Index.html');
+  const body = frontend.slice(frontend.indexOf('function captureOrder'), frontend.indexOf('function handleGridClick'));
+  assert.match(body, /queuedOrder=captureOrder\(\)/);
+  assert.match(body, /if\(orderSaveRunning\)return/);
+  assert.match(body, /while\(queuedOrder\)/);
+  assert.ok(body.indexOf('queuedOrder=null') < body.indexOf("await call('apiReorder'"));
+  assert.match(body, /finally\{orderSaveRunning=false;if\(queuedOrder\)persistOrder\(\)/);
+});
+
+test('backend and inline frontend scripts are syntactically valid JavaScript', () => {
+  assert.doesNotThrow(() => new Function(text('Code.gs')));
+  assert.doesNotThrow(() => new Function(text('Core.js')));
+  assert.doesNotThrow(() => new Function(text('Registry.gs')));
+  const html = text('Index.html');
+  const downloadHtml = text('Download.html');
+  for (const source of [html, downloadHtml]) {
+    const scripts = [...source.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+    assert.ok(scripts.length > 0);
+    scripts.forEach((script) => assert.doesNotThrow(() => new Function(script)));
+  }
+});
