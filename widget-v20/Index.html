@@ -677,8 +677,9 @@
     if(!isEmbedBridgeMode())return [];
     return SECTIONS.map((section)=>{
       const card=document.querySelector(`.group-card[data-service="${section}"]`);if(!card)return null;
-      const rect=card.getBoundingClientRect();
-      return {section,left:rect.left,top:rect.top,width:rect.width,height:rect.height};
+      const pencil=card.querySelector('[data-upload-section]');if(!pencil)return null;
+      const rect=card.getBoundingClientRect(),pencilRect=pencil.getBoundingClientRect();
+      return {section,left:rect.left,top:rect.top,width:rect.width,height:rect.height,pencil:{left:pencilRect.left,top:pencilRect.top,width:pencilRect.width,height:pencilRect.height}};
     }).filter(Boolean);
   }
 

@@ -41,10 +41,11 @@ test('wrapper binds one authenticated child channel without relaying local file 
 
 test('credentialless create uses a synchronous wrapper-owned popup', () => {
   assert.match(wrapper, /class="interaction-slot" data-slot="Docs"/);
-  assert.match(wrapper, /primary-control-main \{ inset: 0 28px 0 0/);
-  assert.match(wrapper, /primary-control-pencil-top \{ top: 0; right: 0; width: 28px; height: 6px/);
-  assert.match(wrapper, /primary-control-pencil-right \{ top: 6px; right: 0; width: 6px; height: 22px/);
-  assert.match(wrapper, /primary-control-pencil-bottom \{ top: 28px; right: 0; bottom: 0; width: 28px/);
+  assert.match(wrapper, /primary-control-pencil-top/);
+  assert.match(wrapper, /primary-control-pencil-bottom/);
+  assert.match(wrapperJs, /\['main', 'pencil-top', 'pencil-right', 'pencil-bottom'\]/);
+  assert.match(wrapperJs, /const pencilLeft=Number\(row\.pencil\.left\)-left,pencilTop=Number\(row\.pencil\.top\)-top/);
+  assert.match(wrapperJs, /\{left:pencilRight,top:pencilTop,width:width-pencilRight,height:pencilHeight\}/);
   assert.match(wrapperJs, /const popup = window\.open\('about:blank', '_blank'\)/);
   assert.match(wrapperJs, /type: 'notion-widget-v20-primary-action'/);
   assert.match(wrapperJs, /record\.popup\.location\.replace\(data\.openUrl\)/);
@@ -56,6 +57,7 @@ test('credentialless create uses a synchronous wrapper-owned popup', () => {
   assert.match(frontend, /if\(isEmbedBridgeMode\(\)\)return;/);
   assert.match(frontend, /card\.tabIndex=-1/);
   assert.match(frontend, /type:'notion-widget-v20-primary-geometry'/);
+  assert.match(frontend, /pencilRect=pencil\.getBoundingClientRect\(\)/);
 });
 
 test('wrapper runtime opens the placeholder before sending one authenticated create request', () => {
@@ -140,13 +142,24 @@ test('wrapper runtime opens the placeholder before sending one authenticated cre
       type: 'notion-widget-v20-bridge-ready',
       embedNonce,
       instanceId: '33333333-3333-4333-8333-333333333333',
-      geometry: ['Drive', 'Docs', 'Sheets', 'Slides'].map((section, index) => ({ section, left: index * 220, top: 0, width: 208, height: 70 }))
+      geometry: ['Drive', 'Docs', 'Sheets', 'Slides'].map((section, index) => ({
+        section,
+        left: index * 220,
+        top: 0,
+        width: 208,
+        height: 70,
+        pencil: { left: index * 220 + 180, top: 7, width: 22, height: 22 }
+      }))
     }
   });
   assert.equal(interactionGrid.hidden, false);
   const docsSlot = slots.find((slot) => slot.dataset.slot === 'Docs');
   assert.equal(docsSlot.style.left, '220px');
   assert.equal(docsSlot.style.height, '70px');
+  assert.equal(docsSlot.children[0].style.width, '180px');
+  assert.equal(docsSlot.children[1].style.height, '7px');
+  assert.equal(docsSlot.children[2].style.left, '202px');
+  assert.equal(docsSlot.children[3].style.top, '29px');
 
   const docsPrimary = docsSlot.children[0];
   docsPrimary.listeners.click();

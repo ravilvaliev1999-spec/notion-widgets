@@ -87,14 +87,34 @@
     for (const section of SECTIONS) {
       const row = bySection.get(section);
       const numbers = row && [row.left, row.top, row.width, row.height].map(Number);
-      if (!numbers || numbers.some((number) => !Number.isFinite(number) || Math.abs(number) > 100000) || numbers[2] < 40 || numbers[3] < 30) return false;
+      const pencil = row && row.pencil;
+      const pencilNumbers = pencil && [pencil.left, pencil.top, pencil.width, pencil.height].map(Number);
+      if (!numbers || !pencilNumbers || numbers.concat(pencilNumbers).some((number) => !Number.isFinite(number) || Math.abs(number) > 100000) || numbers[2] < 40 || numbers[3] < 30 || pencilNumbers[2] < 16 || pencilNumbers[3] < 16) return false;
+      const relativeLeft = pencilNumbers[0] - numbers[0];
+      const relativeTop = pencilNumbers[1] - numbers[1];
+      if (relativeLeft < 0 || relativeTop < 0 || relativeLeft + pencilNumbers[2] > numbers[2] || relativeTop + pencilNumbers[3] > numbers[3]) return false;
     }
     interactionGrid.querySelectorAll('[data-slot]').forEach((slot) => {
       const row = bySection.get(slot.dataset.slot);
-      slot.style.left = `${Number(row.left)}px`;
-      slot.style.top = `${Number(row.top)}px`;
-      slot.style.width = `${Number(row.width)}px`;
-      slot.style.height = `${Number(row.height)}px`;
+      const left=Number(row.left),top=Number(row.top),width=Number(row.width),height=Number(row.height);
+      const pencilLeft=Number(row.pencil.left)-left,pencilTop=Number(row.pencil.top)-top;
+      const pencilWidth=Number(row.pencil.width),pencilHeight=Number(row.pencil.height);
+      const pencilRight=pencilLeft+pencilWidth,pencilBottom=pencilTop+pencilHeight;
+      slot.style.left = `${left}px`;
+      slot.style.top = `${top}px`;
+      slot.style.width = `${width}px`;
+      slot.style.height = `${height}px`;
+      const regions=[
+        {left:0,top:0,width:pencilLeft,height},
+        {left:pencilLeft,top:0,width:width-pencilLeft,height:pencilTop},
+        {left:pencilRight,top:pencilTop,width:width-pencilRight,height:pencilHeight},
+        {left:pencilLeft,top:pencilBottom,width:width-pencilLeft,height:height-pencilBottom}
+      ];
+      Array.from(slot.children).forEach((control,index)=>{
+        const region=regions[index];if(!region)return;
+        control.style.left=`${region.left}px`;control.style.top=`${region.top}px`;
+        control.style.width=`${Math.max(0,region.width)}px`;control.style.height=`${Math.max(0,region.height)}px`;
+      });
     });
     interactionGrid.hidden = false;
     return true;
