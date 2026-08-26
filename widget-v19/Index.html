@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="robots" content="noindex,nofollow">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <title>Файлы задачи — v19 стенд</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #191919;
+      --panel: #202020;
+      --panel-2: #282828;
+      --text: rgba(255,255,255,.92);
+      --muted: rgba(255,255,255,.52);
+      --faint: rgba(255,255,255,.30);
+      --border: rgba(255,255,255,.09);
+      --focus: #8ab4f8;
+      --danger: #ff8d8d;
+      --success: #81c995;
+      --drive-bg: #2f2f2f; --drive-bd: #4a4a4a; --drive-tx: #ededec; --drive-sub: #a3a3a2;
+      --docs-bg: #1f3b54; --docs-bd: #3c546a; --docs-tx: #d5e8f9; --docs-sub: #8fa6ba;
+      --sheets-bg: #1c3829; --sheets-bd: #395245; --sheets-tx: #d5f2df; --sheets-sub: #88a794;
+      --slides-bg: #5c3a1e; --slides-bd: #71533b; --slides-tx: #ffe1c5; --slides-sub: #b99b81;
+      --ease: cubic-bezier(.2,.8,.3,1);
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        color-scheme: light;
+        --bg: #fff;
+        --panel: #f6f5f4;
+        --panel-2: #efeeec;
+        --text: rgba(32,31,30,.92);
+        --muted: rgba(32,31,30,.56);
+        --faint: rgba(32,31,30,.32);
+        --border: rgba(32,31,30,.11);
+        --focus: #2b6cb0;
+        --danger: #b42318;
+        --success: #237a45;
+        --drive-bg: #f1f1f0; --drive-bd: #d7d7d5; --drive-tx: #37352f; --drive-sub: #787774;
+        --docs-bg: #e7f2fb; --docs-bd: #bfd6e8; --docs-tx: #183a55; --docs-sub: #56758c;
+        --sheets-bg: #e7f5eb; --sheets-bd: #bdd9c5; --sheets-tx: #173e27; --sheets-sub: #567a62;
+        --slides-bg: #fff0e2; --slides-bd: #e5cdb7; --slides-tx: #573719; --slides-sub: #86684e;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); overflow-x: hidden; }
+    body {
+      padding: max(6px, env(safe-area-inset-top)) max(6px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left));
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Arial, sans-serif;
+      font-size: 14px;
+      -webkit-font-smoothing: antialiased;
+    }
+    button, input, select { font: inherit; }
+    button, a { -webkit-tap-highlight-color: transparent; }
+    button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible {
+      outline: 2px solid var(--focus); outline-offset: 2px;
+    }
+    [hidden] { display: none !important; }
+    .app { width: 100%; }
+    .statusbar {
+      min-height: 30px; display: flex; align-items: center; gap: 8px; margin: 0 2px 8px;
+      color: var(--muted); font-size: 12px;
+    }
+    .statusbar .task { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .status-spacer { flex: 1; }
+    .icon-button {
+      width: 30px; height: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+      border: 0; border-radius: 9px; color: var(--muted); background: transparent; cursor: pointer;
+    }
+    .icon-button:hover { background: var(--panel); color: var(--text); }
+    .icon-button:disabled { opacity: .35; cursor: default; }
+    .fatal {
+      margin: 0 2px 10px; padding: 11px 12px; border: 1px solid rgba(255,116,116,.3);
+      border-radius: 12px; color: var(--danger); background: rgba(255,80,80,.08); line-height: 1.35;
+    }
+    .fatal button { margin-left: 8px; }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; align-items: start; }
+    .column { display: flex; flex-direction: column; gap: 8px; min-width: 0; border-radius: 14px; }
+    .column.drop-target { box-shadow: 0 0 0 2px var(--focus); }
+    .service {
+      min-height: 64px; position: relative; display: flex; align-items: stretch; overflow: hidden;
+      border: 1px solid transparent; border-radius: 13px;
+      transition: transform .17s var(--ease), box-shadow .17s var(--ease), filter .17s var(--ease);
+    }
+    @media (hover:hover) {
+      .service:hover { transform: translateY(-1.5px); filter: brightness(1.08); box-shadow: 0 7px 20px rgba(0,0,0,.28); }
+    }
+    .service:active { transform: scale(.988); }
+    .service.drive { background: var(--drive-bg); border-color: var(--drive-bd); color: var(--drive-tx); }
+    .service.docs { background: var(--docs-bg); border-color: var(--docs-bd); color: var(--docs-tx); }
+    .service.sheets { background: var(--sheets-bg); border-color: var(--sheets-bd); color: var(--sheets-tx); }
+    .service.slides { background: var(--slides-bg); border-color: var(--slides-bd); color: var(--slides-tx); }
+    .service-main {
+      flex: 1; min-width: 0; border: 0; background: transparent; color: inherit; text-align: left;
+      padding: 12px 4px 12px 13px; display: flex; align-items: center; gap: 10px; cursor: pointer;
+    }
+    .service-main:disabled { cursor: wait; opacity: .68; }
+    .service-icon {
+      width: 31px; height: 36px; flex: none; border-radius: 5px; color: white; display: grid; place-items: center;
+      font-weight: 800; font-size: 13px; position: relative; box-shadow: inset 0 0 0 1px rgba(255,255,255,.26);
+    }
+    .service-icon::after { content: ''; position: absolute; right: 0; top: 0; border-style: solid; border-width: 0 0 9px 9px; border-color: transparent transparent rgba(255,255,255,.55) transparent; }
+    .drive .service-icon { background: linear-gradient(145deg,#4285f4 0 35%,#fbbc04 35% 65%,#34a853 65%); }
+    .docs .service-icon { background: #4285f4; }
+    .sheets .service-icon { background: #34a853; }
+    .slides .service-icon { background: #f9ab00; }
+    .service-copy { min-width: 0; flex: 1; }
+    .service-name { display: block; font-size: 14px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .service-sub { display: block; margin-top: 3px; font-size: 11.5px; opacity: .62; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .counter { min-width: 24px; height: 23px; padding: 0 7px; border-radius: 12px; display: grid; place-items: center; background: rgba(0,0,0,.22); font-size: 11px; }
+    .chevron { flex: none; width: 34px; border: 0; background: transparent; color: inherit; opacity: .58; cursor: pointer; }
+    .chevron span { display: inline-block; transition: transform .18s var(--ease); }
+    .column.collapsed .chevron span { transform: rotate(-90deg); }
+    .column.collapsed .list { display: none; }
+    .list { display: flex; flex-direction: column; gap: 7px; min-height: 34px; }
+    .empty {
+      min-height: 34px; display: grid; place-items: center; border: 1px dashed var(--border); border-radius: 10px;
+      color: var(--faint); font-size: 11px;
+    }
+    .material {
+      display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 50px;
+      border: 1px solid var(--border); border-radius: 11px; background: var(--panel); padding: 7px 7px 7px 9px;
+      transition: border-color .15s, background .15s, transform .15s;
+    }
+    .material:hover { background: var(--panel-2); border-color: color-mix(in srgb, var(--border) 40%, var(--muted)); }
+    .material.dragging { opacity: .45; transform: scale(.98); }
+    .material.pending { opacity: .7; }
+    .material.error { border-color: rgba(255,116,116,.35); }
+    .file-icon {
+      flex: none; width: 27px; height: 31px; border-radius: 5px; display: grid; place-items: center;
+      background: rgba(255,255,255,.08); color: var(--muted); font-size: 9px; font-weight: 800; text-transform: uppercase;
+    }
+    .material.docs .file-icon { color: #8ab4f8; background: rgba(66,133,244,.14); }
+    .material.sheets .file-icon { color: #81c995; background: rgba(52,168,83,.14); }
+    .material.slides .file-icon { color: #fdd663; background: rgba(251,188,4,.14); }
+    .material-copy { min-width: 0; flex: 1; }
+    .material-name { display: block; color: var(--text); text-decoration: none; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .material-sub { margin-top: 3px; color: var(--muted); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .material-sub.bad { color: var(--danger); }
+    .material-actions { display: flex; flex: none; gap: 1px; }
+    .material-actions a { text-decoration: none; }
+    .progress { height: 2px; margin-top: 5px; border-radius: 2px; overflow: hidden; background: var(--border); }
+    .progress > span { display: block; height: 100%; width: 70%; background: var(--focus); animation: loading 1.1s ease-in-out infinite alternate; }
+    @keyframes loading { from { transform: translateX(-80%); } to { transform: translateX(70%); } }
+    .skeleton { pointer-events: none; }
+    .skeleton .material-copy::before, .skeleton .material-copy::after { content: ''; display: block; border-radius: 4px; background: var(--border); animation: pulse 1.2s ease-in-out infinite alternate; }
+    .skeleton .material-copy::before { width: 78%; height: 10px; }
+    .skeleton .material-copy::after { width: 52%; height: 7px; margin-top: 7px; }
+    @keyframes pulse { to { opacity: .35; } }
+    .add-wrap { position: relative; display: flex; justify-content: center; margin-top: 12px; }
+    .add-button {
+      width: 40px; height: 40px; border: 1px solid var(--border); border-radius: 50%; background: var(--panel);
+      color: var(--muted); font-size: 22px; line-height: 1; cursor: pointer; transition: transform .18s var(--ease), background .18s;
+    }
+    .add-button:hover { transform: scale(1.07); background: var(--panel-2); color: var(--text); }
+    .add-button.open { transform: rotate(45deg); }
+    .add-menu {
+      position: absolute; z-index: 10; bottom: 48px; min-width: 222px; padding: 5px; border: 1px solid var(--border);
+      border-radius: 13px; background: color-mix(in srgb,var(--panel) 92%,transparent); box-shadow: 0 14px 44px rgba(0,0,0,.34);
+      backdrop-filter: blur(18px);
+    }
+    .add-menu button { width: 100%; border: 0; border-radius: 9px; background: transparent; color: var(--text); text-align: left; padding: 11px 12px; cursor: pointer; }
+    .add-menu button:hover { background: var(--panel-2); }
+    .drop-overlay {
+      position: fixed; inset: 7px; z-index: 30; border: 2px dashed var(--focus); border-radius: 16px;
+      background: color-mix(in srgb,var(--bg) 92%,transparent); display: grid; place-items: center; color: var(--text); font-weight: 650;
+      pointer-events: none;
+    }
+    dialog {
+      width: min(440px, calc(100vw - 24px)); border: 1px solid var(--border); border-radius: 16px;
+      background: var(--panel); color: var(--text); padding: 0; box-shadow: 0 24px 80px rgba(0,0,0,.46);
+    }
+    dialog::backdrop { background: rgba(0,0,0,.5); backdrop-filter: blur(3px); }
+    .dialog-body { padding: 18px; }
+    .dialog-title { margin: 0 0 15px; font-size: 16px; }
+    .field { display: grid; gap: 6px; margin-bottom: 12px; }
+    .field label { color: var(--muted); font-size: 11.5px; }
+    .field input, .field select {
+      width: 100%; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); color: var(--text);
+      padding: 10px 11px; min-height: 42px;
+    }
+    .field input:disabled { opacity: .55; }
+    .dialog-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; margin-top: 16px; flex-wrap: wrap; }
+    .button {
+      min-height: 38px; border: 1px solid var(--border); border-radius: 10px; background: transparent; color: var(--text);
+      padding: 7px 13px; cursor: pointer;
+    }
+    .button:hover { background: var(--panel-2); }
+    .button.primary { background: color-mix(in srgb,var(--focus) 24%,transparent); border-color: color-mix(in srgb,var(--focus) 55%,transparent); }
+    .button.danger { color: var(--danger); }
+    .dialog-spacer { flex: 1; }
+    .open-fallback {
+      margin: 10px 2px 0; padding: 9px 11px; border: 1px solid var(--border); border-radius: 11px;
+      background: var(--panel); color: var(--muted); font-size: 12px;
+    }
+    .open-fallback a { color: var(--focus); margin-left: 5px; }
+    .toast {
+      position: fixed; z-index: 40; left: 50%; bottom: max(12px,env(safe-area-inset-bottom)); transform: translateX(-50%) translateY(8px);
+      max-width: min(520px,92vw); padding: 10px 15px; border: 1px solid var(--border); border-radius: 12px;
+      background: color-mix(in srgb,var(--panel) 94%,transparent); color: var(--text); font-size: 12.5px; text-align: center;
+      box-shadow: 0 12px 38px rgba(0,0,0,.35); opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s;
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    @media (max-width: 760px) {
+      .grid { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px; }
+      .service { min-height: 60px; }
+      .service-main { padding: 10px 3px 10px 11px; gap: 8px; }
+      .counter { display: none; }
+      .material { min-height: 54px; }
+      .icon-button { width: 34px; height: 34px; }
+    }
+    @media (max-width: 390px) { .grid { grid-template-columns: 1fr; } }
+    @media (prefers-reduced-motion: reduce) { *,*::before,*::after { animation: none !important; transition: none !important; } }
+  </style>
+</head>
+<body>
+  <main class="app" id="app">
+    <div class="statusbar">
+      <span class="task" id="taskLabel">Проверяю задачу…</span>
+      <span class="status-spacer"></span>
+      <button class="icon-button" id="refreshBtn" type="button" title="Сверить с Notion и Drive" aria-label="Обновить">↻</button>
+    </div>
+    <div class="fatal" id="fatal" hidden></div>
+    <div class="grid" id="grid"></div>
+    <div class="open-fallback" id="openFallback" hidden>Браузер заблокировал новую вкладку.<a id="openFallbackLink" target="_blank" rel="noopener">Открыть файл</a></div>
+    <div class="add-wrap">
+      <button class="add-button" id="addButton" type="button" aria-label="Добавить материал" title="Добавить">＋</button>
+      <div class="add-menu" id="addMenu" hidden>
+        <button type="button" id="addLinkButton">🔗 Добавить ссылку</button>
+        <button type="button" id="addFileButton">📎 Файл с компьютера</button>
+      </div>
+    </div>
+    <input id="fileInput" type="file" multiple hidden>
+  </main>
+
+  <div class="drop-overlay" id="dropOverlay" hidden>Отпустите файлы, чтобы загрузить</div>
+
+  <dialog id="linkDialog">
+    <form method="dialog" id="linkForm" class="dialog-body">
+      <h2 class="dialog-title">Добавить ссылку</h2>
+      <div class="field"><label for="linkUrl">HTTPS-ссылка</label><input id="linkUrl" name="url" type="url" inputmode="url" required placeholder="https://…"></div>
+      <div class="field"><label for="linkName">Название</label><input id="linkName" name="name" type="text" maxlength="180" placeholder="Определится автоматически"></div>
+      <div class="field"><label for="linkSection">Раздел карточки</label><select id="linkSection" name="section"><option value="">Определить автоматически</option><option>Drive</option><option>Docs</option><option>Sheets</option><option>Slides</option></select></div>
+      <div class="dialog-actions"><button class="button" value="cancel" type="button" data-close="linkDialog">Отмена</button><button class="button primary" value="default" type="submit">Сохранить</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="editDialog">
+    <form method="dialog" id="editForm" class="dialog-body">
+      <h2 class="dialog-title">Материал</h2>
+      <input id="editId" type="hidden">
+      <div class="field"><label for="editName">Название</label><input id="editName" type="text" maxlength="180" required></div>
+      <div class="field"><label for="editSection">Раздел карточки</label><select id="editSection"><option>Drive</option><option>Docs</option><option>Sheets</option><option>Slides</option></select></div>
+      <div class="field"><label for="editUrl">Ссылка (изменяется только у External URL)</label><input id="editUrl" type="url" inputmode="url"></div>
+      <div class="dialog-actions">
+        <button class="button danger" type="button" id="archiveButton">Архивировать</button>
+        <button class="button danger" type="button" id="physicalDeleteButton">Удалить файл…</button>
+        <span class="dialog-spacer"></span>
+        <button class="button" type="button" id="moveUpButton" title="Выше">↑</button>
+        <button class="button" type="button" id="moveDownButton" title="Ниже">↓</button>
+        <button class="button" type="button" data-close="editDialog">Отмена</button>
+        <button class="button primary" type="submit">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="deleteDialog">
+    <form method="dialog" id="deleteForm" class="dialog-body">
+      <h2 class="dialog-title">Удалить физический файл</h2>
+      <p id="deleteHelp" style="color:var(--muted);line-height:1.45"></p>
+      <div class="field"><label for="deleteConfirm">Введите название целиком</label><input id="deleteConfirm" autocomplete="off"></div>
+      <div class="dialog-actions"><button class="button" type="button" data-close="deleteDialog">Отмена</button><button class="button danger" type="submit">Удалить навсегда</button></div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+  (() => {
+    'use strict';
+
+    const SECTIONS = ['Drive','Docs','Sheets','Slides'];
+    const SERVICES = {
+      Drive: { key:'drive', icon:'D', sub:'Папка и другие файлы' },
+      Docs: { key:'docs', icon:'D', sub:'Создать документ' },
+      Sheets: { key:'sheets', icon:'S', sub:'Создать таблицу' },
+      Slides: { key:'slides', icon:'P', sub:'Создать презентацию' }
+    };
+    const state = { task:null, folderUrl:null, materials:[], collapsed:new Set(), busy:new Set(), maxUploadBytes:8388608, dragId:null, mock:false };
+    const retryUpload = new Map();
+    const $ = (id) => document.getElementById(id);
+    const taskPageId = normalizeUuid(new URLSearchParams(location.search).get('task'));
+    const isLocal = location.protocol === 'file:' || ['localhost','127.0.0.1','::1'].includes(location.hostname);
+    const isPublishedCanary = location.hostname.toLowerCase() === 'ravilvaliev1999-spec.github.io';
+    const requestedMock = new URLSearchParams(location.search).get('mock') === '1';
+    const mockRequested = requestedMock && (isLocal || isPublishedCanary);
+    const bridge = createBridge();
+    let toastTimer = 0;
+    let orderSaveRunning = false;
+    let queuedOrder = null;
+
+    function normalizeUuid(value) {
+      const raw = String(value || '').toLowerCase().replace(/[^0-9a-f]/g,'');
+      if (!/^[0-9a-f]{32}$/.test(raw)) return null;
+      return [raw.slice(0,8),raw.slice(8,12),raw.slice(12,16),raw.slice(16,20),raw.slice(20)].join('-');
+    }
+    function uid() { return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`; }
+    function sectionFor(item) { return SECTIONS.includes(item.section) ? item.section : 'Drive'; }
+    function classify(name,mime,url) {
+      const n=String(name||'').toLowerCase(), m=String(mime||'').toLowerCase(), u=String(url||'').toLowerCase();
+      const host=(u.match(/^https:\/\/([^/?#]+)/i)||[])[1]?.replace(/:443$/,'')||'';
+      if ((host==='docs.google.com'&&/\/document\//.test(u)) || /wordprocessingml|msword/.test(m) || /\.(doc|docx|odt|rtf)$/.test(n)) return 'Docs';
+      if ((host==='docs.google.com'&&/\/spreadsheets\//.test(u)) || /spreadsheetml|ms-excel|text\/csv/.test(m) || /\.(xls|xlsx|ods|csv)$/.test(n)) return 'Sheets';
+      if ((host==='docs.google.com'&&/\/presentation\//.test(u)) || /presentationml|ms-powerpoint/.test(m) || /\.(ppt|pptx|odp)$/.test(n)) return 'Slides';
+      return 'Drive';
+    }
+    function mockGoogleFileId(url) {
+      const value=String(url||'');
+      const host=(value.match(/^https:\/\/([^/?#]+)/i)||[])[1]?.toLowerCase().replace(/:443$/,'')||'';
+      if(host!=='drive.google.com'&&host!=='docs.google.com')return null;
+      const match=value.match(/\/d\/([a-zA-Z0-9_-]{10,})/)||value.match(/\/folders\/([a-zA-Z0-9_-]{10,})/)||value.match(/[?&]id=([a-zA-Z0-9_-]{10,})/);
+      return match ? match[1] : null;
+    }
+    function mockNormalizeUrl(value) {
+      let raw=String(value||'').trim();if(!/^https:\/\//i.test(raw))return null;
+      let fragment='';const hashIndex=raw.indexOf('#');if(hashIndex>=0){fragment=raw.slice(hashIndex);raw=raw.slice(0,hashIndex);}
+      const match=raw.match(/^(https:\/\/)([^/?#]+)([^?#]*)(?:\?([^#]*))?$/i);if(!match)return null;
+      const host=match[2].toLowerCase().replace(/:443$/,'');if(!host||/[\s\\]/.test(host))return null;
+      let path=(match[3]||'/').replace(/\/{2,}/g,'/');if(path.length>1)path=path.replace(/\/+$/,'');
+      const query=[];(match[4]||'').split('&').forEach(pair=>{if(!pair)return;const key=(pair.split('=')[0]||'').replace(/\+/g,' ');let decoded;try{decoded=decodeURIComponent(key).toLowerCase();}catch(_err){decoded=key.toLowerCase();}if(/^utm_/.test(decoded)||/^(fbclid|gclid|yclid|mc_cid|mc_eid)$/.test(decoded))return;query.push(pair);});query.sort();
+      return `https://${host}${path}${query.length?`?${query.join('&')}`:''}${fragment}`;
+    }
+    function mockLinkMeta(url,requestedSection) {
+      const section=requestedSection||classify('', '', url);
+      const googleFileId=mockGoogleFileId(url);
+      const host=((String(url||'').match(/^https:\/\/([^/?#]+)/i)||[])[1]||'').toLowerCase().replace(/:443$/,'');
+      const nativeDocs=host==='docs.google.com'&&/\/document\//i.test(url),nativeSheets=host==='docs.google.com'&&/\/spreadsheets\//i.test(url),nativeSlides=host==='docs.google.com'&&/\/presentation\//i.test(url);
+      const format=nativeDocs?'Google Docs':nativeSheets?'Google Sheets':nativeSlides?'Google Slides':'Link';
+      return {section,format,provider:nativeDocs||nativeSheets||nativeSlides?'Google Drive':'External URL',googleFileId};
+    }
+    function mockNextPosition(items,section) {
+      return items.reduce((max,item)=>{
+        const position=Number(item.position);
+        return item.section===section&&!item.archived&&Number.isFinite(position)?Math.max(max,position):max;
+      },-1)+1;
+    }
+    function humanSize(value) {
+      const n=Number(value); if (!Number.isFinite(n) || n<=0) return '';
+      if (n>=1048576) return `${Math.round(n/1048576*10)/10} МБ`;
+      return `${Math.round(n/1024)} КБ`;
+    }
+    function formatSub(item) {
+      if (item.syncStatus === 'pending') return 'Загружается…';
+      if (item.syncStatus === 'deleting') return 'Удаление…';
+      if (item.error) return item.error;
+      return [item.format,item.size ? humanSize(item.size) : '',item.provider].filter(Boolean).join(' · ');
+    }
+    function fileMark(item) {
+      const format=String(item.format||'').toLowerCase();
+      if (format.includes('word')) return 'DOC'; if (format.includes('excel')) return 'XLS';
+      if (format.includes('power')) return 'PPT'; if (format.includes('csv')) return 'CSV';
+      if (format.includes('google docs')) return 'GD'; if (format.includes('google sheets')) return 'GS';
+      if (format.includes('google slides')) return 'GP'; if (format.includes('link')) return 'URL'; return 'FILE';
+    }
+
+    function createBridge() {
+      if (mockRequested) { state.mock=true; return createMockBridge(); }
+      if (window.google && google.script && google.script.run) {
+        return { call(method,payload) { return new Promise((resolve) => {
+          const runner=google.script.run.withSuccessHandler(resolve).withFailureHandler((error)=>resolve({ok:false,error:{code:'TRANSPORT',message:error && error.message || 'Нет связи с Apps Script.',retryable:true}}));
+          runner[method](payload);
+        }); } };
+      }
+      return { call() { return Promise.resolve({ok:false,error:{code:'RUNTIME_REQUIRED',message:'Откройте Index через owner-only Apps Script deployment или добавьте ?mock=1 для локального preview.',retryable:false}}); } };
+    }
+
+    function createMockBridge() {
+      const now=new Date().toISOString();
+      let items=[
+        {id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',name:'Договор поставки.docx',section:'Docs',format:'Word',provider:'Google Drive',openUrl:'https://drive.google.com/',downloadUrl:'https://drive.google.com/',canDownload:true,googleFileId:'mockdocxfile123',folderId:'mockfolder123',widgetOwned:true,size:184320,position:0,syncStatus:'synced',updatedAt:now},
+        {id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',name:'Финансовая модель',section:'Sheets',format:'Google Sheets',provider:'Google Drive',openUrl:'https://docs.google.com/spreadsheets/d/mocksheetfile123/edit',canDownload:false,googleFileId:'mocksheetfile123',folderId:'mockfolder123',widgetOwned:true,position:0,syncStatus:'synced',updatedAt:now},
+        {id:'cccccccc-cccc-4ccc-8ccc-cccccccccccc',name:'Референс проекта',section:'Drive',format:'Link',provider:'External URL',openUrl:'https://example.com/',canDownload:false,position:0,syncStatus:'synced',updatedAt:now}
+      ];
+      const ok=(data)=>new Promise((resolve)=>setTimeout(()=>resolve({ok:true,data}),180));
+      const fail=(code,message)=>new Promise((resolve)=>setTimeout(()=>resolve({ok:false,error:{code,message,retryable:false}}),180));
+      return { call(method,payload) {
+      if (method==='apiBootstrap') return ok({version:'v19-mock',task:{id:payload.taskPageId,name:'Виджет файлов v19 — стенд'},folderUrl:'https://drive.google.com/drive/folders/mockfolder123',maxUploadBytes:8388608,materials:items.filter(x=>!x.archived)});
+        if (method==='apiSyncTask') return ok({materials:items.filter(x=>!x.archived),syncedAt:new Date().toISOString()});
+        if (method==='apiCreateGoogle') { const format=payload.section==='Docs'?'Google Docs':payload.section==='Sheets'?'Google Sheets':'Google Slides'; const googleFileId=`mock-${uid()}`; const item={id:uid(),name:payload.name||`Новый ${format}`,section:payload.section,format,provider:'Google Drive',openUrl:'https://docs.google.com/',canDownload:false,googleFileId,folderId:'mockfolder123',widgetOwned:true,position:mockNextPosition(items,payload.section),syncStatus:'synced',updatedAt:now}; items.push(item); return ok({material:item,duplicate:false}); }
+        if (method==='apiAddLink') { const normalized=mockNormalizeUrl(payload.url);if(!normalized)return fail('INVALID_URL','Нужна корректная HTTPS-ссылка.'); const meta=mockLinkMeta(normalized,payload.section); const existing=items.find(x=>(meta.googleFileId&&x.googleFileId===meta.googleFileId)||x.openUrl===normalized); if(existing){if(existing.syncStatus==='deleted')return fail('MATERIAL_DELETED','Эта ссылка относится к физически удалённому материалу и не может быть восстановлена.');if(existing.archived){const nextPosition=mockNextPosition(items,existing.section);existing.archived=false;existing.syncStatus='synced';existing.position=nextPosition;return ok({material:existing,duplicate:true,restored:true});}return ok({material:existing,duplicate:true});} const item={id:uid(),name:payload.name||new URL(normalized).hostname,section:meta.section,format:meta.format,provider:meta.provider,openUrl:normalized,canDownload:false,googleFileId:meta.googleFileId,widgetOwned:false,position:mockNextPosition(items,meta.section),syncStatus:'synced',archived:false,updatedAt:new Date().toISOString()}; items.push(item); return ok({material:item,duplicate:false}); }
+        if (method==='apiUpload') { const section=payload.section||classify(payload.name,payload.mimeType,''); const item={id:uid(),name:payload.name,section,format:section==='Docs'?'Word':section==='Sheets'?'Excel':section==='Slides'?'PowerPoint':'Other File',provider:'Google Drive',openUrl:'https://drive.google.com/',downloadUrl:'https://drive.google.com/',canDownload:true,googleFileId:`mock-${uid()}`,folderId:'mockfolder123',widgetOwned:true,size:Math.floor(payload.dataBase64.length*3/4),position:mockNextPosition(items,section),syncStatus:'synced',updatedAt:new Date().toISOString()}; items.push(item); return ok({material:item,duplicate:false}); }
+        if (method==='apiUpdateMaterial') {
+          const item=items.find(x=>x.id===payload.pageId);
+          if(!item)return fail('MATERIAL_ID_REQUIRED','Материал не найден.');
+          if(item.archived)return fail('MATERIAL_ARCHIVED','Материал уже архивирован.');
+          if(item.syncStatus==='deleted')return fail('MATERIAL_DELETED','Физически удалённый материал нельзя изменить.');
+          const candidate={...item,name:payload.name||item.name,section:payload.section||item.section};
+          if(Object.prototype.hasOwnProperty.call(payload,'url')){
+            if(item.provider!=='External URL')return fail('URL_REPLACE_FORBIDDEN','Ссылку Google Drive нельзя заменить как внешнюю URL.');
+            const normalized=mockNormalizeUrl(payload.url);if(!normalized)return fail('INVALID_URL','Нужна корректная HTTPS-ссылка.');
+            const meta=mockLinkMeta(normalized,payload.section);
+            const collision=items.find(x=>x.id!==item.id&&((meta.googleFileId&&x.googleFileId===meta.googleFileId)||x.openUrl===normalized));
+            if(collision)return fail('DUPLICATE_MATERIAL','Такая ссылка уже сохранена в этой задаче.');
+            Object.assign(candidate,{openUrl:normalized,section:meta.section,format:meta.format,provider:meta.provider,googleFileId:meta.googleFileId,folderId:null,widgetOwned:false,canDownload:false,downloadUrl:null});
+          }
+          Object.assign(item,candidate);
+          return ok({material:item});
+        }
+        if (method==='apiReorder') { payload.items.forEach(row=>{const item=items.find(x=>x.id===row.pageId);if(item){item.section=row.section;item.position=row.position;}}); return ok({count:payload.items.length}); }
+        if (method==='apiArchive') { const item=items.find(x=>x.id===payload.pageId);if(!item)return fail('MATERIAL_ID_REQUIRED','Материал не найден.');if(item.syncStatus==='deleted')return ok({material:item,archived:true,deleted:true,duplicate:true});item.archived=true;item.syncStatus='archived';return ok({material:item,archived:true}); }
+        if (method==='apiRestore') { const item=items.find(x=>x.id===payload.pageId);if(!item)return fail('MATERIAL_ID_REQUIRED','Материал не найден.');if(item.syncStatus==='deleted')return fail('MATERIAL_DELETED','Физически удалённый материал нельзя восстановить.');const nextPosition=mockNextPosition(items,item.section);item.archived=false;item.syncStatus='synced';item.position=nextPosition;return ok({material:item,archived:false}); }
+        if (method==='apiDeletePhysical') { const item=items.find(x=>x.id===payload.pageId); if(!item||!item.widgetOwned||!item.googleFileId)return fail('DELETE_NOT_OWNED_BY_WIDGET','Физически удалять можно только файлы, созданные этим стендом.'); if(payload.confirmName!==item.name)return fail('CONFIRMATION_REQUIRED','Введите название файла целиком.');item.archived=true;item.syncStatus='deleted';return ok({material:item,deleted:true}); }
+        return Promise.resolve({ok:false,error:{code:'MOCK_METHOD',message:`Mock не знает ${method}`,retryable:false}});
+      } };
+    }
+
+    async function call(method,payload) {
+      const response=await bridge.call(method,payload);
+      if (!response || !response.ok) { const error=response && response.error || {code:'EMPTY_RESPONSE',message:'Пустой ответ сервера.',retryable:true}; const exception=new Error(error.message); Object.assign(exception,error); throw exception; }
+      return response.data;
+    }
+
+    function buildGrid() {
+      const grid=$('grid'); grid.textContent='';
+      SECTIONS.forEach((section)=>{
+        const meta=SERVICES[section];
+        const col=document.createElement('section'); col.className='column'; col.dataset.section=section;
+        col.innerHTML=`<div class="service ${meta.key}"><button type="button" class="service-main" data-service="${section}"><span class="service-icon">${meta.icon}</span><span class="service-copy"><span class="service-name">${section}</span><span class="service-sub">${meta.sub}</span></span><span class="counter" id="count-${section}">0</span></button><button type="button" class="chevron" data-collapse="${section}" aria-label="Свернуть ${section}"><span>⌄</span></button></div><div class="list" id="list-${section}"></div>`;
+        grid.appendChild(col);
+      });
+      grid.addEventListener('click',handleGridClick);
+      grid.addEventListener('dragstart',handleDragStart);
+      grid.addEventListener('dragend',handleDragEnd);
+      grid.addEventListener('dragover',handleDragOver);
+      grid.addEventListener('drop',handleDropReorder);
+    }
+
+    function renderSkeleton() {
+      SECTIONS.forEach((section)=>{ const list=$(`list-${section}`); list.textContent=''; const card=document.createElement('div');card.className='material skeleton';card.innerHTML='<span class="file-icon"></span><span class="material-copy"></span>';list.appendChild(card); });
+    }
+
+    function render() {
+      SECTIONS.forEach((section)=>{
+        const col=document.querySelector(`.column[data-section="${section}"]`); col.classList.toggle('collapsed',state.collapsed.has(section));
+        const materials=state.materials.filter(x=>sectionFor(x)===section && !x.archived).sort((a,b)=>(a.position??0)-(b.position??0));
+        $(`count-${section}`).textContent=materials.length;
+        const main=col.querySelector('.service-main'); main.disabled=state.busy.has(section); main.setAttribute('aria-busy',String(state.busy.has(section)));
+        const list=$(`list-${section}`); list.textContent='';
+        if(!materials.length){const empty=document.createElement('div');empty.className='empty';empty.textContent='Пока пусто';list.appendChild(empty);return;}
+        materials.forEach((item)=>list.appendChild(materialCard(item)));
+      });
+      postHeight();
+    }
+
+    function materialCard(item) {
+      const card=document.createElement('article'); card.className=`material ${sectionFor(item).toLowerCase()}`; card.dataset.id=item.id; card.draggable=!String(item.id).startsWith('pending:');
+      if(item.syncStatus==='pending') card.classList.add('pending'); if(item.error) card.classList.add('error');
+      const icon=document.createElement('span');icon.className='file-icon';icon.textContent=fileMark(item);card.appendChild(icon);
+      const copy=document.createElement('span');copy.className='material-copy';
+      const name=document.createElement(item.openUrl?'a':'span');name.className='material-name';name.textContent=item.name||'Без названия';name.title=item.name||'';
+      if(item.openUrl){name.href=item.openUrl;name.target='_blank';name.rel='noopener';} copy.appendChild(name);
+      const sub=document.createElement('span');sub.className=`material-sub${item.error?' bad':''}`;sub.textContent=formatSub(item);copy.appendChild(sub);
+      if(item.syncStatus==='pending'){const progress=document.createElement('span');progress.className='progress';progress.innerHTML='<span></span>';copy.appendChild(progress);} card.appendChild(copy);
+      const actions=document.createElement('span');actions.className='material-actions';
+      if(item.error && retryUpload.has(item.id)){const retry=document.createElement('button');retry.type='button';retry.className='icon-button';retry.dataset.retry=item.id;retry.title='Повторить';retry.textContent='↻';actions.appendChild(retry);}
+      if(item.canDownload && item.downloadUrl){const dl=document.createElement('a');dl.className='icon-button';dl.href=item.downloadUrl;dl.target='_blank';dl.rel='noopener';dl.title='Скачать оригинал';dl.textContent='↓';actions.appendChild(dl);}
+      if(!String(item.id).startsWith('pending:')){const more=document.createElement('button');more.type='button';more.className='icon-button';more.dataset.edit=item.id;more.title='Действия';more.textContent='•••';actions.appendChild(more);} card.appendChild(actions);
+      return card;
+    }
+
+    async function bootstrap() {
+      clearFatal(); renderSkeleton(); $('refreshBtn').disabled=true;
+      if(!taskPageId){showFatal('В URL отсутствует корректный параметр task. Виджет не определяет задачу по имени или referrer.');$('refreshBtn').disabled=false;return;}
+      try { const data=await call('apiBootstrap',{taskPageId}); state.task=data.task;state.folderUrl=data.folderUrl;state.materials=data.materials||[];state.maxUploadBytes=data.maxUploadBytes||state.maxUploadBytes;$('taskLabel').textContent=`${state.task.name} · синхронизировано`;render(); }
+      catch(error){showFatal(error.message,Boolean(error.retryable));SECTIONS.forEach(s=>$(`list-${s}`).textContent='');}
+      finally{$('refreshBtn').disabled=false;}
+    }
+
+    async function refresh() {
+      if(!taskPageId)return bootstrap(); $('refreshBtn').disabled=true;$('taskLabel').textContent='Сверяю Notion и Drive…';
+      try{const data=await call('apiSyncTask',{taskPageId});state.materials=data.materials||[];$('taskLabel').textContent=`${state.task?state.task.name:'Задача'} · обновлено`;render();toast('Названия и порядок сверены');}
+      catch(error){showFatal(error.message,Boolean(error.retryable));}
+      finally{$('refreshBtn').disabled=false;}
+    }
+
+    async function createGoogle(section) {
+      const popup=window.open('about:blank','_blank'); state.busy.add(section);render();
+      try{const data=await call('apiCreateGoogle',{taskPageId,section,idempotencyKey:uid()});upsert(data.material);render();openCreated(data.material,popup);toast(data.duplicate?'Такой файл уже был создан':'Файл создан и сохранён в «Элементы»');}
+      catch(error){if(popup)popup.close();showFatal(error.message,Boolean(error.retryable));}
+      finally{state.busy.delete(section);render();}
+    }
+    function openCreated(item,popup){if(!item||!item.openUrl)return;if(popup){try{popup.location.replace(item.openUrl);return;}catch(_err){}}$('openFallbackLink').href=item.openUrl;$('openFallback').hidden=false;}
+
+    async function addLink(event) {
+      event.preventDefault(); const url=$('linkUrl').value.trim(); const name=$('linkName').value.trim(); const section=$('linkSection').value;
+      const submit=$('linkForm').querySelector('[type="submit"]');submit.disabled=true;
+      try{const data=await call('apiAddLink',{taskPageId,url,name,section:section||undefined,idempotencyKey:uid()});upsert(data.material);render();$('linkDialog').close();$('linkForm').reset();toast(data.restored?'Ссылка восстановлена из архива':(data.duplicate?'Эта ссылка уже есть в задаче':'Ссылка сохранена'));}
+      catch(error){toast(error.message);}
+      finally{submit.disabled=false;}
+    }
+
+    async function uploadFiles(files) {
+      for(const file of [...files]) {
+        if(file.size>state.maxUploadBytes){toast(`«${file.name}» больше ${humanSize(state.maxUploadBytes)} — файл не отправлен`);continue;}
+        const idem=uid();const pendingId=`pending:${idem}`;const section=classify(file.name,file.type,'');
+        const pending={id:pendingId,name:file.name,section,format:'Файл',provider:'Google Drive',size:file.size,position:state.materials.filter(x=>sectionFor(x)===section).length,syncStatus:'pending'};
+        state.materials.push(pending);render();
+        const attempt=async()=>{try{pending.syncStatus='pending';pending.error=null;render();const dataBase64=(await readFile(file)).split(',')[1];const data=await call('apiUpload',{taskPageId,name:file.name,mimeType:file.type||'application/octet-stream',dataBase64,idempotencyKey:idem});state.materials=state.materials.filter(x=>x.id!==pendingId);retryUpload.delete(pendingId);upsert(data.material);render();toast(`«${file.name}» загружен без конвертации`);}catch(error){pending.syncStatus='error';pending.error=error.message;retryUpload.set(pendingId,attempt);render();toast(`Ошибка загрузки «${file.name}»`);}};
+        await attempt();
+      }
+    }
+    function readFile(file){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result));reader.onerror=()=>reject(new Error('Файл не удалось прочитать.'));reader.readAsDataURL(file);});}
+
+    function upsert(item){if(!item)return;const index=state.materials.findIndex(x=>x.id===item.id);if(index>=0)state.materials[index]=item;else state.materials.push(item);}
+    function currentItem(){return state.materials.find(x=>x.id===$('editId').value);}
+    function openEdit(id){const item=state.materials.find(x=>x.id===id);if(!item)return;$('editId').value=item.id;$('editName').value=item.name||'';$('editSection').value=sectionFor(item);$('editUrl').value=item.openUrl||'';$('editUrl').disabled=item.provider!=='External URL';$('physicalDeleteButton').hidden=item.provider!=='Google Drive'||!item.googleFileId||!item.widgetOwned;$('editDialog').showModal();}
+
+    async function saveEdit(event){event.preventDefault();const item=currentItem();if(!item)return;const submit=$('editForm').querySelector('[type="submit"]');submit.disabled=true;
+      try{const payload={taskPageId,pageId:item.id,name:$('editName').value.trim(),section:$('editSection').value,idempotencyKey:uid()};if(item.provider==='External URL')payload.url=$('editUrl').value.trim();const data=await call('apiUpdateMaterial',payload);upsert(data.material);$('editDialog').close();render();toast('Материал обновлён');}
+      catch(error){toast(error.message);}finally{submit.disabled=false;}}
+
+    async function archiveCurrent(){const item=currentItem();if(!item||!confirm(`Архивировать «${item.name}»? Файл в Drive останется.`))return;
+      try{await call('apiArchive',{taskPageId,pageId:item.id,idempotencyKey:uid()});state.materials=state.materials.filter(x=>x.id!==item.id);$('editDialog').close();render();toast('Карточка архивирована; физический файл сохранён');}catch(error){toast(error.message);}}
+    function requestPhysicalDelete(){const item=currentItem();if(!item)return;$('deleteConfirm').value='';$('deleteHelp').textContent=`Это навсегда удалит «${item.name}» из Google Drive. Обычное архивирование этого не делает.`;$('editDialog').close();$('deleteDialog').showModal();setTimeout(()=>$('deleteConfirm').focus(),0);}
+    async function deletePhysical(event){event.preventDefault();const id=$('editId').value;const item=state.materials.find(x=>x.id===id);if(!item)return;
+      try{await call('apiDeletePhysical',{taskPageId,pageId:item.id,confirmName:$('deleteConfirm').value,idempotencyKey:uid()});state.materials=state.materials.filter(x=>x.id!==item.id);$('deleteDialog').close();render();toast('Физический файл удалён');}catch(error){toast(error.message);}}
+
+    function moveCurrent(delta){const item=currentItem();if(!item)return;const list=state.materials.filter(x=>sectionFor(x)===sectionFor(item)).sort((a,b)=>(a.position??0)-(b.position??0));const index=list.findIndex(x=>x.id===item.id);const next=Math.max(0,Math.min(list.length-1,index+delta));if(index===next)return;[list[index],list[next]]=[list[next],list[index]];list.forEach((x,i)=>x.position=i);$('editDialog').close();render();persistOrder();}
+    function captureOrder(){const items=[];SECTIONS.forEach(section=>state.materials.filter(x=>sectionFor(x)===section&&!String(x.id).startsWith('pending:')).sort((a,b)=>(a.position??0)-(b.position??0)).forEach((x,i)=>{x.position=i;items.push({pageId:x.id,section,position:i});}));return items;}
+    async function persistOrder(){queuedOrder=captureOrder();render();if(orderSaveRunning)return;orderSaveRunning=true;
+      try{while(queuedOrder){const items=queuedOrder;queuedOrder=null;try{await call('apiReorder',{taskPageId,items,idempotencyKey:uid()});}catch(error){queuedOrder=null;toast(`${error.message} Загружаю серверный порядок.`);await refresh();return;}}toast('Порядок сохранён');}
+      finally{orderSaveRunning=false;if(queuedOrder)persistOrder();}}
+
+    function handleGridClick(event){const service=event.target.closest('[data-service]');if(service){const section=service.dataset.service;if(section==='Drive'){if(state.folderUrl)window.open(state.folderUrl,'_blank','noopener');else toast('Папка задачи ещё не готова');}else createGoogle(section);return;}const collapse=event.target.closest('[data-collapse]');if(collapse){const section=collapse.dataset.collapse;state.collapsed.has(section)?state.collapsed.delete(section):state.collapsed.add(section);render();return;}const edit=event.target.closest('[data-edit]');if(edit){openEdit(edit.dataset.edit);return;}const retry=event.target.closest('[data-retry]');if(retry&&retryUpload.has(retry.dataset.retry))retryUpload.get(retry.dataset.retry)();}
+    function handleDragStart(event){const card=event.target.closest('.material[data-id]');if(!card)return;state.dragId=card.dataset.id;card.classList.add('dragging');event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',state.dragId);}
+    function handleDragEnd(){document.querySelectorAll('.dragging,.drop-target').forEach(x=>x.classList.remove('dragging','drop-target'));state.dragId=null;}
+    function handleDragOver(event){if(!state.dragId)return;const col=event.target.closest('.column');if(!col)return;event.preventDefault();document.querySelectorAll('.drop-target').forEach(x=>x.classList.remove('drop-target'));col.classList.add('drop-target');}
+    function handleDropReorder(event){if(!state.dragId)return;event.preventDefault();const col=event.target.closest('.column');if(!col)return;const item=state.materials.find(x=>x.id===state.dragId);if(!item)return;const target=event.target.closest('.material[data-id]');item.section=col.dataset.section;const peers=state.materials.filter(x=>sectionFor(x)===item.section&&x.id!==item.id).sort((a,b)=>(a.position??0)-(b.position??0));let index=target?peers.findIndex(x=>x.id===target.dataset.id):peers.length;if(index<0)index=peers.length;peers.splice(index,0,item);peers.forEach((x,i)=>x.position=i);handleDragEnd();render();persistOrder();}
+
+    function showFatal(message,retryable){const box=$('fatal');box.textContent=message;if(retryable){const button=document.createElement('button');button.type='button';button.className='button';button.textContent='Повторить';button.onclick=bootstrap;box.appendChild(button);}box.hidden=false;postHeight();}
+    function clearFatal(){$('fatal').hidden=true;$('fatal').textContent='';}
+    function toast(message){clearTimeout(toastTimer);const el=$('toast');el.textContent=message;el.classList.add('show');toastTimer=setTimeout(()=>el.classList.remove('show'),3200);}
+    function postHeight(){requestAnimationFrame(()=>{try{parent.postMessage({type:'notion-widget-v19-height',height:document.documentElement.scrollHeight},'*');}catch(_err){}});}
+
+    function bindEvents(){
+      $('refreshBtn').addEventListener('click',refresh);
+      $('addButton').addEventListener('click',()=>{$('addMenu').hidden=!$('addMenu').hidden;$('addButton').classList.toggle('open',!$('addMenu').hidden);});
+      $('addLinkButton').addEventListener('click',()=>{$('addMenu').hidden=true;$('addButton').classList.remove('open');$('linkDialog').showModal();setTimeout(()=>$('linkUrl').focus(),0);});
+      $('addFileButton').addEventListener('click',()=>{$('addMenu').hidden=true;$('addButton').classList.remove('open');$('fileInput').click();});
+      $('fileInput').addEventListener('change',(event)=>{uploadFiles(event.target.files);event.target.value='';});
+      $('linkForm').addEventListener('submit',addLink);$('editForm').addEventListener('submit',saveEdit);$('deleteForm').addEventListener('submit',deletePhysical);
+      $('archiveButton').addEventListener('click',archiveCurrent);$('physicalDeleteButton').addEventListener('click',requestPhysicalDelete);$('moveUpButton').addEventListener('click',()=>moveCurrent(-1));$('moveDownButton').addEventListener('click',()=>moveCurrent(1));
+      document.querySelectorAll('[data-close]').forEach(button=>button.addEventListener('click',()=>$(button.dataset.close).close()));
+      document.addEventListener('click',(event)=>{if(!event.target.closest('.add-wrap')){$('addMenu').hidden=true;$('addButton').classList.remove('open');}});
+      let dragDepth=0;document.addEventListener('dragenter',(event)=>{if(event.dataTransfer&&[...event.dataTransfer.types].includes('Files')){dragDepth+=1;$('dropOverlay').hidden=false;}});document.addEventListener('dragleave',()=>{dragDepth=Math.max(0,dragDepth-1);if(!dragDepth)$('dropOverlay').hidden=true;});document.addEventListener('dragover',(event)=>{if(event.dataTransfer&&[...event.dataTransfer.types].includes('Files'))event.preventDefault();});document.addEventListener('drop',(event)=>{if(event.dataTransfer&&event.dataTransfer.files&&event.dataTransfer.files.length){event.preventDefault();dragDepth=0;$('dropOverlay').hidden=true;uploadFiles(event.dataTransfer.files);}});
+      new ResizeObserver(postHeight).observe(document.body);
+    }
+
+    buildGrid();bindEvents();renderSkeleton();bootstrap();
+  })();
+  </script>
+</body>
+</html>

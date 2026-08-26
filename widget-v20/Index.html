@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="robots" content="noindex,nofollow" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="color-scheme" content="dark" />
+<title>Google · Files Hub</title>
+<style>
+  :root {
+    --gray-bg: #2f2f2f;     --gray-bg-h: #3a3a3a;     --gray-text: #e6e6e4;  --gray-glow: rgba(180,180,180,.25);
+    --blue-bg: #1f3b54;     --blue-bg-h: #264a6b;     --blue-text: #cfe2f3;  --blue-glow: rgba(66,133,244,.35);
+    --green-bg: #1c3829;    --green-bg-h: #234734;    --green-text: #cdebd6; --green-glow: rgba(15,157,88,.35);
+    --orange-bg: #5c3a1e;   --orange-bg-h: #6e4624;   --orange-text: #f4d8bf;--orange-glow: rgba(244,180,0,.35);
+    --border: rgba(255,255,255,.13);
+    --border-hover: rgba(255,255,255,.22);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; min-height: 100%; background: #191919; color: #e6e6e4;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+  }
+  body { overflow-x: hidden; }
+  button, input, select { font: inherit; }
+  [hidden] { display: none !important; }
+  .wrap { padding: 0 4px; max-width: 1400px; margin: 0 auto; }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; align-items: start; }
+  .col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+
+  .btn {
+    position: relative; display: flex; align-items: center; gap: 12px;
+    padding: 16px 18px; border-radius: 12px; text-decoration: none;
+    border: 1px solid var(--border); overflow: hidden; cursor: pointer;
+    transition:
+      background-color 280ms cubic-bezier(0.32,0.72,0,1),
+      border-color 280ms cubic-bezier(0.32,0.72,0,1),
+      box-shadow 380ms cubic-bezier(0.32,0.72,0,1),
+      transform 180ms cubic-bezier(0.32,0.72,0,1);
+    -webkit-tap-highlight-color: transparent;
+    min-height: 58px;
+  }
+  .btn::before {
+    content: ""; position: absolute; inset: 0; border-radius: inherit;
+    background: linear-gradient(180deg, rgba(255,255,255,.05) 0%, rgba(255,255,255,0) 50%);
+    pointer-events: none;
+  }
+  .btn:active { transform: scale(.975); transition-duration: 120ms; }
+  .btn:focus-visible { outline: 2px solid rgba(255,255,255,.4); outline-offset: 2px; }
+  .btn.busy, .btn.pending { cursor: progress; opacity: .7; }
+  .btn.error { border-color: rgba(255,105,105,.58); }
+  .btn.dragging { opacity: .46; transform: scale(.975); }
+
+  .icon {
+    flex: 0 0 auto; width: 26px; height: 26px; display: grid; place-items: center;
+    border-radius: 7px; background: rgba(255,255,255,.06);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.04);
+  }
+  .icon svg { width: 16px; height: 16px; display: block; }
+
+  .meta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+  .title { font-size: 15px; font-weight: 600; letter-spacing: -.01em; line-height: 1.15;
+           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sub { margin-top: 4px; font-size: 12.5px; opacity: .55;
+         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .count {
+    flex: 0 0 auto;
+    font-size: 11px; font-weight: 600;
+    padding: 2px 7px; border-radius: 10px;
+    background: rgba(255,255,255,.1);
+    color: rgba(255,255,255,.85);
+    min-width: 20px; text-align: center;
+    transition: background-color 200ms ease;
+  }
+  .btn:hover .count, .btn.bridge-hover .count { background: rgba(255,255,255,.16); }
+
+  .chevron {
+    flex: 0 0 auto; margin-left: 2px;
+    transition: transform 280ms cubic-bezier(0.32,0.72,0,1);
+    opacity: .6;
+  }
+
+  .btn.gray   { background: var(--gray-bg);   color: var(--gray-text); }
+  .btn.blue   { background: var(--blue-bg);   color: var(--blue-text); }
+  .btn.green  { background: var(--green-bg);  color: var(--green-text); }
+  .btn.orange { background: var(--orange-bg); color: var(--orange-text); }
+  .btn.gray:hover, .btn.gray.bridge-hover     { background: var(--gray-bg-h);   border-color: var(--border-hover); box-shadow: 0 12px 32px -12px var(--gray-glow); }
+  .btn.blue:hover, .btn.blue.bridge-hover     { background: var(--blue-bg-h);   border-color: var(--border-hover); box-shadow: 0 12px 32px -12px var(--blue-glow); }
+  .btn.green:hover, .btn.green.bridge-hover   { background: var(--green-bg-h);  border-color: var(--border-hover); box-shadow: 0 12px 32px -12px var(--green-glow); }
+  .btn.orange:hover, .btn.orange.bridge-hover { background: var(--orange-bg-h); border-color: var(--border-hover); box-shadow: 0 12px 32px -12px var(--orange-glow); }
+
+  .files {
+    display: flex; flex-direction: column; gap: 8px;
+    max-height: 6000px; overflow: visible;
+    transition: max-height 320ms cubic-bezier(0.32,0.72,0,1);
+  }
+
+  .file-add {
+    width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 8px 12px; border-radius: 9px; cursor: pointer;
+    border: 1px dashed rgba(255,255,255,.15);
+    font-size: 12px; color: rgba(255,255,255,.45);
+    transition: all 200ms ease;
+    min-height: 36px;
+    background: transparent;
+  }
+  .file-add:hover { border-color: rgba(255,255,255,.3); color: rgba(255,255,255,.75); background: rgba(255,255,255,.03); }
+  .file-add:focus-visible { outline: 2px solid rgba(255,255,255,.4); outline-offset: 2px; }
+  .file-add:disabled { opacity: .42; cursor: wait; }
+
+  .gedit {
+    position: absolute; top: 6px; right: 6px;
+    width: 22px; height: 22px; padding: 0; border-radius: 6px;
+    display: grid; place-items: center;
+    background: rgba(0,0,0,.25); border: 1px solid rgba(255,255,255,.08);
+    color: rgba(255,255,255,.7); cursor: pointer;
+    opacity: 0; transition: all 160ms ease; z-index: 2;
+  }
+  .btn:hover .gedit, .gedit:focus-visible { opacity: 1; }
+  .gedit:hover { background: rgba(0,0,0,.5); color: #fff; }
+  .gedit svg { width: 11px; height: 11px; }
+
+  .fatal {
+    margin: 0 0 8px; padding: 10px 12px; border: 1px solid rgba(255,105,105,.38);
+    border-radius: 10px; color: #ffb5b5; background: rgba(100,20,20,.3); font-size: 12px; line-height: 1.4;
+  }
+  .fatal button { margin-left: 8px; color: inherit; background: transparent; border: 1px solid currentColor; border-radius: 6px; cursor: pointer; }
+
+  .modal-back {
+    position: fixed; inset: 0; background: rgba(0,0,0,.6); backdrop-filter: blur(4px);
+    display: none; align-items: center; justify-content: center; z-index: 100; padding: 16px;
+  }
+  .modal-back.open { display: flex; }
+  .modal {
+    width: 100%; max-width: 460px; background: #1f1f1f;
+    border: 1px solid rgba(255,255,255,.08); border-radius: 12px; padding: 22px;
+    color: #e6e6e4; box-shadow: 0 20px 60px rgba(0,0,0,.5);
+  }
+  .modal h3 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+  .modal .hint { margin: 0 0 16px; font-size: 12px; color: #9b9a97; line-height: 1.45; }
+  .modal label { display: block; font-size: 11px; text-transform: uppercase;
+                 letter-spacing: .06em; color: #9b9a97; margin: 12px 0 6px; }
+  .modal input, .modal select {
+    width: 100%; padding: 10px 12px; background: #2a2a2a; border: 1px solid rgba(255,255,255,.08);
+    border-radius: 8px; color: #e6e6e4; font-size: 13px; font-family: inherit; outline: none;
+    transition: border-color 120ms ease;
+  }
+  .modal input:focus, .modal select:focus { border-color: rgba(120,170,220,.5); }
+  .modal-actions { display: flex; gap: 8px; margin-top: 18px; }
+  .modal-actions button {
+    flex: 1; padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(255,255,255,.08);
+    background: #2a2a2a; color: #e6e6e4; font-size: 13px; font-weight: 500; cursor: pointer;
+    font-family: inherit; transition: background 120ms ease;
+  }
+  .modal-actions button:hover { background: #333; }
+  .modal-actions button:disabled { opacity: .5; cursor: wait; }
+  .modal-actions .primary { background: #2b6cb0; border-color: #2b6cb0; }
+  .modal-actions .primary:hover { background: #3479c4; }
+  .modal-actions .danger { background: #5a1f1f; border-color: #5a1f1f; color: #f4b4b4; }
+  .modal-actions .danger:hover { background: #6b2424; }
+
+  .toast {
+    position: fixed; z-index: 150; left: 50%; bottom: max(12px,env(safe-area-inset-bottom));
+    transform: translateX(-50%) translateY(8px); max-width: min(520px,92vw);
+    padding: 10px 15px; border: 1px solid rgba(255,255,255,.12); border-radius: 10px;
+    background: rgba(31,31,31,.96); color: #e6e6e4; font-size: 12.5px; text-align: center;
+    box-shadow: 0 12px 38px rgba(0,0,0,.35); opacity: 0; pointer-events: none;
+    transition: opacity 180ms ease, transform 180ms ease;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .sr-only { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+  @media (max-width: 720px) {
+    .wrap { padding: 0 2px; }
+    .btn { padding: 12px 12px; gap: 9px; min-height: 50px; border-radius: 10px; }
+    .title { font-size: 13px; }
+    .sub { display: none; }
+    .icon { width: 22px; height: 22px; }
+    .icon svg { width: 14px; height: 14px; }
+    .grid { gap: 8px; }
+    .chevron { display: none; }
+    .file-add { padding: 7px 9px; font-size: 11px; min-height: 32px; }
+  }
+  @media (max-width: 460px) {
+    .btn { padding: 10px 9px; gap: 7px; min-height: 46px; }
+    .title { font-size: 12px; }
+    .icon { width: 20px; height: 20px; }
+    .count { padding: 2px 5px; min-width: 18px; }
+  }
+  @media (hover: none) {
+    .gedit { display: grid !important; opacity: 1 !important; }
+    .file-add { opacity: .78; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+  <main class="wrap">
+    <div class="fatal" id="fatal" role="alert" hidden></div>
+    <div class="grid" id="grid" aria-label="Файлы Google для задачи"></div>
+  </main>
+
+  <input id="fileInput" type="file" multiple hidden />
+
+  <div class="modal-back" id="linkModal" aria-hidden="true">
+    <form class="modal" id="linkForm" role="dialog" aria-modal="true" aria-labelledby="linkTitle">
+      <h3 id="linkTitle">Добавить ссылку</h3>
+      <p class="hint">Название Google-файла определится автоматически и будет синхронизироваться с Drive.</p>
+      <input id="linkSection" type="hidden" />
+      <label for="linkUrl">Ссылка на документ</label>
+      <input id="linkUrl" type="url" inputmode="url" autocomplete="url" required placeholder="https://docs.google.com/…" />
+      <div class="modal-actions">
+        <button type="button" data-close="linkModal">Отмена</button>
+        <button type="submit" class="primary" id="linkSubmit">Сохранить</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="modal-back" id="editModal" aria-hidden="true">
+    <form class="modal" id="editForm" role="dialog" aria-modal="true" aria-labelledby="editTitle">
+      <h3 id="editTitle">Материал</h3>
+      <p class="hint">Изменения сохраняются в записи «Знание».</p>
+      <input id="editId" type="hidden" />
+      <label for="editName">Название</label>
+      <input id="editName" type="text" maxlength="180" required />
+      <label for="editSection">Раздел</label>
+      <select id="editSection"><option>Drive</option><option>Docs</option><option>Sheets</option><option>Slides</option></select>
+      <label for="editUrl" id="editUrlLabel">Ссылка</label>
+      <input id="editUrl" type="url" inputmode="url" />
+      <div class="modal-actions">
+        <button type="button" class="danger" id="archiveButton">Архивировать</button>
+        <button type="button" data-close="editModal">Отмена</button>
+        <button type="submit" class="primary" id="editSubmit">Сохранить</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <span class="sr-only" id="liveStatus" aria-live="polite"></span>
+
+<script>
+(function() {
+  'use strict';
+
+  const SECTIONS = ['Drive', 'Docs', 'Sheets', 'Slides'];
+  const GROUPS = {
+    Drive: {
+      key: 'drive', cls: 'gray', label: 'Drive', sub: 'Папка задачи',
+      icon: `<svg viewBox="0 0 87.3 78">
+        <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
+        <path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0 -1.2 4.5h27.5z" fill="#00ac47"/>
+        <path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/>
+        <path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/>
+        <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/>
+        <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/>
+      </svg>`
+    },
+    Docs: {
+      key: 'docs', cls: 'blue', label: 'Docs', sub: 'Документы',
+      icon: `<svg viewBox="0 0 47 65">
+        <path d="M29.375 0H4.40625C1.97266 0 0 1.97266 0 4.40625V60.5938C0 63.0273 1.97266 65 4.40625 65H42.5938C45.0273 65 47 63.0273 47 60.5938V17.625L36.7188 10.2812L29.375 0Z" fill="#4285F4"/>
+        <path d="M12.0312 47.4062H34.9688V44.4688H12.0312V47.4062ZM12.0312 35.6562V38.5938H34.9688V35.6562H12.0312ZM12.0312 26.8438V29.7812H26.1562V26.8438H12.0312ZM12.0312 18.0312V20.9688H34.9688V18.0312H12.0312Z" fill="#F1F1F1"/>
+        <path d="M29.375 0V13.2188C29.375 15.6523 31.3477 17.625 33.7812 17.625H47L29.375 0Z" fill="#A1C2FA"/>
+      </svg>`
+    },
+    Sheets: {
+      key: 'sheets', cls: 'green', label: 'Sheets', sub: 'Таблицы',
+      icon: `<svg viewBox="0 0 47 65">
+        <path d="M29.375 0H4.40625C1.97266 0 0 1.97266 0 4.40625V60.5938C0 63.0273 1.97266 65 4.40625 65H42.5938C45.0273 65 47 63.0273 47 60.5938V17.625L36.7188 10.2812L29.375 0Z" fill="#0F9D58"/>
+        <path d="M11.75 31.7188V49.7812H35.25V31.7188H11.75ZM22.0312 47.4062H14.1875V43.0156H22.0312V47.4062ZM22.0312 41.0938H14.1875V36.7031H22.0312V41.0938ZM32.8125 47.4062H24.9688V43.0156H32.8125V47.4062ZM32.8125 41.0938H24.9688V36.7031H32.8125V41.0938ZM32.8125 34.7344H14.1875V32.5781H32.8125V34.7344Z" fill="#F1F1F1"/>
+        <path d="M29.375 0V13.2188C29.375 15.6523 31.3477 17.625 33.7812 17.625H47L29.375 0Z" fill="#87CEAC"/>
+      </svg>`
+    },
+    Slides: {
+      key: 'slides', cls: 'orange', label: 'Slides', sub: 'Презентации',
+      icon: `<svg viewBox="0 0 47 65">
+        <path d="M29.375 0H4.40625C1.97266 0 0 1.97266 0 4.40625V60.5938C0 63.0273 1.97266 65 4.40625 65H42.5938C45.0273 65 47 63.0273 47 60.5938V17.625L36.7188 10.2812L29.375 0Z" fill="#F4B400"/>
+        <path d="M13.2188 26.8438V46.3281H33.7812V26.8438H13.2188ZM30.8438 43.3906H16.1562V29.7812H30.8438V43.3906Z" fill="#F1F1F1"/>
+        <path d="M29.375 0V13.2188C29.375 15.6523 31.3477 17.625 33.7812 17.625H47L29.375 0Z" fill="#FADA80"/>
+      </svg>`
+    }
+  };
+
+  const editIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
+  const chevronSvg = `<svg class="chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>`;
+  const params = new URLSearchParams(window.location.search);
+  let taskPageId = normalizeUuid(params.get('task') || params.get('taskPageId'));
+  let accessToken = params.get('accessToken') || '';
+  let embedNonce = params.get('embedNonce') || '';
+  const isLocal = location.protocol === 'file:' || ['localhost','127.0.0.1','::1'].includes(location.hostname);
+  const isPublishedCanary = location.hostname.toLowerCase() === 'ravilvaliev1999-spec.github.io';
+  const requestedMock = params.get('mock') === '1';
+  const mockRequested = requestedMock && (isLocal || isPublishedCanary);
+  const DOWNLOAD_COURIER_URL = 'https:\/\/ravilvaliev1999-spec.github.io/notion-widgets/download-courier.html';
+  const EMBED_BRIDGE_ORIGIN = 'https:\/\/ravilvaliev1999-spec.github.io';
+  const DRIVE_POLL_INTERVAL_MS = 15000;
+  const DRIVE_POLL_MIN_GAP_MS = 12000;
+  const bridgeInstanceId = uid();
+  const state = { task:null, folderUrl:null, serviceUrl:null, materials:[], busy:new Set(), syncing:false, drivePolling:false, lastDrivePollAt:0, claimRefreshNotBefore:0, bootstrapped:false, maxUploadBytes:8388608, dragId:null, mock:false };
+  const retryUpload = new Map();
+  const memoryIdempotency = new Map();
+  const $ = (id) => document.getElementById(id);
+  const bridge = createBridge();
+  let toastTimer = 0;
+  let orderSaveRunning = false;
+  let queuedOrder = null;
+  let backgroundRpcTail = Promise.resolve();
+  let geometryRaf = 0;
+
+  function normalizeUuid(value) {
+    const raw = String(value || '').toLowerCase().replace(/[^0-9a-f]/g, '');
+    if (!/^[0-9a-f]{32}$/.test(raw)) return null;
+    return [raw.slice(0,8),raw.slice(8,12),raw.slice(12,16),raw.slice(16,20),raw.slice(20)].join('-');
+  }
+
+  function resolveRuntimeLocation() {
+    if (taskPageId && accessToken) return Promise.resolve();
+    const urlApi=window.google&&google.script&&google.script.url;
+    if(!urlApi||typeof urlApi.getLocation!=='function')return Promise.resolve();
+    return new Promise((resolve)=>{
+      let settled=false;
+      const finish=()=>{if(settled)return;settled=true;clearTimeout(timer);resolve();};
+      const timer=setTimeout(finish,5000);
+      try {
+        urlApi.getLocation((location)=>{
+          const runtimeParams=location&&location.parameter||{};
+          taskPageId=normalizeUuid(runtimeParams.task||runtimeParams.taskPageId||taskPageId);
+          accessToken=String(runtimeParams.accessToken||accessToken||'');
+          embedNonce=String(runtimeParams.embedNonce||embedNonce||'');
+          finish();
+        });
+      } catch(_error) { finish(); }
+    });
+  }
+
+  function uid() {
+    if (crypto.randomUUID) return crypto.randomUUID();
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (char) => {
+      const random = Math.random() * 16 | 0;
+      return (char === 'x' ? random : (random & 3 | 8)).toString(16);
+    });
+  }
+
+  function sessionStore() {
+    try { return window['session' + 'Storage']; } catch (_error) { return null; }
+  }
+
+  function hashText(value) {
+    let hash = 2166136261;
+    for (const char of String(value || '')) { hash ^= char.charCodeAt(0); hash = Math.imul(hash, 16777619); }
+    return (hash >>> 0).toString(36);
+  }
+
+  function idempotencySlot(action, fingerprint) {
+    return `notion-widget-v20:${taskPageId || 'no-task'}:${action}:${hashText(fingerprint || '')}`;
+  }
+
+  function stableIdempotency(action, fingerprint) {
+    const slot = idempotencySlot(action, fingerprint);
+    const store = sessionStore();
+    try {
+      const existing = store ? store.getItem(slot) : memoryIdempotency.get(slot);
+      if (existing) return { slot, value: existing };
+      const value = uid();
+      if (store) store.setItem(slot, value); else memoryIdempotency.set(slot, value);
+      return { slot, value };
+    } catch (_error) {
+      const existing = memoryIdempotency.get(slot);
+      if (existing) return { slot, value: existing };
+      const value = uid(); memoryIdempotency.set(slot, value); return { slot, value };
+    }
+  }
+
+  function clearIdempotency(operation) {
+    if (!operation) return;
+    try { const store = sessionStore(); if (store) store.removeItem(operation.slot); } catch (_error) {}
+    memoryIdempotency.delete(operation.slot);
+  }
+
+  function sectionFor(item) { return SECTIONS.includes(item && item.section) ? item.section : 'Drive'; }
+  function activeMaterials(section) {
+    return state.materials.filter((item) => sectionFor(item) === section && !item.archived)
+      .sort((a,b) => Number(a.position || 0) - Number(b.position || 0));
+  }
+
+  function classify(name, mime, url) {
+    const n=String(name||'').toLowerCase(), m=String(mime||'').toLowerCase(), u=String(url||'').toLowerCase();
+    const host=(u.match(/^https:\/\/([^/?#]+)/i)||[])[1]?.replace(/:443$/,'')||'';
+    if ((host==='docs.google.com'&&/\/document\//.test(u)) || /wordprocessingml|msword/.test(m) || /\.(doc|docx|odt|rtf)$/.test(n)) return 'Docs';
+    if ((host==='docs.google.com'&&/\/spreadsheets\//.test(u)) || /spreadsheetml|ms-excel|text\/csv/.test(m) || /\.(xls|xlsx|ods|csv)$/.test(n)) return 'Sheets';
+    if ((host==='docs.google.com'&&/\/presentation\//.test(u)) || /presentationml|ms-powerpoint/.test(m) || /\.(ppt|pptx|odp)$/.test(n)) return 'Slides';
+    return 'Drive';
+  }
+
+  function mockGoogleFileId(url) {
+    const value=String(url||'');
+    const host=(value.match(/^https:\/\/([^/?#]+)/i)||[])[1]?.toLowerCase().replace(/:443$/,'')||'';
+    if(host!=='drive.google.com'&&host!=='docs.google.com')return null;
+    const match=value.match(/\/d\/([a-zA-Z0-9_-]{10,})/)||value.match(/\/folders\/([a-zA-Z0-9_-]{10,})/)||value.match(/[?&]id=([a-zA-Z0-9_-]{10,})/);
+    return match ? match[1] : null;
+  }
+
+  function mockNormalizeUrl(value) {
+    let raw=String(value||'').trim();if(!/^https:\/\//i.test(raw))return null;
+    let fragment='';const hashIndex=raw.indexOf('#');if(hashIndex>=0){fragment=raw.slice(hashIndex);raw=raw.slice(0,hashIndex);}
+    const match=raw.match(/^(https:\/\/)([^/?#]+)([^?#]*)(?:\?([^#]*))?$/i);if(!match)return null;
+    const host=match[2].toLowerCase().replace(/:443$/,'');if(!host||/[\s\\]/.test(host))return null;
+    let path=(match[3]||'/').replace(/\/{2,}/g,'/');if(path.length>1)path=path.replace(/\/+$/,'');
+    const query=[];(match[4]||'').split('&').forEach(pair=>{if(!pair)return;const key=(pair.split('=')[0]||'').replace(/\+/g,' ');let decoded;try{decoded=decodeURIComponent(key).toLowerCase();}catch(_err){decoded=key.toLowerCase();}if(/^utm_/.test(decoded)||/^(fbclid|gclid|yclid|mc_cid|mc_eid)$/.test(decoded))return;query.push(pair);});query.sort();
+    return `https:\/\/${host}${path}${query.length?`?${query.join('&')}`:''}${fragment}`;
+  }
+
+  function mockLinkMeta(url,requestedSection) {
+    const inferred=classify('', '', url);
+    const section=requestedSection||inferred;
+    const googleFileId=mockGoogleFileId(url);
+    const host=((String(url||'').match(/^https:\/\/([^/?#]+)/i)||[])[1]||'').toLowerCase().replace(/:443$/,'');
+    const nativeDocs=host==='docs.google.com'&&/\/document\//i.test(url),nativeSheets=host==='docs.google.com'&&/\/spreadsheets\//i.test(url),nativeSlides=host==='docs.google.com'&&/\/presentation\//i.test(url);
+    const format=nativeDocs?'Google Docs':nativeSheets?'Google Sheets':nativeSlides?'Google Slides':'Link';
+    return {section,format,provider:nativeDocs||nativeSheets||nativeSlides?'Google Drive':'External URL',googleFileId};
+  }
+
+  function mockNextPosition(items,section) {
+    return items.reduce((max,item)=>{
+      const position=Number(item.position);
+      return item.section===section&&!item.archived&&Number.isFinite(position)?Math.max(max,position):max;
+    },-1)+1;
+  }
+
+  function createBridge() {
+    if (mockRequested) { state.mock=true; return createMockBridge(); }
+    if (window.google && google.script && google.script.run) {
+      return { call(method,payload) { return new Promise((resolve) => {
+        const runner=google.script.run.withSuccessHandler(resolve).withFailureHandler((error)=>resolve({ok:false,error:{code:'TRANSPORT',message:error&&error.message||'Нет связи с Apps Script.',retryable:true}}));
+        runner[method](payload);
+      }); } };
+    }
+    return { call() { return Promise.resolve({ok:false,error:{code:'RUNTIME_REQUIRED',message:'Откройте виджет через Google Apps Script или добавьте ?mock=1 для локальной проверки.',retryable:false}}); } };
+  }
+
+  function createMockBridge() {
+    const now=new Date().toISOString();
+    const seeded=params.get('mockSeed')==='1';
+    const seedItems=[
+      {id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',name:'Договор поставки.docx',section:'Docs',format:'Word',provider:'Google Drive',openUrl:'https:\/\/drive.google.com/',downloadUrl:'https:\/\/drive.google.com/',canDownload:true,googleFileId:'mockdocxfile123',folderId:'mockfolder123',widgetOwned:true,mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',size:184320,position:0,syncStatus:'synced',updatedAt:now,_mockBase64:'VjIwIG1vY2sgZG9jdW1lbnQ='},
+      {id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',name:'Финансовая модель',section:'Sheets',format:'Google Sheets',provider:'Google Drive',openUrl:'https:\/\/docs.google.com/spreadsheets/d/mocksheetfile123/edit',canDownload:false,googleFileId:'mocksheetfile123',folderId:'mockfolder123',widgetOwned:true,position:0,syncStatus:'synced',updatedAt:now},
+      {id:'cccccccc-cccc-4ccc-8ccc-cccccccccccc',name:'Референс проекта',section:'Drive',format:'Link',provider:'External URL',openUrl:'https:\/\/example.com/',canDownload:false,position:0,syncStatus:'synced',updatedAt:now}
+    ];
+    const items=seeded?seedItems:[];
+    const mockPollClaim=(item)=>{if(item&&item.provider==='Google Drive'&&item.googleFileId&&/^Google (?:Docs|Sheets|Slides)$/.test(String(item.format||'')))item.drivePollClaim=`mock:${item.id}:${item.googleFileId}`;return item;};
+    items.forEach(mockPollClaim);
+    const ok=(data)=>Promise.resolve({ok:true,data});
+    const fail=(code,message,retryable=false)=>Promise.resolve({ok:false,error:{code,message,retryable}});
+    return { call(method,payload) {
+      if (method==='apiBootstrap') return ok({version:'v20-mock',task:{id:payload.taskPageId,name:'Виджет файлов — задача'},folderUrl:'https:\/\/drive.google.com/drive/folders/mockfolder123',serviceUrl:null,maxUploadBytes:8388608,materials:items.filter(x=>!x.archived)});
+      if (method==='apiPollDriveMetadata') {
+        const requested=new Set((payload.materials||[]).map(row=>`${row.pageId}:${row.googleFileId}`));
+        return ok({materials:items.filter(item=>requested.has(`${item.id}:${item.googleFileId}`)).map(item=>({pageId:item.id,googleFileId:item.googleFileId,name:item.name,section:item.section,format:item.format,openUrl:item.openUrl,mimeType:item.mimeType||'',size:item.size??null,driveMd5:item.driveMd5||'',downloadName:item.name,normalizedUrl:item.openUrl||'',drivePollClaim:item.drivePollClaim})),polledAt:new Date().toISOString()});
+      }
+      if (method==='apiSyncTask') return ok({materials:items.filter(x=>!x.archived),syncedAt:new Date().toISOString()});
+      if (method==='apiCreateGoogle') { const format=payload.section==='Docs'?'Google Docs':payload.section==='Sheets'?'Google Sheets':'Google Slides'; const googleFileId=`mock-${uid().replace(/-/g,'')}`; const path=payload.section==='Docs'?'document':payload.section==='Sheets'?'spreadsheets':'presentation'; const item={id:uid(),name:payload.name||`Новый ${format}`,section:payload.section,format,provider:'Google Drive',openUrl:`https:\/\/docs.google.com/${path}/d/${googleFileId}/edit`,canDownload:false,googleFileId,folderId:'mockfolder123',widgetOwned:true,position:mockNextPosition(items,payload.section),syncStatus:'synced',updatedAt:now}; items.push(item); return ok({material:item,duplicate:false}); }
+      if (method==='apiAddLink') { const normalized=mockNormalizeUrl(payload.url);if(!normalized)return fail('INVALID_URL','Нужна корректная HTTPS-ссылка.'); const meta=mockLinkMeta(normalized,payload.section); const existing=items.find(x=>(meta.googleFileId&&x.googleFileId===meta.googleFileId)||x.openUrl===normalized); if(existing){if(existing.syncStatus==='deleted')return fail('MATERIAL_DELETED','Эта ссылка относится к физически удалённому материалу и не может быть восстановлена.');if(existing.archived){const nextPosition=mockNextPosition(items,existing.section);existing.archived=false;existing.syncStatus='synced';existing.position=nextPosition;return ok({material:existing,duplicate:true,restored:true});}return ok({material:existing,duplicate:true});} const fallback=meta.format==='Google Docs'?'Документ по ссылке':meta.format==='Google Sheets'?'Таблица по ссылке':meta.format==='Google Slides'?'Презентация по ссылке':new URL(normalized).hostname; const item={id:uid(),name:payload.name||fallback,section:meta.section,format:meta.format,provider:meta.provider,openUrl:normalized,canDownload:false,googleFileId:meta.googleFileId,widgetOwned:false,position:mockNextPosition(items,meta.section),syncStatus:'synced',archived:false,updatedAt:new Date().toISOString()}; items.push(item); return ok({material:item,duplicate:false}); }
+      if (method==='apiUpload') { const section=payload.section||classify(payload.name,payload.mimeType,''); const item={id:uid(),name:payload.name,section,format:section==='Docs'?'Word':section==='Sheets'?'Excel':section==='Slides'?'PowerPoint':'Other File',provider:'Google Drive',openUrl:'https:\/\/drive.google.com/',downloadUrl:'https:\/\/drive.google.com/',canDownload:true,googleFileId:`mock-${uid().replace(/-/g,'')}`,folderId:'mockfolder123',widgetOwned:true,mimeType:payload.mimeType,size:Math.floor(payload.dataBase64.length*3/4),position:mockNextPosition(items,section),syncStatus:'synced',updatedAt:new Date().toISOString(),_mockBase64:payload.dataBase64}; items.push(item); return ok({material:item,duplicate:false}); }
+      if (method==='apiDownload') { const item=items.find(x=>x.id===payload.pageId);if(!item||!item.widgetOwned||!item.canDownload)return fail('DOWNLOAD_NOT_ALLOWED','Этот материал нельзя скачать напрямую.');const base64=item._mockBase64||'VjIwIG1vY2sgZmlsZQ==';return ok({name:item.name,mimeType:item.mimeType||'application/octet-stream',size:Math.floor(base64.length*3/4)-(base64.endsWith('==')?2:base64.endsWith('=')?1:0),base64}); }
+      if (method==='apiUpdateMaterial') {
+        const item=items.find(x=>x.id===payload.pageId);if(!item)return fail('MATERIAL_ID_REQUIRED','Материал не найден.');
+        const candidate={...item,name:payload.name||item.name,section:payload.section||item.section};
+        if(item.provider==='External URL'&&payload.url){
+          const normalized=mockNormalizeUrl(payload.url);if(!normalized)return fail('INVALID_URL','Нужна корректная HTTPS-ссылка.');const meta=mockLinkMeta(normalized,payload.section);
+          const collision=items.find(x=>x.id!==item.id&&((meta.googleFileId&&x.googleFileId===meta.googleFileId)||x.openUrl===normalized));
+          if(collision)return fail('DUPLICATE_MATERIAL','Такая ссылка уже есть в задаче.');
+          Object.assign(candidate,{openUrl:normalized,section:meta.section,format:meta.format,provider:meta.provider,googleFileId:meta.googleFileId,folderId:null,widgetOwned:false,canDownload:false,downloadUrl:null});
+        }
+        Object.assign(item,candidate);return ok({material:item});
+      }
+      if (method==='apiReorder') { payload.items.forEach(row=>{const item=items.find(x=>x.id===row.pageId);if(item){item.section=row.section;item.position=row.position;}}); return ok({count:payload.items.length}); }
+      if (method==='apiArchive') { const item=items.find(x=>x.id===payload.pageId);if(!item)return fail('MATERIAL_ID_REQUIRED','Материал не найден.');if(item.syncStatus==='deleted')return ok({material:item,archived:true,deleted:true,duplicate:true});item.archived=true;item.syncStatus='archived';return ok({material:item,archived:true}); }
+      if (method==='apiRestore') { const item=items.find(x=>x.id===payload.pageId);if(!item)return fail('MATERIAL_ID_REQUIRED','Материал не найден.');if(item.syncStatus==='deleted')return fail('MATERIAL_DELETED','Физически удалённый материал нельзя восстановить.');const nextPosition=mockNextPosition(items,item.section);item.archived=false;item.syncStatus='synced';item.position=nextPosition;return ok({material:item,archived:false}); }
+      if (method==='apiDeletePhysical') { const item=items.find(x=>x.id===payload.pageId); if(!item||!item.widgetOwned||!item.googleFileId)return fail('DELETE_NOT_OWNED_BY_WIDGET','Физически удалять можно только файлы, созданные этим виджетом.'); if(payload.confirmName!==item.name)return fail('CONFIRMATION_REQUIRED','Введите название файла целиком.');item.archived=true;item.syncStatus='deleted';return ok({material:item,deleted:true}); }
+      return fail('MOCK_METHOD',`Mock не знает ${method}`);
+    }, items };
+  }
+
+  async function call(method, payload) {
+    const securedPayload=Object.assign({},payload||{},{accessToken});
+    const response=await bridge.call(method,securedPayload);
+    if (!response || !response.ok) {
+      const details=response&&response.error||{code:'EMPTY_RESPONSE',message:'Пустой ответ сервера.',retryable:true};
+      const error=new Error(details.message);Object.assign(error,details);throw error;
+    }
+    return response.data;
+  }
+
+  function callBackground(method,payload) {
+    const run=()=>call(method,payload);
+    const request=backgroundRpcTail.then(run,run);
+    backgroundRpcTail=request.catch(()=>{});
+    return request;
+  }
+
+  function cardMarkup(section, title, count, editLabel, editData) {
+    const group=GROUPS[section];
+    return `<span class="icon">${group.icon}</span><span class="meta"><span class="title"></span><span class="sub">${escapeHtml(group.sub)}</span></span><span class="count">${count}</span>${chevronSvg}<button type="button" class="gedit" ${editData} aria-label="${escapeHtml(editLabel)}" title="${escapeHtml(editLabel)}">${editIcon}</button>`;
+  }
+
+  function escapeHtml(value) {
+    return String(value||'').replace(/[&<>"']/g,(char)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  }
+
+  function buildGrid() {
+    const grid=$('grid');grid.textContent='';
+    SECTIONS.forEach((section)=>{
+      const group=GROUPS[section];
+      const col=document.createElement('section');col.className='col open';col.dataset.section=section;
+      const primary=document.createElement('article');primary.className=`btn ${group.cls} group-card`;primary.dataset.service=section;primary.tabIndex=0;primary.setAttribute('role','button');primary.setAttribute('aria-label',section==='Drive'?'Открыть папку задачи':`Создать новый файл ${section}`);primary.innerHTML=cardMarkup(section,group.label,0,`Загрузить файл в ${section}`,`data-upload-section="${section}"`);primary.querySelector('.title').textContent=group.label;
+      const files=document.createElement('div');files.className='files';files.id=`files-${section}`;files.setAttribute('aria-label',`Материалы ${section}`);
+      col.append(primary,files);grid.appendChild(col);
+    });
+    grid.addEventListener('click',handleGridClick);
+    grid.addEventListener('keydown',handleGridKeydown);
+    grid.addEventListener('dragstart',handleDragStart);
+    grid.addEventListener('dragend',handleDragEnd);
+    grid.addEventListener('dragover',handleDragOver);
+    grid.addEventListener('drop',handleDropReorder);
+  }
+
+  function render() {
+    SECTIONS.forEach((section)=>{
+      const col=document.querySelector(`.col[data-section="${section}"]`);
+      if(!col)return;
+      const materials=activeMaterials(section);
+      const primary=col.querySelector('.group-card');
+      primary.querySelector('.count').textContent=materials.length;
+      primary.classList.toggle('busy',state.busy.has(`create:${section}`));
+      primary.setAttribute('aria-busy',String(state.busy.has(`create:${section}`)));
+      const files=$(`files-${section}`);files.textContent='';
+      materials.forEach((item)=>files.appendChild(materialCard(item,materials.length)));
+      const add=document.createElement('button');add.type='button';add.className='file-add';add.dataset.addLink=section;add.textContent='+ добавить ссылку';add.disabled=state.busy.has(`link:${section}`);add.setAttribute('aria-label',`Добавить ссылку в ${section}`);files.appendChild(add);
+    });
+    postHeight();scheduleEmbedBridgeGeometry();
+  }
+
+  function materialCard(item,count) {
+    const section=sectionFor(item),group=GROUPS[section];
+    const courierHref=downloadCourierHref(item);
+    const card=document.createElement(courierHref?'a':'article');card.className=`btn ${group.cls} item-card`;card.dataset.itemId=item.id;card.tabIndex=0;card.draggable=!String(item.id).startsWith('pending:');
+    if(courierHref){card.href=courierHref;card.target='_blank';card.rel='noopener noreferrer';card.referrerPolicy='no-referrer';card.dataset.downloadCourier='true';card.classList.add('download-ready');}
+    else card.setAttribute('role','link');
+    if(item.syncStatus==='pending')card.classList.add('pending');if(item.error)card.classList.add('error');
+    const action=canPrepareDownload(item)?'Скачать':(item.openUrl?'Открыть':'Повторить');
+    card.setAttribute('aria-label',`${action}: ${item.name||'Без названия'}`);
+    card.setAttribute('aria-busy',String(item.syncStatus==='pending'));
+    card.innerHTML=cardMarkup(section,item.name||'Без названия',count,'Изменить материал',`data-edit-id="${escapeHtml(item.id)}"`);
+    card.querySelector('.title').textContent=item.name||'Без названия';
+    return card;
+  }
+
+  async function bootstrap() {
+    clearFatal();
+    if(!taskPageId){showFatal('В адресе виджета отсутствует корректный параметр task.');return;}
+    try {
+      const data=await call('apiBootstrap',{taskPageId});
+      state.task=data.task;state.folderUrl=data.folderUrl;state.serviceUrl=data.serviceUrl||null;state.materials=data.materials||[];state.maxUploadBytes=data.maxUploadBytes||state.maxUploadBytes;state.claimRefreshNotBefore=0;state.bootstrapped=true;render();announceEmbedBridgeReady();
+    } catch(error) { showFatal(error.message,Boolean(error.retryable)); }
+  }
+
+  async function refresh(silent) {
+    if(!taskPageId||!state.bootstrapped||state.syncing)return;
+    state.syncing=true;
+    try { const data=await callBackground('apiSyncTask',{taskPageId});state.materials=data.materials||[];state.claimRefreshNotBefore=0;render();if(!silent)toast('Названия обновлены'); }
+    catch(error) { if(!silent)showFatal(error.message,Boolean(error.retryable)); }
+    finally { state.syncing=false; }
+  }
+
+  function drivePollCoordinates() {
+    return state.materials.filter((item)=>item&&item.googleFileId&&item.drivePollClaim&&!item.archived&&!String(item.id||'').startsWith('pending:')&&/^Google (?:Docs|Sheets|Slides)$/.test(String(item.format||'')))
+      .map((item)=>({
+        pageId:item.id,googleFileId:item.googleFileId,claim:item.drivePollClaim,
+        currentName:item.name,currentOpenUrl:item.openUrl,currentFormat:item.format,currentSection:item.section,
+        currentMimeType:item.mimeType||'',currentSize:item.size??null,currentDriveMd5:item.driveMd5||'',
+        currentDownloadName:item.downloadName||item.name,currentNormalizedUrl:item.normalizedUrl||''
+      }));
+  }
+
+  function applyDriveMetadata(materials) {
+    let changed=false;
+    (Array.isArray(materials)?materials:[]).forEach((update)=>{
+      const pageId=normalizeUuid(update&&update.pageId);
+      const item=state.materials.find((candidate)=>candidate.id===pageId&&candidate.googleFileId===update.googleFileId);
+      if(!item)return;
+      ['name','section','format','openUrl','mimeType','size','driveMd5','downloadName','normalizedUrl','drivePollClaim'].forEach((key)=>{
+        if(Object.prototype.hasOwnProperty.call(update,key)&&item[key]!==update[key]){item[key]=update[key];changed=true;}
+      });
+    });
+    if(changed)render();
+    return changed;
+  }
+
+  async function pollDriveMetadata(urgent) {
+    const now=Date.now(),minGap=urgent?2000:DRIVE_POLL_MIN_GAP_MS;
+    if(!taskPageId||!state.bootstrapped||state.drivePolling||state.syncing||state.busy.size||now-state.lastDrivePollAt<minGap)return;
+    const materials=drivePollCoordinates();
+    if(!materials.length)return;
+    state.lastDrivePollAt=now;
+    state.drivePolling=true;
+    try {
+      const data=await callBackground('apiPollDriveMetadata',{taskPageId,materials});applyDriveMetadata(data.materials);
+      if(data.refreshRequired&&Date.now()>=state.claimRefreshNotBefore){state.claimRefreshNotBefore=Date.now()+5*60*1000;await refresh(true);}
+    }
+    catch(_error) {}
+    finally { state.drivePolling=false; }
+  }
+
+  async function createGoogle(section,bridgeRequest) {
+    if(state.busy.has(`create:${section}`))return;
+    const popup=bridgeRequest?null:window.open('about:blank','_blank');
+    if(popup)writeCourier(popup,'Создаю файл…');
+    const operation=bridgeRequest?{value:bridgeRequest.requestId}:stableIdempotency('create-google',section);state.busy.add(`create:${section}`);render();
+    try {
+      const data=await call('apiCreateGoogle',{taskPageId,section,idempotencyKey:operation.value});
+      if(!bridgeRequest)clearIdempotency(operation);upsert(data.material);render();
+      if(bridgeRequest){replyToEmbedBridge(bridgeRequest.source,bridgeRequest.origin,{type:'notion-widget-v20-primary-result',requestId:bridgeRequest.requestId,ok:true,openUrl:data.material&&data.material.openUrl||''});}
+      else if(data.material&&data.material.openUrl){if(popup&&!popup.closed){try{popup.opener=null;}catch(_error){}popup.location.replace(data.material.openUrl);}else window.open(data.material.openUrl,'_blank','noopener,noreferrer');}
+      else if(popup&&!popup.closed)popup.close();
+      toast(data.duplicate?'Файл уже был создан':'Файл создан и сохранён как знание');
+    } catch(error) {
+      if(bridgeRequest)replyToEmbedBridge(bridgeRequest.source,bridgeRequest.origin,{type:'notion-widget-v20-primary-result',requestId:bridgeRequest.requestId,ok:false,message:error.message,retryable:Boolean(error.retryable)});
+      else {if(popup&&!popup.closed)popup.close();showFatal(error.message,Boolean(error.retryable));}
+    }
+    finally { state.busy.delete(`create:${section}`);render(); }
+  }
+
+  function openLinkModal(section) {
+    $('linkSection').value=section;$('linkUrl').value='';openModal('linkModal');setTimeout(()=>$('linkUrl').focus(),40);
+  }
+
+  async function addLink(event) {
+    event.preventDefault();
+    const section=$('linkSection').value||'Drive',url=$('linkUrl').value.trim();
+    const operation=stableIdempotency('add-link',`${section}:${url}`);state.busy.add(`link:${section}`);$('linkSubmit').disabled=true;render();
+    try {
+      const data=await call('apiAddLink',{taskPageId,url,section,idempotencyKey:operation.value});
+      clearIdempotency(operation);upsert(data.material);closeModal('linkModal');render();toast(data.duplicate?'Эта ссылка уже есть в задаче':'Ссылка сохранена как знание');
+    } catch(error) { toast(error.message); }
+    finally { state.busy.delete(`link:${section}`);$('linkSubmit').disabled=false;render(); }
+  }
+
+  function chooseFiles(section) {
+    const input=$('fileInput');input.dataset.section=section;input.click();
+  }
+
+  function isBoundedAncestor(source) {
+    let ancestor=window.parent;
+    for(let depth=0;depth<5;depth+=1){
+      if(source===ancestor)return true;
+      let next;
+      try{next=ancestor.parent;}catch(_error){return false;}
+      if(!next||next===ancestor)return false;
+      ancestor=next;
+    }
+    return false;
+  }
+
+  function validEmbedBridgeEvent(event,data) {
+    return event.origin===EMBED_BRIDGE_ORIGIN&&isBoundedAncestor(event.source)&&/^[0-9a-f]{32}$/.test(embedNonce)&&data&&data.embedNonce===embedNonce;
+  }
+
+  function isEmbedBridgeMode() {
+    return /^[0-9a-f]{32}$/.test(embedNonce);
+  }
+
+  function configureEmbedPrimaryCards() {
+    if(!isEmbedBridgeMode())return;
+    document.querySelectorAll('.group-card[data-service]').forEach((card)=>{card.tabIndex=-1;card.dataset.bridgePrimary='true';});
+  }
+
+  function primaryGeometry() {
+    if(!isEmbedBridgeMode())return [];
+    return SECTIONS.map((section)=>{
+      const card=document.querySelector(`.group-card[data-service="${section}"]`);if(!card)return null;
+      const pencil=card.querySelector('[data-upload-section]');if(!pencil)return null;
+      const rect=card.getBoundingClientRect(),pencilRect=pencil.getBoundingClientRect();
+      return {section,left:rect.left,top:rect.top,width:rect.width,height:rect.height,pencil:{left:pencilRect.left,top:pencilRect.top,width:pencilRect.width,height:pencilRect.height}};
+    }).filter(Boolean);
+  }
+
+  function postToEmbedAncestors(message) {
+    let ancestor=window.parent;
+    for(let depth=0;depth<5;depth+=1){
+      try{ancestor.postMessage(Object.assign({},message,{embedNonce}),EMBED_BRIDGE_ORIGIN);}catch(_error){}
+      let next;
+      try{next=ancestor.parent;}catch(_error){return;}
+      if(!next||next===ancestor)return;
+      ancestor=next;
+    }
+  }
+
+  function replyToEmbedBridge(source,origin,message) {
+    try{source.postMessage(Object.assign({},message,{embedNonce}),origin);}catch(_error){}
+  }
+
+  function announceEmbedBridgeReady() {
+    if(!isEmbedBridgeMode()||!state.bootstrapped)return;
+    postToEmbedAncestors({type:'notion-widget-v20-bridge-ready',instanceId:bridgeInstanceId,geometry:primaryGeometry(),viewport:{width:window.innerWidth,height:window.innerHeight}});
+  }
+
+  function postEmbedBridgeGeometry() {
+    if(!isEmbedBridgeMode()||!state.bootstrapped)return;
+    postToEmbedAncestors({type:'notion-widget-v20-primary-geometry',geometry:primaryGeometry(),viewport:{width:window.innerWidth,height:window.innerHeight}});
+  }
+
+  function scheduleEmbedBridgeGeometry() {
+    if(geometryRaf||!isEmbedBridgeMode())return;
+    geometryRaf=requestAnimationFrame(()=>{geometryRaf=0;postEmbedBridgeGeometry();});
+  }
+
+  async function receiveEmbedBridgeMessage(event) {
+    const data=event.data;
+    if(!validEmbedBridgeEvent(event,data))return;
+    if(data.type==='notion-widget-v20-primary-geometry-request'&&Number.isSafeInteger(Number(data.requestId))&&Number(data.requestId)>0){
+      replyToEmbedBridge(event.source,event.origin,{type:'notion-widget-v20-primary-geometry',requestId:Number(data.requestId),geometry:primaryGeometry(),viewport:{width:window.innerWidth,height:window.innerHeight}});return;
+    }
+    if(data.type==='notion-widget-v20-primary-hover'&&SECTIONS.includes(data.section)){
+      const card=document.querySelector(`.group-card[data-service="${data.section}"]`);if(card)card.classList.toggle('bridge-hover',data.active===true);return;
+    }
+    if(data.type==='notion-widget-v20-primary-action'&&SECTIONS.includes(data.section)&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(data.requestId||''))){
+      if(data.section==='Drive'){
+        replyToEmbedBridge(event.source,event.origin,{type:'notion-widget-v20-primary-result',requestId:data.requestId,ok:Boolean(state.folderUrl),openUrl:state.folderUrl||'',message:state.folderUrl?'':'Папка задачи ещё создаётся'});
+      } else {
+        createGoogle(data.section,{source:event.source,origin:event.origin,requestId:data.requestId});
+      }
+      return;
+    }
+  }
+
+  async function uploadFiles(files,forcedSection) {
+    for(const file of Array.from(files||[])) {
+      if(file.size>state.maxUploadBytes){toast(`«${file.name}» превышает лимит загрузки`);continue;}
+      const section=forcedSection||classify(file.name,file.type,'');
+      const operation=stableIdempotency('upload',`${section}:${file.name}:${file.size}:${file.lastModified}`);
+      const pendingId=`pending:${operation.value}`;
+      let pending=state.materials.find(item=>item.id===pendingId);
+      if(!pending){pending={id:pendingId,name:file.name,section,format:'Файл',provider:'Google Drive',size:file.size,position:activeMaterials(section).length,syncStatus:'pending',widgetOwned:true};state.materials.push(pending);}
+      const attempt=async()=>{
+        pending.syncStatus='pending';pending.error=null;render();
+        try {
+          const dataBase64=await readFileBase64(file);
+          const data=await call('apiUpload',{taskPageId,name:file.name,mimeType:file.type||'application/octet-stream',section,dataBase64,idempotencyKey:operation.value});
+          clearIdempotency(operation);state.materials=state.materials.filter(item=>item.id!==pendingId);retryUpload.delete(pendingId);upsert(data.material);render();toast(`«${file.name}» загружен и сохранён как знание`);
+        } catch(error) { pending.syncStatus='error';pending.error=error.message;retryUpload.set(pendingId,attempt);render();toast(`Не удалось загрузить «${file.name}». Нажмите карточку, чтобы повторить.`); }
+      };
+      await attempt();
+    }
+  }
+
+  function readFileBase64(file) {
+    return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result||'').split(',')[1]||'');reader.onerror=()=>reject(new Error('Файл не удалось прочитать.'));reader.readAsDataURL(file);});
+  }
+
+  function writeCourier(courier,message) {
+    try {
+      courier.document.open();courier.document.write(`<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>${escapeHtml(message)}</title><body style="margin:0;background:#191919;color:#e6e6e4;font:14px system-ui;display:grid;place-items:center;min-height:100vh;text-align:center"><p role="status" style="margin:24px;max-width:340px">${escapeHtml(message)}</p></body></html>`);courier.document.close();
+    } catch (_error) {}
+  }
+
+  function strongDownloadTicket() {
+    const cryptoApi=window.crypto;
+    if(!cryptoApi||typeof cryptoApi.getRandomValues!=='function')return '';
+    const bytes=new Uint8Array(32);cryptoApi.getRandomValues(bytes);
+    return Array.from(bytes,(byte)=>byte.toString(16).padStart(2,'0')).join('');
+  }
+
+  function encodeCourierFragment(value) {
+    const bytes=new TextEncoder().encode(String(value||''));let binary='';
+    for(const byte of bytes)binary+=String.fromCharCode(byte);
+    return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  }
+
+  function downloadCourierHref(item) {
+    const materialId=normalizeUuid(item&&item.id),ticket=strongDownloadTicket();
+    if(!state.bootstrapped||!canPrepareDownload(item)||!state.serviceUrl||!taskPageId||!materialId||!ticket||!/^[A-Za-z0-9._~-]{32,256}$/.test(accessToken))return '';
+    try {
+      const service=new URL(state.serviceUrl);
+      if(service.protocol!=='https:'||service.hostname!=='script.google.com'||service.port||service.username||service.password||service.search||service.hash||!/^\/macros\/s\/[A-Za-z0-9_-]{20,}\/exec$/.test(service.pathname))return '';
+      service.searchParams.set('task',taskPageId);
+      service.searchParams.set('accessToken',accessToken);
+      service.searchParams.set('downloadPageId',materialId);
+      service.searchParams.set('downloadTicket',ticket);
+      const courier=new URL(DOWNLOAD_COURIER_URL);
+      if(courier.protocol!=='https:'||courier.origin!=='https:\/\/ravilvaliev1999-spec.github.io'||courier.pathname!=='/notion-widgets/download-courier.html'||courier.search||courier.hash)return '';
+      return `${courier.href}#v1=${encodeCourierFragment(service.href)}`;
+    } catch (_error) { return ''; }
+  }
+
+  function canPrepareDownload(item) {
+    return Boolean(item&&item.canDownload&&item.widgetOwned&&!item.archived&&!String(item.id||'').startsWith('pending:'));
+  }
+
+  function openExact(item) {
+    if(item.widgetOwnedBinary&&!item.canDownload){toast('Прямое скачивание этого файла пока недоступно. Обновите виджет и повторите попытку.');return;}
+    if(canPrepareDownload(item)){toast('Сервис скачивания временно недоступен. Обновите виджет.');return;}
+    if(item.openUrl){window.open(item.openUrl,'_blank','noopener,noreferrer');return;}
+    if(retryUpload.has(item.id)){retryUpload.get(item.id)();return;}
+    toast('Ссылка на файл пока недоступна');
+  }
+
+  function openEdit(id) {
+    const item=state.materials.find(material=>material.id===id);if(!item||String(id).startsWith('pending:'))return;
+    $('editId').value=item.id;$('editName').value=item.name||'';$('editSection').value=sectionFor(item);$('editUrl').value=item.openUrl||'';
+    const external=item.provider==='External URL';$('editUrl').hidden=!external;$('editUrlLabel').hidden=!external;openModal('editModal');setTimeout(()=>$('editName').focus(),40);
+  }
+
+  async function saveEdit(event) {
+    event.preventDefault();const item=currentItem();if(!item)return;
+    const operation=stableIdempotency('update-material',`${item.id}:${$('editName').value}:${$('editSection').value}:${$('editUrl').value}`);$('editSubmit').disabled=true;
+    const payload={taskPageId,pageId:item.id,name:$('editName').value.trim(),section:$('editSection').value,idempotencyKey:operation.value};if(item.provider==='External URL')payload.url=$('editUrl').value.trim();
+    try { const data=await call('apiUpdateMaterial',payload);clearIdempotency(operation);upsert(data.material);closeModal('editModal');render();toast('Материал обновлён'); }
+    catch(error){toast(error.message);}finally{$('editSubmit').disabled=false;}
+  }
+
+  function currentItem(){return state.materials.find(item=>item.id===$('editId').value);}
+
+  async function archiveCurrent() {
+    const item=currentItem();if(!item||!window.confirm(`Архивировать «${item.name}»? Сам файл останется в Google Drive.`))return;
+    const operation=stableIdempotency('archive',item.id);
+    try { await call('apiArchive',{taskPageId,pageId:item.id,idempotencyKey:operation.value});clearIdempotency(operation);state.materials=state.materials.filter(material=>material.id!==item.id);closeModal('editModal');render();toast('Материал архивирован'); }
+    catch(error){toast(error.message);}
+  }
+
+  function upsert(item) {
+    if(!item)return;const index=state.materials.findIndex(existing=>existing.id===item.id);if(index>=0)state.materials[index]=item;else state.materials.push(item);
+  }
+
+  function captureOrder(){const items=[];SECTIONS.forEach(section=>activeMaterials(section).filter(item=>!String(item.id).startsWith('pending:')).forEach((item,index)=>{item.position=index;items.push({pageId:item.id,section,position:index});}));return items;}
+  async function persistOrder(){queuedOrder=captureOrder();render();if(orderSaveRunning)return;orderSaveRunning=true;
+    try{while(queuedOrder){const items=queuedOrder;queuedOrder=null;const fingerprint=items.map(item=>`${item.pageId}:${item.section}:${item.position}`).join('|');const operation=stableIdempotency('reorder',fingerprint);try{await call('apiReorder',{taskPageId,items,idempotencyKey:operation.value});clearIdempotency(operation);}catch(error){queuedOrder=null;toast(`${error.message} Обновляю серверный порядок.`);await refresh(true);return;}}}
+    finally{orderSaveRunning=false;if(queuedOrder)persistOrder();}}
+
+  function handleGridClick(event) {
+    const upload=event.target.closest('[data-upload-section]');if(upload){event.preventDefault();event.stopPropagation();chooseFiles(upload.dataset.uploadSection);return;}
+    const add=event.target.closest('[data-add-link]');if(add){openLinkModal(add.dataset.addLink);return;}
+    const edit=event.target.closest('[data-edit-id]');if(edit){event.preventDefault();event.stopPropagation();openEdit(edit.dataset.editId);return;}
+    const itemCard=event.target.closest('[data-item-id]');if(itemCard){if(itemCard.dataset.downloadCourier==='true')return;const item=state.materials.find(material=>material.id===itemCard.dataset.itemId);if(item)openExact(item);return;}
+    const service=event.target.closest('[data-service]');if(!service)return;const section=service.dataset.service;
+    if(isEmbedBridgeMode())return;
+    if(section==='Drive'){if(state.folderUrl)window.open(state.folderUrl,'_blank','noopener,noreferrer');else toast('Папка задачи ещё создаётся');return;}
+    createGoogle(section);
+  }
+
+  function handleGridKeydown(event) {
+    if(event.target!==event.target.closest('.btn'))return;
+    if(event.target.dataset.downloadCourier==='true'&&event.key==='Enter')return;
+    if(event.key==='Enter'||event.key===' '){event.preventDefault();event.target.click();}
+  }
+
+  function handleDragStart(event){const card=event.target.closest('.item-card[data-item-id]');if(!card)return;state.dragId=card.dataset.itemId;card.classList.add('dragging');event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',state.dragId);}
+  function handleDragEnd(){document.querySelectorAll('.dragging').forEach(element=>element.classList.remove('dragging'));state.dragId=null;}
+  function handleDragOver(event){if(!state.dragId)return;const col=event.target.closest('.col');if(col)event.preventDefault();}
+  function handleDropReorder(event){if(!state.dragId)return;event.preventDefault();const col=event.target.closest('.col');if(!col)return;const item=state.materials.find(material=>material.id===state.dragId);if(!item)return;const target=event.target.closest('.item-card[data-item-id]');item.section=col.dataset.section;const peers=activeMaterials(item.section).filter(peer=>peer.id!==item.id);let index=target?peers.findIndex(peer=>peer.id===target.dataset.itemId):peers.length;if(index<0)index=peers.length;peers.splice(index,0,item);peers.forEach((peer,position)=>peer.position=position);handleDragEnd();render();persistOrder();}
+
+  function openModal(id) { const modal=$(id);modal.classList.add('open');modal.setAttribute('aria-hidden','false'); }
+  function closeModal(id) { const modal=$(id);modal.classList.remove('open');modal.setAttribute('aria-hidden','true'); }
+  function showFatal(message,retryable) { const box=$('fatal');box.textContent=message;if(retryable){const button=document.createElement('button');button.type='button';button.textContent='Повторить';button.addEventListener('click',bootstrap);box.appendChild(button);}box.hidden=false;postHeight(); }
+  function clearFatal(){const box=$('fatal');box.hidden=true;box.textContent='';}
+  function toast(message){clearTimeout(toastTimer);$('toast').textContent=message;$('liveStatus').textContent=message;$('toast').classList.add('show');toastTimer=setTimeout(()=>$('toast').classList.remove('show'),3200);}
+  function postHeight(){requestAnimationFrame(()=>{try{parent.postMessage({type:'notion-widget-v20-height',height:document.documentElement.scrollHeight},'*');}catch(_error){}});}
+
+  function bindEvents() {
+    $('fileInput').addEventListener('change',(event)=>{const section=event.target.dataset.section||'';uploadFiles(event.target.files,section);event.target.value='';});
+    window.addEventListener('message',receiveEmbedBridgeMessage);
+    $('linkForm').addEventListener('submit',addLink);$('editForm').addEventListener('submit',saveEdit);$('archiveButton').addEventListener('click',archiveCurrent);
+    document.querySelectorAll('[data-close]').forEach(button=>button.addEventListener('click',()=>closeModal(button.dataset.close)));
+    document.querySelectorAll('.modal-back').forEach(modal=>modal.addEventListener('click',(event)=>{if(event.target===modal)closeModal(modal.id);}));
+    document.addEventListener('keydown',(event)=>{if(event.key==='Escape')document.querySelectorAll('.modal-back.open').forEach(modal=>closeModal(modal.id));});
+    window.addEventListener('focus',()=>pollDriveMetadata(true));
+    window.addEventListener('resize',scheduleEmbedBridgeGeometry);
+    window.addEventListener('scroll',scheduleEmbedBridgeGeometry,{passive:true});
+    document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')pollDriveMetadata(true);});
+    const pollInterval=DRIVE_POLL_INTERVAL_MS+Math.floor(Math.random()*5000);
+    window.setInterval(()=>{if(document.visibilityState==='visible')pollDriveMetadata(false);},pollInterval);
+    if(window.ResizeObserver)new ResizeObserver(()=>{postHeight();scheduleEmbedBridgeGeometry();}).observe(document.body);
+  }
+
+  buildGrid();configureEmbedPrimaryCards();bindEvents();render();resolveRuntimeLocation().then(()=>{configureEmbedPrimaryCards();return bootstrap();}).catch((error)=>showFatal(error.message,Boolean(error.retryable)));
+  if(state.mock)window.__widgetV20Mock={state,refresh,rename(pageId,name){const item=state.materials.find(material=>material.id===pageId);if(item){item.name=name;render();}}};
+})();
+</script>
+</body>
+</html>

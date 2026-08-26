@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="robots" content="noindex,nofollow">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src https://script.google.com https://*.googleusercontent.com; script-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <title>Файлы задачи</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; min-height: 100%; margin: 0; background: #191919; overflow-x: hidden; }
+    .shell { position: relative; width: 100%; min-height: 100vh; }
+    iframe { display: block; width: 100%; min-height: 100vh; border: 0; background: #191919; }
+    .fatal {
+      position: fixed; z-index: 30; left: 50%; bottom: 12px; transform: translateX(-50%);
+      width: min(520px,calc(100% - 24px)); margin: 0; padding: 10px 12px; border: 1px solid rgba(255,105,105,.38);
+      border-radius: 10px; color: #ffb5b5; background: rgba(100,20,20,.3);
+      font: 12px/1.4 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    }
+    .interaction-grid {
+      position: absolute; z-index: 10; inset: 0; pointer-events: none;
+    }
+    .interaction-slot { position: absolute; pointer-events: none; }
+    .primary-control {
+      position: absolute; z-index: 1; padding: 0; border: 0; background: transparent; color: transparent;
+      cursor: pointer; pointer-events: auto; -webkit-tap-highlight-color: transparent;
+    }
+    .primary-control-main { border-radius: 12px 0 0 12px; }
+    .primary-control-pencil-top { border-radius: 0 12px 0 0; }
+    .primary-control-pencil-bottom { border-radius: 0 0 12px 0; }
+    .primary-control:focus-visible { outline: 2px solid rgba(255,255,255,.4); outline-offset: 2px; }
+    .primary-control:disabled { cursor: progress; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="fatal" id="fatal" role="alert" hidden></div>
+    <iframe id="widget" credentialless title="Файлы задачи" referrerpolicy="no-referrer"></iframe>
+    <div class="interaction-grid" id="interactionGrid" aria-label="Действия с файлами" hidden>
+      <div class="interaction-slot" data-slot="Drive"></div>
+      <div class="interaction-slot" data-slot="Docs"></div>
+      <div class="interaction-slot" data-slot="Sheets"></div>
+      <div class="interaction-slot" data-slot="Slides"></div>
+    </div>
+  </div>
+  <script src="apps-script-embed.js?v=34" defer></script>
+</body>
+</html>

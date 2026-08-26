@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src https://script.google.com https://*.googleusercontent.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'">
+  <title>Скачивание файла</title>
+  <style>
+    html,body{margin:0;min-height:100%;background:#191919;color:#e6e6e4;font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    body{display:grid;place-items:center;min-height:100vh;text-align:center}
+    main{padding:24px}p{margin:0;max-width:360px}
+    .runner{position:fixed;width:1px;height:1px;left:-10000px;top:-10000px;border:0;opacity:0;pointer-events:none}
+  </style>
+</head>
+<body>
+  <main><p id="status" role="status" aria-live="polite">Готовлю скачивание…</p></main>
+  <iframe id="runner" class="runner" title="Защищённое скачивание" credentialless referrerpolicy="no-referrer"></iframe>
+  <script>
+  (()=>{
+    'use strict';
+    const CLOSE_AFTER_MS=60*1000;
+    const DIRECT_CLOSE_AFTER_MS=2500;
+    const status=document.getElementById('status');
+    const runner=document.getElementById('runner');
+    let expectedTicket='';
+
+    function fail(message){status.textContent=message;runner.remove();}
+
+    function decodeFragment(hash){
+      const match=/^#v1=([A-Za-z0-9_-]{80,6000})$/.exec(String(hash||''));
+      if(!match)throw new Error('Ссылка на скачивание повреждена.');
+      const encoded=match[1],padding='='.repeat((4-encoded.length%4)%4);
+      let binary;
+      try{binary=atob(encoded.replace(/-/g,'+').replace(/_/g,'/')+padding);}catch(_error){throw new Error('Ссылка на скачивание повреждена.');}
+      const bytes=new Uint8Array(binary.length);
+      for(let index=0;index<binary.length;index+=1)bytes[index]=binary.charCodeAt(index);
+      try{return new TextDecoder('utf-8',{fatal:true}).decode(bytes);}catch(_error){throw new Error('Ссылка на скачивание повреждена.');}
+    }
+
+    function validateServiceUrl(raw){
+      if(typeof raw!=='string'||raw.length>4500)throw new Error('Ссылка на скачивание слишком длинная.');
+      const url=new URL(raw);
+      if(url.protocol!=='https:'||url.hostname!=='script.google.com'||url.port||url.username||url.password||url.hash||!/^\/macros\/s\/[A-Za-z0-9_-]{20,}\/exec$/.test(url.pathname))throw new Error('Адрес сервиса скачивания недопустим.');
+      const entries=Array.from(url.searchParams.entries()),allowed=new Set(['task','accessToken','downloadPageId','downloadTicket']);
+      if(entries.length!==4||entries.some(([key])=>!allowed.has(key))||new Set(entries.map(([key])=>key)).size!==4)throw new Error('Параметры скачивания повреждены.');
+      if(!/^[0-9a-fA-F-]{32,36}$/.test(url.searchParams.get('task')||'')||!/^[0-9a-fA-F-]{32,36}$/.test(url.searchParams.get('downloadPageId')||'')||!/^[A-Za-z0-9._~-]{32,256}$/.test(url.searchParams.get('accessToken')||'')||!/^[A-Za-z0-9_-]{32,160}$/.test(url.searchParams.get('downloadTicket')||''))throw new Error('Параметры скачивания повреждены.');
+      return url.href;
+    }
+
+    function safeDownloadName(value){
+      const name=String(value||'Файл').replace(/[\u0000-\u001f\u007f/\\]/g,' ').replace(/\s+/g,' ').trim();
+      return (name||'Файл').slice(0,180);
+    }
+
+    function validateDirectDownload(data){
+      const raw=String(data&&data.url||'');
+      if(!raw||raw.length>6000)throw new Error('Сервис вернул недопустимый адрес файла.');
+      const url=new URL(raw),host=url.hostname.toLowerCase();
+      const trusted=host==='secure.notion-static.com'||host==='file.notion.so'||/^prod-files-secure\.s3(?:\.[a-z0-9-]+)?\.amazonaws\.com$/.test(host);
+      const expiry=Date.parse(String(data&&data.expiresAt||''));
+      if(url.protocol!=='https:'||url.port||url.username||url.password||url.hash||!trusted||!Number.isFinite(expiry)||expiry<=Date.now()+30000)throw new Error('Защищённая ссылка на файл уже устарела.');
+      return {url:url.href,name:safeDownloadName(data&&data.name)};
+    }
+
+    function startDirectDownload(data){
+      const direct=validateDirectDownload(data);
+      runner.remove();
+      const anchor=document.createElement('a');
+      anchor.href=direct.url;anchor.download=direct.name;anchor.target='_self';anchor.rel='noopener noreferrer';anchor.hidden=true;
+      document.body.appendChild(anchor);anchor.click();anchor.remove();
+      status.textContent='Скачивание началось. Эта вкладка закроется автоматически.';
+      window.setTimeout(()=>{try{window.close();}catch(_error){}},DIRECT_CLOSE_AFTER_MS);
+    }
+
+    try{
+      if(location.protocol!=='https:'||location.hostname!=='ravilvaliev1999-spec.github.io'||location.search)throw new Error('Недопустимый адрес страницы.');
+      const fragment=location.hash;
+      history.replaceState(null,'',location.pathname);
+      try{window.opener=null;}catch(_error){}
+      const serviceUrl=validateServiceUrl(decodeFragment(fragment));
+      expectedTicket=new URL(serviceUrl).searchParams.get('downloadTicket')||'';
+      runner.setAttribute('credentialless','');runner.credentialless=true;runner.src=serviceUrl;
+      status.textContent='Скачивание началось. Эта вкладка закроется автоматически.';
+      window.setTimeout(()=>{status.textContent='Скачивание завершено. Эту вкладку можно закрыть.';try{window.close();}catch(_error){}},CLOSE_AFTER_MS);
+    }catch(error){
+      try{history.replaceState(null,'',location.pathname);}catch(_error){}
+      fail(error&&error.message||'Не удалось начать скачивание.');
+    }
+
+    window.addEventListener('message',(event)=>{
+      if(event.origin!=='null'&&!/^https:\/\/(?:script\.google\.com|[a-z0-9-]+\.googleusercontent\.com)$/.test(event.origin))return;
+      const data=event.data;
+      if(!data||data.type!=='notion-widget-v20-download'||data.downloadTicket!==expectedTicket)return;
+      if(data.status==='direct'){
+        try{startDirectDownload(data);}catch(error){fail(error&&error.message||'Не удалось начать скачивание.');}
+      }
+      else if(data.status==='success')window.setTimeout(()=>{try{window.close();}catch(_error){}},1200);
+      else if(data.status==='error')status.textContent=String(data.message||'Не удалось скачать файл.').slice(0,500);
+    });
+  })();
+  </script>
+</body>
+</html>
