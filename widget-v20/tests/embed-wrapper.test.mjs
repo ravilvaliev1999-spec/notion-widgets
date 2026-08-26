@@ -14,7 +14,7 @@ const wrapperJs = fs.readFileSync(path.join(root, 'apps-script-embed.js'), 'utf8
 test('public wrapper isolates Apps Script from multi-login cookies', () => {
   assert.match(wrapper, /<iframe[^>]+id="widget"[^>]+credentialless|<iframe[^>]+credentialless[^>]+id="widget"/);
   assert.match(wrapper, /referrerpolicy="no-referrer"/);
-  assert.match(wrapper, /script src="apps-script-embed\.js\?v=36"/);
+  assert.match(wrapper, /script src="apps-script-embed\.js\?v=37"/);
   assert.match(wrapper, /class="skeleton"/);
   assert.match(wrapper, /body\.widget-ready iframe\{opacity:1\}/);
 });
@@ -55,11 +55,12 @@ test('credentialless create uses native anchors and a fragment-only neutral cour
   assert.match(wrapperJs, /const createRequests = new Map\(\)/);
   assert.match(wrapperJs, /const existing = createRequests\.get\(section\)/);
   assert.match(wrapperJs, /completeCreateRequests\(data\.completedCreateRequestIds\)/);
-  assert.match(wrapperJs, /const requestId = randomId\(\)/);
+  assert.match(wrapperJs, /const requestId = rememberedCreateRequest\(section\) \|\| randomId\(\)/);
   assert.match(wrapperJs, /createRequestId', requestId\)/);
   assert.match(wrapperJs, /createRequests\.set\(section, \{ requestId, href \}\)/);
   assert.match(wrapperJs, /now - record\.lastNavigationAt < 1500/);
   assert.match(wrapperJs, /#v1=\$\{encodeCourierFragment\(service\.href\)\}/);
+  assert.match(wrapperJs, /type: 'notion-widget-v20-create-started', section, requestId: record\.requestId/);
   assert.doesNotMatch(wrapperJs, /window\.open|notion-widget-v20-primary-action|notion-widget-v20-primary-result/);
   assert.match(frontend, /if\(isEmbedBridgeMode\(\)\)return;/);
   assert.match(frontend, /card\.tabIndex=-1/);
@@ -194,6 +195,8 @@ test('wrapper runtime exposes validated native create links without opening a po
   assert.equal(docsPrimary.target,'_blank');
   assert.equal(docsPrimary.rel,'noopener noreferrer');
   docsPrimary.listeners.click({preventDefault(){throw new Error('valid create link must keep native navigation');}});
+  const createStarted=events.find((entry)=>entry[0]==='post'&&entry[1].type==='notion-widget-v20-create-started');
+  assert.equal(createStarted[1].section,'Docs');
   assert.match(docsPrimary.href,/^https:\/\/ravilvaliev1999-spec\.github\.io\/notion-widgets\/create-courier\.html#v1=[A-Za-z0-9_-]+$/);
   const encoded=docsPrimary.href.split('#v1=')[1];
   const padded=encoded.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-encoded.length%4)%4);
@@ -203,6 +206,7 @@ test('wrapper runtime exposes validated native create links without opening a po
   assert.equal(service.searchParams.get('accessToken'),'a'.repeat(64));
   assert.equal(service.searchParams.get('createSection'),'Docs');
   assert.match(service.searchParams.get('createRequestId'),/^[0-9a-f-]{36}$/);
+  assert.equal(createStarted[1].requestId,service.searchParams.get('createRequestId'));
   const firstCreateHref=docsPrimary.href;
   let preventedClicks=0;
   docsPrimary.listeners.click({preventDefault(){preventedClicks+=1;}});

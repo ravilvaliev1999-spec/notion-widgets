@@ -6,6 +6,7 @@
   <meta name="referrer" content="no-referrer">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta id="runtimeParams" data-params="<?= runtimeParamsJson ?>">
+  <meta id="precomputedResult" data-result="<?= precomputedResultJson ?>">
   <title>Создание файла</title>
   <style>
     html,body{margin:0;min-height:100%;background:#191919;color:#e6e6e4;font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
@@ -33,6 +34,19 @@
       catch(_error){throw new Error('Параметры создания повреждены.');}
     }
 
+    function precomputedResult(){
+      const meta=document.getElementById('precomputedResult');
+      let value;
+      try{value=JSON.parse(meta&&meta.dataset&&meta.dataset.result||'null');}
+      catch(_error){throw new Error('Результат создания повреждён.');}
+      if(value===null)return null;
+      if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Результат создания повреждён.');
+      const keys=Object.keys(value).sort(),success=value.status==='success',pending=value.status==='pending';
+      const expected=success?['openUrl','requestId','status']:['message','requestId','status'];
+      if(keys.length!==3||keys.some((key,index)=>key!==expected[index])||(!success&&!pending&&value.status!=='error'))throw new Error('Результат создания повреждён.');
+      return value;
+    }
+
     function allowedOpenUrl(value){
       try{
         const url=new URL(String(value||''));
@@ -52,6 +66,19 @@
 
     async function start(){
       try{
+        const prepared=precomputedResult();
+        if(prepared){
+          requestId=String(prepared.requestId||'').toLowerCase();
+          if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(requestId))throw new Error('Результат создания повреждён.');
+          if(prepared.status==='pending'){
+            const message=String(prepared.message||'Файл уже создаётся в первой вкладке.').slice(0,500);
+            status.textContent=message;notify('pending',message,'');return;
+          }
+          if(prepared.status==='error')throw new Error(String(prepared.message||'Файл не удалось создать.').slice(0,500));
+          const readyUrl=allowedOpenUrl(prepared.openUrl);
+          if(!readyUrl)throw new Error('Сервис вернул недопустимый адрес файла.');
+          status.textContent='Файл создан. Открываю…';notify('success','',readyUrl);return;
+        }
         const params=runtimeParams();
         const taskPageId=String(params.task||params.taskPageId||'').toLowerCase();
         const accessToken=String(params.accessToken||'');

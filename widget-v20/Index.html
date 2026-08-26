@@ -298,10 +298,19 @@
   const EMBED_BRIDGE_ORIGIN = 'https:\/\/ravilvaliev1999-spec.github.io';
   const DRIVE_POLL_INTERVAL_MS = 15000;
   const DRIVE_POLL_MIN_GAP_MS = 12000;
+  const DOWNLOAD_GRANT_RENEW_LEAD_MS = 15000;
+  const DOWNLOAD_GRANT_RETRY_DELAY_MS = 5000;
   const bridgeInstanceId = uid();
-  const state = { task:null, folderUrl:null, serviceUrl:null, materials:[], busy:new Set(), syncing:false, drivePolling:false, lastDrivePollAt:0, claimRefreshNotBefore:0, bootstrapped:false, authoritative:false, maxUploadBytes:8388608, dragId:null, mock:false };
+  const state = { task:null, folderUrl:null, serviceUrl:null, materials:[], busy:new Set(), syncing:false, drivePolling:false, urgentDrivePolling:false, lastDrivePollAt:0, claimRefreshNotBefore:0, bootstrapped:false, authoritative:false, maxUploadBytes:8388608, dragId:null, mock:false };
   const retryUpload = new Map();
   const memoryIdempotency = new Map();
+  const pendingCreatePolls = new Map();
+  const recentCompletedCreates = new Map();
+  const recentDrivePageIds = new Set();
+  const urgentDriveTargets = new Set();
+  const downloadGrants = new Map();
+  const downloadGrantPrimeInFlight = new Map();
+  const downloadGrantRetryNotBefore = new Map();
   const $ = (id) => document.getElementById(id);
   const bridge = createBridge();
   let toastTimer = 0;
@@ -311,6 +320,12 @@
   let geometryRaf = 0;
   let returnRefreshTimer = 0;
   let lastReturnRefreshAt = 0;
+  let urgentDrivePromise = null;
+  let refreshPromise = null;
+  let urgentDriveRetryTimer = 0;
+  let urgentDriveRetryDelay = 250;
+  let downloadPrimeGeneration = 0;
+  let downloadGrantRenewTimer = 0;
 
   function normalizeUuid(value) {
     const raw = String(value || '').toLowerCase().replace(/[^0-9a-f]/g, '');
@@ -527,6 +542,8 @@
     grid.addEventListener('dragend',handleDragEnd);
     grid.addEventListener('dragover',handleDragOver);
     grid.addEventListener('drop',handleDropReorder);
+    grid.addEventListener('pointerover',handleDownloadGrantIntent);
+    grid.addEventListener('focusin',handleDownloadGrantIntent);
   }
 
   function render() {
@@ -544,7 +561,7 @@
       materials.forEach((item)=>files.appendChild(materialCard(item,materials.length)));
       const add=document.createElement('button');add.type='button';add.className='file-add';add.dataset.addLink=section;add.textContent='+ добавить ссылку';add.disabled=!state.authoritative||state.busy.has(`link:${section}`);add.setAttribute('aria-label',`Добавить ссылку в ${section}`);files.appendChild(add);
     });
-    postHeight();scheduleEmbedBridgeGeometry();
+    postHeight();scheduleEmbedBridgeGeometry();scheduleDownloadGrantRenewal();
   }
 
   function materialCard(item,count) {
@@ -569,12 +586,27 @@
     state.task=data.task||state.task;
     if(data.folderUrl)state.folderUrl=data.folderUrl;
     if(data.serviceUrl)state.serviceUrl=data.serviceUrl;
-    state.materials=Array.isArray(data.materials)?data.materials:[];
+    const serverMaterials=Array.isArray(data.materials)?data.materials:[];
+    pendingCreatePolls.forEach((record,requestId)=>{
+      const completed=serverMaterials.find((item)=>String(item&&item.createRequestId||'').toLowerCase()===requestId);
+      if(completed){pendingCreatePolls.delete(requestId);recentDrivePageIds.add(completed.id);return;}
+      const pending=state.materials.find((item)=>item.id===record.pendingId);
+      if(pending)serverMaterials.push(pending);
+    });
+    recentCompletedCreates.forEach((material,requestId)=>{
+      const confirmed=serverMaterials.find((item)=>String(item&&item.createRequestId||'').toLowerCase()===requestId);
+      if(confirmed){recentCompletedCreates.delete(requestId);return;}
+      const index=serverMaterials.findIndex((item)=>item.id===material.id);
+      if(index>=0)serverMaterials[index]=material;else serverMaterials.push(material);
+    });
+    state.materials=serverMaterials;
     state.maxUploadBytes=data.maxUploadBytes||state.maxUploadBytes;
     state.claimRefreshNotBefore=0;
     state.bootstrapped=true;
     state.authoritative=Boolean(authoritative);
+    downloadPrimeGeneration+=1;downloadGrants.clear();downloadGrantRetryNotBefore.clear();window.clearTimeout(downloadGrantRenewTimer);downloadGrantRenewTimer=0;
     render();announceEmbedBridgeReady();
+    if(state.authoritative)scheduleDownloadGrantPrime(downloadPrimeGeneration);
   }
 
   async function bootstrap() {
@@ -593,20 +625,26 @@
           return;
         }
       }
-      pollDriveMetadata(true);
+      call('apiWarmCreateContext',{taskPageId}).catch(()=>{});
+      window.setTimeout(()=>pollDriveMetadata(false),2500);
     } catch(error) { showFatal(error.message,Boolean(error.retryable)); }
   }
 
-  async function refresh(silent) {
-    if(!taskPageId||!state.bootstrapped||state.syncing)return;
+  function refresh(silent) {
+    if(!taskPageId||!state.bootstrapped)return Promise.resolve(false);
+    if(refreshPromise)return refreshPromise;
     state.syncing=true;
-    try { const data=await callBackground('apiSyncTask',{taskPageId});applyBootstrapData(data,true);if(!silent)toast('Список обновлён'); }
-    catch(error) { if(!silent)showFatal(error.message,Boolean(error.retryable)); }
-    finally { state.syncing=false; }
+    refreshPromise=(async()=>{
+      try { const data=await callBackground('apiSyncTask',{taskPageId});applyBootstrapData(data,true);if(!silent)toast('Список обновлён');return true; }
+      catch(error) { if(!silent)showFatal(error.message,Boolean(error.retryable));return false; }
+      finally { state.syncing=false; }
+    })().finally(()=>{refreshPromise=null;});
+    return refreshPromise;
   }
 
-  function drivePollCoordinates() {
-    return state.materials.filter((item)=>item&&item.googleFileId&&item.drivePollClaim&&!item.archived&&!String(item.id||'').startsWith('pending:')&&/^Google (?:Docs|Sheets|Slides)$/.test(String(item.format||'')))
+  function drivePollCoordinates(onlyPageIds) {
+    const only=onlyPageIds&&onlyPageIds.size?onlyPageIds:null;
+    return state.materials.filter((item)=>item&&(!only||only.has(item.id))&&item.googleFileId&&item.drivePollClaim&&!item.archived&&!String(item.id||'').startsWith('pending:')&&/^Google (?:Docs|Sheets|Slides)$/.test(String(item.format||'')))
       .map((item)=>({
         pageId:item.id,googleFileId:item.googleFileId,claim:item.drivePollClaim,
         currentName:item.name,currentOpenUrl:item.openUrl,currentFormat:item.format,currentSection:item.section,
@@ -629,19 +667,159 @@
     return changed;
   }
 
-  async function pollDriveMetadata(urgent) {
-    const now=Date.now(),minGap=urgent?2000:DRIVE_POLL_MIN_GAP_MS;
-    if(!taskPageId||!state.bootstrapped||state.drivePolling||state.syncing||state.busy.size||now-state.lastDrivePollAt<minGap)return;
-    const materials=drivePollCoordinates();
+  function drivePollResultPageIds(materials) {
+    return new Set((Array.isArray(materials)?materials:[]).map((item)=>normalizeUuid(item&&item.pageId)).filter(Boolean));
+  }
+
+  function pruneDrivePollTargets() {
+    const known=new Set(state.materials.map((item)=>normalizeUuid(item&&item.id)).filter(Boolean));
+    Array.from(urgentDriveTargets).forEach((id)=>{if(!known.has(id))urgentDriveTargets.delete(id);});
+    Array.from(recentDrivePageIds).forEach((id)=>{if(!known.has(id))recentDrivePageIds.delete(id);});
+  }
+
+  function scheduleUrgentDriveRetry() {
+    if(urgentDriveRetryTimer||!urgentDriveTargets.size)return;
+    const delay=urgentDriveRetryDelay;
+    urgentDriveRetryDelay=Math.min(5000,Math.round(urgentDriveRetryDelay*1.8));
+    urgentDriveRetryTimer=window.setTimeout(()=>{
+      urgentDriveRetryTimer=0;
+      if(!urgentDriveTargets.size)return;
+      if(state.busy.size){scheduleUrgentDriveRetry();return;}
+      pollDriveMetadata(true,new Set(urgentDriveTargets)).catch(()=>{scheduleUrgentDriveRetry();});
+    },delay);
+  }
+
+  async function drainUrgentDrivePolls() {
+    const attempted=new Set();
+    const authoritativelyRetried=new Set();
+    let refreshed=false;
+    let needsRetry=false;
+    const refreshUnconfirmed=async(unconfirmed)=>{
+      if(!unconfirmed.size)return true;
+      const requiresRefresh=Array.from(unconfirmed).some((id)=>!authoritativelyRetried.has(id));
+      if(!requiresRefresh){
+        unconfirmed.forEach((id)=>{urgentDriveTargets.delete(id);recentDrivePageIds.delete(id);});
+        return true;
+      }
+      state.claimRefreshNotBefore=Date.now()+5*60*1000;
+      const didRefresh=await refresh(true);
+      if(!didRefresh){state.claimRefreshNotBefore=Date.now()+1000;needsRetry=true;return false;}
+      refreshed=true;pruneDrivePollTargets();
+      unconfirmed.forEach((id)=>{
+        if(!urgentDriveTargets.has(id))return;
+        authoritativelyRetried.add(id);attempted.delete(id);
+      });
+      return true;
+    };
+    state.urgentDrivePolling=true;
+    try {
+      while(taskPageId&&state.bootstrapped&&!state.busy.size) {
+        const batch=new Set(Array.from(urgentDriveTargets).filter((id)=>!attempted.has(id)));
+        if(!batch.size)break;
+        batch.forEach((id)=>attempted.add(id));
+        const materials=drivePollCoordinates(batch);
+        const submitted=new Set(materials.map((item)=>normalizeUuid(item.pageId)).filter(Boolean));
+        const known=new Set(state.materials.map((item)=>normalizeUuid(item&&item.id)).filter(Boolean));
+        batch.forEach((id)=>{if(!submitted.has(id)&&!known.has(id)){urgentDriveTargets.delete(id);recentDrivePageIds.delete(id);}});
+        if(!materials.length){
+          const unconfirmed=new Set(Array.from(batch).filter((id)=>urgentDriveTargets.has(id)&&known.has(id)));
+          if(!await refreshUnconfirmed(unconfirmed))break;
+          continue;
+        }
+        let data;
+        try { data=await call('apiPollDriveMetadata',{taskPageId,materials}); }
+        catch(_error) { needsRetry=true;break; }
+        urgentDriveRetryDelay=250;
+        applyDriveMetadata(data.materials);
+        const confirmed=drivePollResultPageIds(data.materials);
+        confirmed.forEach((id)=>{urgentDriveTargets.delete(id);recentDrivePageIds.delete(id);});
+        const unconfirmed=new Set(Array.from(batch).filter((id)=>urgentDriveTargets.has(id)&&!confirmed.has(id)));
+        if(!await refreshUnconfirmed(unconfirmed))break;
+      }
+    } finally {
+      state.urgentDrivePolling=false;
+      if(urgentDriveTargets.size&&(needsRetry||state.busy.size))scheduleUrgentDriveRetry();
+    }
+    return {refreshed};
+  }
+
+  async function pollDriveMetadata(urgent,onlyPageIds) {
+    const now=Date.now(),targets=new Set(Array.from(onlyPageIds||[]).map(normalizeUuid).filter(Boolean));
+    if(urgent&&targets.size)targets.forEach((id)=>urgentDriveTargets.add(id));
+    if(!taskPageId||!state.bootstrapped)return;
+    if(urgent) {
+      if(!targets.size)drivePollCoordinates().forEach((item)=>urgentDriveTargets.add(item.pageId));
+      if(state.busy.size){scheduleUrgentDriveRetry();return {refreshed:false};}
+      if(!urgentDriveTargets.size)return {refreshed:false};
+      if(!urgentDrivePromise)urgentDrivePromise=drainUrgentDrivePolls().finally(()=>{urgentDrivePromise=null;});
+      return urgentDrivePromise;
+    }
+    if(state.busy.size)return;
+    if(state.drivePolling||state.syncing||now-state.lastDrivePollAt<DRIVE_POLL_MIN_GAP_MS)return;
+    const materials=drivePollCoordinates(targets);
     if(!materials.length)return;
-    state.lastDrivePollAt=now;
-    state.drivePolling=true;
+    state.lastDrivePollAt=now;state.drivePolling=true;
     try {
       const data=await callBackground('apiPollDriveMetadata',{taskPageId,materials});applyDriveMetadata(data.materials);
       if(data.refreshRequired&&Date.now()>=state.claimRefreshNotBefore){state.claimRefreshNotBefore=Date.now()+5*60*1000;await refresh(true);}
     }
     catch(_error) {}
     finally { state.drivePolling=false; }
+  }
+
+  function pendingCreateName(section) {
+    return section==='Docs'?'Документ создаётся…':section==='Sheets'?'Таблица создаётся…':'Презентация создаётся…';
+  }
+
+  function scheduleCreateStatus(record) {
+    if(!record||record.timer||record.attempts>=16)return;
+    const delays=[350,650,1000,1500,2200,3200,4500,6500,9000,12000,15000,20000,25000,30000,30000,30000];
+    record.timer=window.setTimeout(()=>{record.timer=0;pollCreateStatus(record.requestId,false);},delays[Math.min(record.attempts,delays.length-1)]);
+  }
+
+  function startOptimisticCreate(section,requestId) {
+    const normalized=String(requestId||'').toLowerCase();
+    if(!['Docs','Sheets','Slides'].includes(section)||!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(normalized))return;
+    if(state.materials.some((item)=>String(item&&item.createRequestId||'').toLowerCase()===normalized)){announceEmbedBridgeReady();return;}
+    let record=pendingCreatePolls.get(normalized);
+    if(!record){
+      record={requestId:normalized,section,pendingId:`pending:create:${normalized}`,attempts:0,running:false,timer:0};pendingCreatePolls.set(normalized,record);
+      state.materials.push({id:record.pendingId,name:pendingCreateName(section),section,format:section==='Docs'?'Google Docs':section==='Sheets'?'Google Sheets':'Google Slides',provider:'Google Drive',position:activeMaterials(section).length,syncStatus:'pending',widgetOwned:true,createRequestId:normalized});
+      render();
+    }
+    pollCreateStatus(normalized,true);
+  }
+
+  function repairCreatedFileMarker(record,attempt) {
+    const index=Number(attempt||0),delays=[500,1500,4000,10000];
+    if(!record||index>=delays.length)return;
+    call('apiRepairCreateMarker',{taskPageId,section:record.section,createRequestId:record.requestId})
+      .then((data)=>{if(!(data&&data.repaired))window.setTimeout(()=>repairCreatedFileMarker(record,index+1),delays[index]);})
+      .catch(()=>window.setTimeout(()=>repairCreatedFileMarker(record,index+1),delays[index]));
+  }
+
+  async function pollCreateStatus(requestId,urgent) {
+    const record=pendingCreatePolls.get(String(requestId||'').toLowerCase());
+    if(!record||record.running)return;
+    if(record.timer){clearTimeout(record.timer);record.timer=0;}
+    record.running=true;record.attempts+=1;
+    try {
+      const data=await call('apiGetCreateStatus',{taskPageId,section:record.section,createRequestId:record.requestId});
+      if(data.status==='done'&&data.material){
+        pendingCreatePolls.delete(record.requestId);state.materials=state.materials.filter((item)=>item.id!==record.pendingId);upsert(data.material);
+        recentCompletedCreates.set(record.requestId,data.material);
+        recentDrivePageIds.add(data.material.id);render();announceEmbedBridgeReady();
+        repairCreatedFileMarker(record,0);return;
+      }
+      const pending=state.materials.find((item)=>item.id===record.pendingId);
+      if(data.status==='failed'&&pending){pending.syncStatus='error';pending.error='Создание не завершилось. Повторите нажатие.';render();}
+    } catch(_error) {}
+    finally { record.running=false; }
+    if(pendingCreatePolls.has(record.requestId)&&(urgent||record.attempts<16))scheduleCreateStatus(record);
+  }
+
+  async function pollPendingCreates(urgent) {
+    await Promise.all(Array.from(pendingCreatePolls.keys()).map((requestId)=>pollCreateStatus(requestId,urgent)));
   }
 
   async function createGoogle(section,bridgeRequest) {
@@ -760,6 +938,9 @@
     if(data.type==='notion-widget-v20-primary-hover'&&SECTIONS.includes(data.section)){
       const card=document.querySelector(`.group-card[data-service="${data.section}"]`);if(card)card.classList.toggle('bridge-hover',data.active===true);return;
     }
+    if(data.type==='notion-widget-v20-create-started'&&['Docs','Sheets','Slides'].includes(data.section)&&/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(String(data.requestId||'').toLowerCase())){
+      startOptimisticCreate(data.section,data.requestId);return;
+    }
     if(data.type==='notion-widget-v20-primary-action'&&SECTIONS.includes(data.section)&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(data.requestId||''))){
       if(data.section==='Drive'){
         replyToEmbedBridge(event.source,event.origin,{type:'notion-widget-v20-primary-result',requestId:data.requestId,ok:Boolean(state.folderUrl),openUrl:state.folderUrl||'',message:state.folderUrl?'':'Папка задачи ещё создаётся'});
@@ -783,7 +964,7 @@
         try {
           const dataBase64=await readFileBase64(file);
           const data=await call('apiUpload',{taskPageId,name:file.name,mimeType:file.type||'application/octet-stream',section,dataBase64,idempotencyKey:operation.value});
-          clearIdempotency(operation);state.materials=state.materials.filter(item=>item.id!==pendingId);retryUpload.delete(pendingId);upsert(data.material);render();toast(`«${file.name}» загружен и сохранён как знание`);
+          clearIdempotency(operation);state.materials=state.materials.filter(item=>item.id!==pendingId);retryUpload.delete(pendingId);upsert(data.material);render();primeDownloadGrant(data.material&&data.material.id,downloadPrimeGeneration);toast(`«${file.name}» загружен и сохранён как знание`);
         } catch(error) { pending.syncStatus='error';pending.error=error.message;retryUpload.set(pendingId,attempt);render();toast(`Не удалось загрузить «${file.name}». Нажмите карточку, чтобы повторить.`); }
       };
       await attempt();
@@ -813,8 +994,129 @@
     return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
   }
 
+  function freshDownloadGrant(item) {
+    const materialId=normalizeUuid(item&&item.id),record=materialId&&downloadGrants.get(materialId);
+    const expiresAt=Date.parse(String(record&&record.expiresAt||'')),grant=String(record&&record.downloadGrant||'');
+    if(!record||!/^[a-f0-9]{96}$/.test(grant)||!Number.isFinite(expiresAt)||expiresAt<=Date.now()+5000){
+      if(materialId)downloadGrants.delete(materialId);
+      return '';
+    }
+    return grant;
+  }
+
+  function downloadCardIsVisible(pageId) {
+    if(document.visibilityState==='hidden')return false;
+    const card=document.querySelector(`[data-item-id="${pageId}"]`);
+    if(!card||typeof card.getBoundingClientRect!=='function')return false;
+    const rect=card.getBoundingClientRect();
+    const viewportWidth=window.innerWidth||document.documentElement.clientWidth||Number.POSITIVE_INFINITY;
+    const viewportHeight=window.innerHeight||document.documentElement.clientHeight||Number.POSITIVE_INFINITY;
+    return rect.width>0&&rect.height>0&&rect.bottom>0&&rect.right>0&&rect.top<viewportHeight&&rect.left<viewportWidth;
+  }
+
+  function downloadGrantNeedsRefresh(item,includeMissing) {
+    const materialId=normalizeUuid(item&&item.id),record=materialId&&downloadGrants.get(materialId);
+    if(!materialId||!record)return Boolean(includeMissing&&materialId&&Number(downloadGrantRetryNotBefore.get(materialId)||0)<=Date.now());
+    const expiresAt=Date.parse(String(record.expiresAt||'')),grant=String(record.downloadGrant||'');
+    if(!/^[a-f0-9]{96}$/.test(grant)||!Number.isFinite(expiresAt)||expiresAt<=Date.now()+5000)return Boolean(includeMissing);
+    const refreshNotBefore=Number(record.refreshNotBefore||0);
+    return expiresAt<=Date.now()+DOWNLOAD_GRANT_RENEW_LEAD_MS&&(!refreshNotBefore||refreshNotBefore<=Date.now());
+  }
+
+  function deferDownloadGrantRefresh(materialId,permanent) {
+    const record=downloadGrants.get(materialId);
+    if(!record){downloadGrantRetryNotBefore.set(materialId,permanent?Number.POSITIVE_INFINITY:Date.now()+DOWNLOAD_GRANT_RETRY_DELAY_MS);return;}
+    const now=Date.now(),expiresAt=Date.parse(String(record.expiresAt||''));
+    record.refreshFailures=Number(record.refreshFailures||0)+1;
+    if(!Number.isFinite(expiresAt)||permanent||record.refreshFailures>=2){record.refreshNotBefore=Number.isFinite(expiresAt)?expiresAt:now+DOWNLOAD_GRANT_RETRY_DELAY_MS;return;}
+    const retryAt=Math.min(expiresAt-5500,now+DOWNLOAD_GRANT_RETRY_DELAY_MS*record.refreshFailures);
+    record.refreshNotBefore=retryAt>now?retryAt:expiresAt;
+  }
+
+  function scheduleDownloadGrantRenewal() {
+    window.clearTimeout(downloadGrantRenewTimer);downloadGrantRenewTimer=0;
+    if(!state.authoritative||document.visibilityState==='hidden')return;
+    const now=Date.now();let nextAt=Number.POSITIVE_INFINITY;
+    downloadGrants.forEach((record,pageId)=>{
+      const item=state.materials.find((candidate)=>candidate.id===pageId);
+      if(!canPrepareDownload(item)||!downloadCardIsVisible(pageId))return;
+      const expiresAt=Date.parse(String(record&&record.expiresAt||'')),grant=String(record&&record.downloadGrant||'');
+      if(!/^[a-f0-9]{96}$/.test(grant)||!Number.isFinite(expiresAt)||expiresAt<=now+5000)return;
+      const refreshNotBefore=Number(record.refreshNotBefore||0);
+      const candidate=Math.max(now+250,expiresAt-DOWNLOAD_GRANT_RENEW_LEAD_MS,refreshNotBefore||0);
+      if(candidate>=expiresAt-5000)return;
+      nextAt=Math.min(nextAt,candidate);
+    });
+    if(!Number.isFinite(nextAt))return;
+    downloadGrantRenewTimer=window.setTimeout(()=>{
+      downloadGrantRenewTimer=0;refreshVisibleDownloadGrants(false).catch(()=>{});
+    },Math.max(250,nextAt-now));
+  }
+
+  function refreshDownloadGrantLink(pageId) {
+    const item=state.materials.find((candidate)=>candidate.id===pageId),card=document.querySelector(`[data-item-id="${pageId}"]`);
+    if(!item||!card||card.tagName!=='A')return;
+    const href=downloadCourierHref(item);if(href)card.href=href;
+  }
+
+  function primeDownloadGrant(pageId,generation) {
+    const materialId=normalizeUuid(pageId),item=state.materials.find((candidate)=>candidate.id===materialId);
+    if(!materialId||generation!==downloadPrimeGeneration||!state.authoritative||!canPrepareDownload(item))return Promise.resolve();
+    const active=downloadGrantPrimeInFlight.get(materialId);
+    if(active)return active.then(()=>{
+      const current=state.materials.find((candidate)=>candidate.id===materialId);
+      if(generation===downloadPrimeGeneration&&canPrepareDownload(current)&&downloadGrantNeedsRefresh(current,true))return primeDownloadGrant(materialId,generation);
+    });
+    const request=(async()=>{
+      try{
+        const data=await call('apiPrepareDownload',{taskPageId,pageId:materialId});
+        if(generation!==downloadPrimeGeneration||!state.authoritative)return;
+        const current=state.materials.find((candidate)=>candidate.id===materialId);
+        const expiresAt=Date.parse(String(data&&data.expiresAt||'')),grant=String(data&&data.downloadGrant||'');
+        if(current&&canPrepareDownload(current)&&data&&data.mode==='grant'&&/^[a-f0-9]{96}$/.test(grant)&&Number.isFinite(expiresAt)&&expiresAt>Date.now()+5000){
+          downloadGrantRetryNotBefore.delete(materialId);
+          downloadGrants.set(materialId,{downloadGrant:grant,expiresAt:new Date(expiresAt).toISOString(),refreshNotBefore:0,refreshFailures:0});refreshDownloadGrantLink(materialId);
+        }else deferDownloadGrantRefresh(materialId,true);
+      }catch(_error){if(generation===downloadPrimeGeneration)deferDownloadGrantRefresh(materialId,false);}
+    })().finally(()=>{
+      if(downloadGrantPrimeInFlight.get(materialId)===request)downloadGrantPrimeInFlight.delete(materialId);
+      scheduleDownloadGrantRenewal();
+    });
+    downloadGrantPrimeInFlight.set(materialId,request);return request;
+  }
+
+  async function refreshVisibleDownloadGrants(includeMissing) {
+    if(!state.authoritative||document.visibilityState==='hidden')return;
+    const candidates=state.materials.filter((item)=>canPrepareDownload(item)&&downloadCardIsVisible(item.id)&&downloadGrantNeedsRefresh(item,includeMissing))
+      .map((item)=>normalizeUuid(item.id)).filter(Boolean);
+    let cursor=0;
+    async function worker(){while(cursor<candidates.length){const pageId=candidates[cursor++];await primeDownloadGrant(pageId,downloadPrimeGeneration);}}
+    await Promise.all([worker(),worker()]);scheduleDownloadGrantRenewal();
+  }
+
+  function handleDownloadGrantIntent(event) {
+    const card=event.target&&event.target.closest&&event.target.closest('[data-item-id]');if(!card)return;
+    const item=state.materials.find((candidate)=>candidate.id===card.dataset.itemId);
+    if(canPrepareDownload(item)&&downloadGrantNeedsRefresh(item,true))primeDownloadGrant(item.id,downloadPrimeGeneration);
+  }
+
+  function scheduleDownloadGrantPrime(generation) {
+    const candidates=state.materials.filter(canPrepareDownload).map((item)=>normalizeUuid(item.id)).filter(Boolean);
+    if(!candidates.length)return;
+    window.setTimeout(async()=>{
+      let cursor=0;
+      async function worker(){
+        while(generation===downloadPrimeGeneration&&cursor<candidates.length){
+          const pageId=candidates[cursor++];
+          await primeDownloadGrant(pageId,generation);
+        }
+      }
+      await Promise.all([worker(),worker()]);scheduleDownloadGrantRenewal();
+    },0);
+  }
+
   function downloadCourierHref(item) {
-    const materialId=normalizeUuid(item&&item.id),ticket=strongDownloadTicket();
+    const materialId=normalizeUuid(item&&item.id),ticket=freshDownloadGrant(item)||strongDownloadTicket();
     if(!state.authoritative||!canPrepareDownload(item)||!state.serviceUrl||!taskPageId||!materialId||!ticket||!/^[A-Za-z0-9._~-]{32,256}$/.test(accessToken))return '';
     try {
       const service=new URL(state.serviceUrl);
@@ -862,7 +1164,7 @@
     event.preventDefault();const item=currentItem();if(!item)return;
     const operation=stableIdempotency('update-material',`${item.id}:${$('editName').value}:${$('editSection').value}:${$('editUrl').value}`);$('editSubmit').disabled=true;
     const payload={taskPageId,pageId:item.id,name:$('editName').value.trim(),section:$('editSection').value,idempotencyKey:operation.value};if(item.provider==='External URL')payload.url=$('editUrl').value.trim();
-    try { const data=await call('apiUpdateMaterial',payload);clearIdempotency(operation);upsert(data.material);closeModal('editModal');render();toast('Материал обновлён'); }
+    try { const data=await call('apiUpdateMaterial',payload);clearIdempotency(operation);downloadGrants.delete(item.id);downloadGrantRetryNotBefore.delete(item.id);upsert(data.material);closeModal('editModal');render();primeDownloadGrant(data.material&&data.material.id,downloadPrimeGeneration);toast('Материал обновлён'); }
     catch(error){toast(error.message);}finally{$('editSubmit').disabled=false;}
   }
 
@@ -871,7 +1173,7 @@
   async function archiveCurrent() {
     const item=currentItem();if(!item||!window.confirm(`Архивировать «${item.name}»? Сам файл останется в Google Drive.`))return;
     const operation=stableIdempotency('archive',item.id);
-    try { await call('apiArchive',{taskPageId,pageId:item.id,idempotencyKey:operation.value});clearIdempotency(operation);state.materials=state.materials.filter(material=>material.id!==item.id);closeModal('editModal');render();toast('Материал архивирован'); }
+    try { await call('apiArchive',{taskPageId,pageId:item.id,idempotencyKey:operation.value});clearIdempotency(operation);downloadGrants.delete(item.id);downloadGrantRetryNotBefore.delete(item.id);state.materials=state.materials.filter(material=>material.id!==item.id);closeModal('editModal');render();toast('Материал архивирован'); }
     catch(error){toast(error.message);}
   }
 
@@ -888,7 +1190,7 @@
     const upload=event.target.closest('[data-upload-section]');if(upload){event.preventDefault();event.stopPropagation();chooseFiles(upload.dataset.uploadSection);return;}
     const add=event.target.closest('[data-add-link]');if(add){openLinkModal(add.dataset.addLink);return;}
     const edit=event.target.closest('[data-edit-id]');if(edit){event.preventDefault();event.stopPropagation();openEdit(edit.dataset.editId);return;}
-    const itemCard=event.target.closest('[data-item-id]');if(itemCard){if(itemCard.tagName==='A')return;const item=state.materials.find(material=>material.id===itemCard.dataset.itemId);if(item)openExact(item);return;}
+    const itemCard=event.target.closest('[data-item-id]');if(itemCard){if(itemCard.tagName==='A'){if(itemCard.dataset.directOpen==='true')recentDrivePageIds.add(itemCard.dataset.itemId);return;}const item=state.materials.find(material=>material.id===itemCard.dataset.itemId);if(item)openExact(item);return;}
     const service=event.target.closest('[data-service]');if(!service)return;const section=service.dataset.service;
     if(isEmbedBridgeMode())return;
     if(!state.authoritative){toast('Завершаю синхронизацию…');return;}
@@ -914,6 +1216,16 @@
   function toast(message){clearTimeout(toastTimer);$('toast').textContent=message;$('liveStatus').textContent=message;$('toast').classList.add('show');toastTimer=setTimeout(()=>$('toast').classList.remove('show'),3200);}
   function postHeight(){requestAnimationFrame(()=>{try{parent.postMessage({type:'notion-widget-v20-height',height:document.documentElement.scrollHeight},'*');}catch(_error){}});}
 
+  async function refreshAfterReturn(fullRefresh) {
+    await pollPendingCreates(true);
+    const beforeRefresh=new Set(recentDrivePageIds);
+    const firstPoll=beforeRefresh.size?await pollDriveMetadata(true,beforeRefresh):null;
+    if(fullRefresh&&!(firstPoll&&firstPoll.refreshed))await refresh(true);
+    pruneDrivePollTargets();
+    if(recentDrivePageIds.size)await pollDriveMetadata(true,new Set(recentDrivePageIds));
+    refreshVisibleDownloadGrants(true).catch(()=>{});
+  }
+
   function bindEvents() {
     $('fileInput').addEventListener('change',(event)=>{const section=event.target.dataset.section||'';uploadFiles(event.target.files,section);event.target.value='';});
     window.addEventListener('message',receiveEmbedBridgeMessage);
@@ -923,13 +1235,15 @@
     document.addEventListener('keydown',(event)=>{if(event.key==='Escape')document.querySelectorAll('.modal-back.open').forEach(modal=>closeModal(modal.id));});
     const refreshOnReturn=()=>{
       if(!state.authoritative)return;
-      const now=Date.now();if(now-lastReturnRefreshAt<8000){pollDriveMetadata(true);return;}
-      clearTimeout(returnRefreshTimer);returnRefreshTimer=setTimeout(async()=>{lastReturnRefreshAt=Date.now();await refresh(true);pollDriveMetadata(true);},250);
+      const now=Date.now();if(now-lastReturnRefreshAt<8000){refreshAfterReturn(false);return;}
+      clearTimeout(returnRefreshTimer);returnRefreshTimer=setTimeout(()=>{lastReturnRefreshAt=Date.now();refreshAfterReturn(true);},250);
     };
     window.addEventListener('focus',refreshOnReturn);
     window.addEventListener('resize',scheduleEmbedBridgeGeometry);
+    window.addEventListener('resize',scheduleDownloadGrantRenewal);
     window.addEventListener('scroll',scheduleEmbedBridgeGeometry,{passive:true});
-    document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')refreshOnReturn();});
+    window.addEventListener('scroll',scheduleDownloadGrantRenewal,{passive:true});
+    document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')refreshOnReturn();else scheduleDownloadGrantRenewal();});
     const pollInterval=DRIVE_POLL_INTERVAL_MS+Math.floor(Math.random()*5000);
     window.setInterval(()=>{if(document.visibilityState==='visible')pollDriveMetadata(false);},pollInterval);
     if(window.ResizeObserver)new ResizeObserver(()=>{postHeight();scheduleEmbedBridgeGeometry();}).observe(document.body);

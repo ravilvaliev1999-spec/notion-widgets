@@ -41,6 +41,44 @@ test('backend is fail-closed on identity, data source and task ownership', () =>
   assert.match(backend, /w19WithIdempotency_/);
 });
 
+test('create POST accepts only the four courier fields and never echoes its capability into the response template', () => {
+  const backend = text('Code.gs');
+  const fields = backend.slice(backend.indexOf('function w20CreatePostFields_'), backend.indexOf('function w20SafeCreateOpenUrl_'));
+  const post = backend.slice(backend.indexOf('function doPost'), backend.indexOf('/* ========================= Public client API'));
+  assert.match(fields, /\['task', 'accessToken', 'createSection', 'createRequestId'\]/);
+  assert.match(fields, /keys\.length === expected\.length/);
+  assert.match(fields, /list\.length !== 1/);
+  assert.match(fields, /application\/x-www-form-urlencoded/);
+  assert.match(fields, /!String\(event && event\.queryString \|\| ''\)/);
+  assert.match(post, /apiCreateGoogle\(\{/);
+  assert.match(post, /template\.runtimeParamsJson = '\{\}'/);
+  assert.match(post, /template\.precomputedResultJson = JSON\.stringify\(result\)/);
+  assert.doesNotMatch(post, /runtimeParamsJson\s*=\s*JSON\.stringify\([^;]*accessToken/);
+});
+
+test('download POST is an exact four-field route and only a cached HMAC grant can precompute a direct result', () => {
+  const backend=text('Code.gs');
+  const fields=backend.slice(backend.indexOf('function w20DownloadPostFields_'),backend.indexOf('function w20SafeCreateOpenUrl_'));
+  const post=backend.slice(backend.indexOf('function doPost'),backend.indexOf('/* ========================= Public client API'));
+  const grant=backend.slice(backend.indexOf('function w20DownloadGrantCacheKey_'),backend.indexOf('function w19MaterialFromPage_'));
+  assert.match(fields,/\['task', 'accessToken', 'downloadPageId', 'downloadTicket'\]/);
+  assert.match(fields,/keys\.length === expected\.length/);
+  assert.match(fields,/application\/x-www-form-urlencoded/);
+  assert.match(fields,/!String\(event && event\.queryString \|\| ''\)/);
+  assert.match(post,/kind === 'download'/);
+  assert.match(post,/w19AuthorizedConfig_\(\{/);
+  assert.match(post,/w20GetDownloadGrant_\(downloadFields\.taskPageId, downloadFields\.pageId, downloadFields\.ticket, cfg\)/);
+  assert.match(post,/downloadTemplate\.runtimeParamsJson = direct \? '\{\}'/);
+  assert.match(post,/downloadTemplate\.precomputedResultJson = JSON\.stringify\(direct \?/);
+  assert.match(grant,/W20_DOWNLOAD_GRANT_TTL_SECONDS/);
+  assert.match(grant,/computeHmacSha256Signature/);
+  assert.match(grant,/entry\.taskId === WidgetV19Core\.compactUuid\(task\)/);
+  assert.match(grant,/entry\.pageId === WidgetV19Core\.compactUuid\(page\)/);
+  assert.match(grant,/entry\.epoch === currentEpoch/);
+  assert.match(grant,/WidgetV19Core\.safeEqual\(expected, supplied\)/);
+  assert.match(backend.slice(backend.indexOf('function w20CacheDownloadMaterials_'),backend.indexOf('function w20GetCachedDownloadMaterial_')),/w20InvalidateDownloadMaterialCache_\(taskId, pageId, false\)/);
+});
+
 test('download acceleration caches only server-derived task material coordinates for at most two minutes', () => {
   const backend = text('Code.gs');
   const cache = backend.slice(backend.indexOf('function w20DownloadMaterialCacheKey_'), backend.indexOf('function w19AssertMaterialForTask_'));
@@ -60,13 +98,14 @@ test('download cache hit avoids Notion after capability authorization and always
   const backend = text('Code.gs');
   const body = backend.slice(backend.indexOf('function apiDownload'), backend.indexOf('function apiSyncTask'));
   const auth = body.indexOf('w19AuthorizedConfig_');
+  const grant = body.indexOf('w20GetDownloadGrant_');
   const cache = body.indexOf('w20GetCachedDownloadMaterial_');
   const miss = body.indexOf('if (!material)');
   const markers = body.indexOf('w20FindOwnedBinaryMaterialByMarkers_');
   const task = body.indexOf('w19AssertTaskPage_');
   const fallback = body.indexOf('w19AssertMaterialForTask_');
   const ownership = body.indexOf('w19AssertOwnedBinary_');
-  assert.ok(auth !== -1 && auth < cache);
+  assert.ok(auth !== -1 && auth < grant && grant < cache);
   assert.ok(cache < miss && miss < markers && markers < task);
   assert.ok(task < fallback && fallback < ownership);
   assert.match(body, /if \(!material\)/);
@@ -81,7 +120,10 @@ test('direct CDN preparation is server-gated by live Notion and Drive ownership 
   assert.match(body, /w19AssertMaterialForTask_\(materialId, taskId, cfg\)/);
   assert.match(body, /w19AssertOwnedBinary_\(material, task, cfg\)/);
   assert.match(body, /w20TrustedHostedDownloadUrl_\(material\.downloadUrl\)/);
-  assert.match(body, /attachmentName !== expectedName/);
+  assert.match(body, /directUrl !== String\(material\.attachmentUrl \|\| ''\)/);
+  assert.match(body, /w20HostedDownloadDispositionMatches_\(directUrl, direct\.name\)/);
+  assert.match(body, /return w20IssueDownloadGrant_\(taskId, materialId, direct, cfg, grantEpoch\)/);
+  assert.doesNotMatch(body, /attachmentName !== expectedName/);
   assert.doesNotMatch(body, /Utilities\.base64Encode|DriveApp\.getFileById/);
 });
 
@@ -149,7 +191,21 @@ test('scheduled sync checks Drive metadata before spending a Notion page GET', (
   const backend = text('Code.gs');
   const sync = backend.slice(backend.indexOf('function w19SyncOnePage_'), backend.indexOf('function w19MarkSyncError_'));
   assert.ok(sync.indexOf('w20DriveMetadataNeedsNotionWrite_') < sync.indexOf("w19NotionRequest_('get'"));
-  assert.match(sync, /if \(!w20DriveMetadataNeedsNotionWrite_\(snapshot, driveData\)\) return page/);
+  assert.match(sync, /if \(!w20DriveMetadataNeedsNotionWrite_\(snapshot, driveData\) &&\s*!w20DriveNotionMarkerNeedsRepair_\(page, snapshot, drive, cfg\)\) return page/);
+  assert.match(sync, /w19WithMutationLock_\(function \(\) \{[\s\S]*w19NotionRequest_\('get'/);
+  assert.match(sync, /page\.in_trash/);
+  assert.match(sync, /W19_P\.TYPE/);
+  assert.match(sync, /cfg && cfg\.dataSourceId/);
+});
+
+test('late create-marker repair revalidates the current material under the shared mutation lock', () => {
+  const backend = text('Code.gs');
+  const repair = backend.slice(backend.indexOf('function apiRepairCreateMarker'), backend.indexOf('function apiWarmCreateContext'));
+  assert.match(repair, /w19WithMutationLock_\(function \(\)/);
+  assert.match(repair, /w19AssertMaterialForTask_\(material\.id, taskId, cfg\)/);
+  assert.match(repair, /current\.idempotency !== idem/);
+  assert.match(repair, /current\.syncStatus === 'deleting'/);
+  assert.ok(repair.indexOf('w19AssertMaterialForTask_') < repair.indexOf('w19GetDriveMetadata_'));
 });
 
 test('schema preflight covers every context property written on material creation', () => {

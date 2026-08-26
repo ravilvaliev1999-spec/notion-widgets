@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex,nofollow,noarchive">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src https://script.google.com https://*.googleusercontent.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src https://script.google.com https://*.googleusercontent.com; base-uri 'none'; form-action https://script.google.com https://*.googleusercontent.com; frame-ancestors 'none'; object-src 'none'">
   <title>Скачивание файла</title>
   <style>
     html,body{margin:0;min-height:100%;background:#191919;color:#e6e6e4;font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
@@ -16,22 +16,35 @@
 </head>
 <body>
   <main><p id="status" role="status" aria-live="polite">Готовлю скачивание…</p></main>
-  <iframe id="runner" class="runner" title="Защищённое скачивание" credentialless referrerpolicy="no-referrer"></iframe>
+  <iframe id="runner" name="downloadRunner" class="runner" title="Защищённое скачивание" credentialless referrerpolicy="no-referrer"></iframe>
   <script>
   (()=>{
     'use strict';
-    const CLOSE_AFTER_MS=60*1000;
+    const TIMEOUT_MS=180*1000;
     const DIRECT_CLOSE_AFTER_MS=2500;
     const status=document.getElementById('status');
     const runner=document.getElementById('runner');
     let expectedTicket='';
+    let responseTimer=0;
 
-    function fail(message){status.textContent=message;runner.remove();}
+    function fail(message){window.clearTimeout(responseTimer);status.textContent=message;runner.remove();}
+
+    function isRunnerDescendant(source){
+      const root=runner.contentWindow;if(!root||!source)return false;
+      const visit=(target,depth)=>{
+        if(target===source)return true;if(depth>=4)return false;
+        let length=0;try{length=Math.min(Number(target.length)||0,8);}catch(_error){return false;}
+        for(let index=0;index<length;index+=1){try{if(visit(target.frames[index],depth+1))return true;}catch(_error){}}
+        return false;
+      };
+      return visit(root,0);
+    }
 
     function decodeFragment(hash){
       const match=/^#v1=([A-Za-z0-9_-]{80,6000})$/.exec(String(hash||''));
       if(!match)throw new Error('Ссылка на скачивание повреждена.');
-      const encoded=match[1],padding='='.repeat((4-encoded.length%4)%4);
+      const encoded=match[1];
+      const padding='='.repeat((4-encoded.length%4)%4);
       let binary;
       try{binary=atob(encoded.replace(/-/g,'+').replace(/_/g,'/')+padding);}catch(_error){throw new Error('Ссылка на скачивание повреждена.');}
       const bytes=new Uint8Array(binary.length);
@@ -46,7 +59,27 @@
       const entries=Array.from(url.searchParams.entries()),allowed=new Set(['task','accessToken','downloadPageId','downloadTicket']);
       if(entries.length!==4||entries.some(([key])=>!allowed.has(key))||new Set(entries.map(([key])=>key)).size!==4)throw new Error('Параметры скачивания повреждены.');
       if(!/^[0-9a-fA-F-]{32,36}$/.test(url.searchParams.get('task')||'')||!/^[0-9a-fA-F-]{32,36}$/.test(url.searchParams.get('downloadPageId')||'')||!/^[A-Za-z0-9._~-]{32,256}$/.test(url.searchParams.get('accessToken')||'')||!/^[A-Za-z0-9_-]{32,160}$/.test(url.searchParams.get('downloadTicket')||''))throw new Error('Параметры скачивания повреждены.');
-      return url.href;
+      return {
+        action:url.origin+url.pathname,
+        fields:{
+          task:url.searchParams.get('task'),
+          accessToken:url.searchParams.get('accessToken'),
+          downloadPageId:url.searchParams.get('downloadPageId'),
+          downloadTicket:url.searchParams.get('downloadTicket')
+        }
+      };
+    }
+
+    function submitDownload(request){
+      const keys=['task','accessToken','downloadPageId','downloadTicket'];
+      if(!request||typeof request.action!=='string'||!request.fields||Object.keys(request.fields).length!==4)throw new Error('Параметры скачивания повреждены.');
+      const action=new URL(request.action);
+      if(action.protocol!=='https:'||action.hostname!=='script.google.com'||action.port||action.username||action.password||action.search||action.hash||!/^\/macros\/s\/[A-Za-z0-9_-]{20,}\/exec$/.test(action.pathname))throw new Error('Адрес сервиса скачивания недопустим.');
+      const form=document.createElement('form');
+      form.method='post';form.action=action.href;form.target='downloadRunner';form.enctype='application/x-www-form-urlencoded';form.acceptCharset='UTF-8';form.hidden=true;
+      keys.forEach((key)=>{const input=document.createElement('input');input.type='hidden';input.name=key;input.value=String(request.fields[key]||'');form.appendChild(input);});
+      document.body.appendChild(form);form.submit();
+      window.setTimeout(()=>{form.querySelectorAll('input').forEach((input)=>{input.value='';});form.remove();},0);
     }
 
     function safeDownloadName(value){
@@ -65,6 +98,7 @@
     }
 
     function startDirectDownload(data){
+      window.clearTimeout(responseTimer);
       const direct=validateDirectDownload(data);
       runner.remove();
       const anchor=document.createElement('a');
@@ -75,29 +109,30 @@
     }
 
     try{
-      if(location.protocol!=='https:'||location.hostname!=='ravilvaliev1999-spec.github.io'||location.search)throw new Error('Недопустимый адрес страницы.');
+      if(location.protocol!=='https:'||location.hostname!=='ravilvaliev1999-spec.github.io'||location.pathname!=='/notion-widgets/download-courier.html'||location.search)throw new Error('Недопустимый адрес страницы.');
       const fragment=location.hash;
       history.replaceState(null,'',location.pathname);
       try{window.opener=null;}catch(_error){}
-      const serviceUrl=validateServiceUrl(decodeFragment(fragment));
-      expectedTicket=new URL(serviceUrl).searchParams.get('downloadTicket')||'';
-      runner.setAttribute('credentialless','');runner.credentialless=true;runner.src=serviceUrl;
-      status.textContent='Скачивание началось. Эта вкладка закроется автоматически.';
-      window.setTimeout(()=>{status.textContent='Скачивание завершено. Эту вкладку можно закрыть.';try{window.close();}catch(_error){}},CLOSE_AFTER_MS);
+      const request=validateServiceUrl(decodeFragment(fragment));
+      expectedTicket=request.fields.downloadTicket||'';
+      runner.setAttribute('credentialless','');runner.credentialless=true;submitDownload(request);
+      status.textContent='Проверяю файл и права доступа…';
+      responseTimer=window.setTimeout(()=>fail('Сервис не ответил. Закройте эту вкладку и повторите скачивание.'),TIMEOUT_MS);
     }catch(error){
       try{history.replaceState(null,'',location.pathname);}catch(_error){}
       fail(error&&error.message||'Не удалось начать скачивание.');
     }
 
     window.addEventListener('message',(event)=>{
+      if(!isRunnerDescendant(event.source))return;
       if(event.origin!=='null'&&!/^https:\/\/(?:script\.google\.com|[a-z0-9-]+\.googleusercontent\.com)$/.test(event.origin))return;
       const data=event.data;
       if(!data||data.type!=='notion-widget-v20-download'||data.downloadTicket!==expectedTicket)return;
       if(data.status==='direct'){
         try{startDirectDownload(data);}catch(error){fail(error&&error.message||'Не удалось начать скачивание.');}
       }
-      else if(data.status==='success')window.setTimeout(()=>{try{window.close();}catch(_error){}},1200);
-      else if(data.status==='error')status.textContent=String(data.message||'Не удалось скачать файл.').slice(0,500);
+      else if(data.status==='success'){window.clearTimeout(responseTimer);status.textContent='Скачивание началось. Эта вкладка закроется автоматически.';window.setTimeout(()=>{try{window.close();}catch(_error){}},1200);}
+      else if(data.status==='error'){window.clearTimeout(responseTimer);status.textContent=String(data.message||'Не удалось скачать файл.').slice(0,500);}
     });
   })();
   </script>
