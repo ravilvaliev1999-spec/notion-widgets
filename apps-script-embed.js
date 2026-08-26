@@ -234,7 +234,7 @@
   }
 
   function createCourierHref(section) {
-    if (!params || !bridge || !(bridge.actionReady || bridge.authoritative) || !['Docs', 'Sheets', 'Slides'].includes(section)) return '';
+    if (!params || !bridge || bridge.actionReady !== true || !['Docs', 'Sheets', 'Slides'].includes(section)) return '';
     const existing = createRequests.get(section);
     if (existing) return existing.href;
     try {

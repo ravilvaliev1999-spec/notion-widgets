@@ -15,7 +15,7 @@ const createCourier = fs.readFileSync(path.join(root, 'create-courier.html'), 'u
 test('public wrapper isolates Apps Script from multi-login cookies', () => {
   assert.match(wrapper, /<iframe[^>]+id="widget"[^>]+credentialless|<iframe[^>]+credentialless[^>]+id="widget"/);
   assert.match(wrapper, /referrerpolicy="no-referrer"/);
-  assert.match(wrapper, /script src="apps-script-embed\.js\?v=38"/);
+  assert.match(wrapper, /script src="apps-script-embed\.js\?v=41"/);
   assert.match(wrapper, /class="skeleton"/);
   assert.match(wrapper, /body\.widget-ready iframe\{opacity:1\}/);
 });
@@ -55,6 +55,8 @@ test('credentialless create uses native anchors and a fragment-only neutral cour
   assert.match(wrapperJs, /CREATE_COURIER_URL/);
   assert.match(wrapperJs, /const createRequests = new Map\(\)/);
   assert.match(wrapperJs, /const existing = createRequests\.get\(section\)/);
+  assert.match(wrapperJs, /bridge\.actionReady !== true/);
+  assert.doesNotMatch(wrapperJs, /bridge\.actionReady \|\| bridge\.authoritative/);
   assert.match(wrapperJs, /completeCreateRequests\(data\.completedCreateRequestIds\)/);
   assert.match(wrapperJs, /const requestId = rememberedCreateRequest\(section\) \|\| randomId\(\)/);
   assert.match(wrapperJs, /service\.searchParams\.set\('task', params\.get\('task'\)\)/);

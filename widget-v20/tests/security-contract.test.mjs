@@ -59,6 +59,7 @@ test('create POST accepts only the four courier fields and never echoes its capa
 test('create GET rendezvous is noopener, exact-field and status-only', () => {
   const courier=fs.readFileSync(path.join(root,'..','create-courier.html'),'utf8');
   const creator=text('Create.html');
+  const backend=text('Code.gs');
   assert.match(courier,/\^#v2=\(\[A-Za-z0-9_-\]\{80,6000\}\)\$/);
   assert.match(courier,/allowed=new Set\(\['task','accessToken','createSection','createRequestId'\]\)/);
   assert.match(courier,/entries\.length!==4/);
@@ -67,11 +68,18 @@ test('create GET rendezvous is noopener, exact-field and status-only', () => {
   assert.doesNotMatch(courier,/BroadcastChannel|window\.open\(/);
   assert.match(creator,/expected=\['accessToken','createRequestId','createSection','task'\]/);
   assert.match(creator,/apiGetCreateStatus\(input\)/);
+  assert.match(creator,/state==='drive_ready'/);
   assert.doesNotMatch(creator,/\.apiCreateGoogle\(/);
   assert.match(creator,/const statusInput=\{taskPageId,accessToken,section,createRequestId:requestId\}/);
   assert.match(creator,/if\(result\.state==='failed'\)throw new Error/);
   assert.match(creator,/for\(const delay of POLL_DELAYS\)/);
   assert.doesNotMatch(creator,/randomUUID|window\.open|BroadcastChannel|postMessage\([^\n]*(?:accessToken|idempotencyKey)/);
+  const status=backend.slice(backend.indexOf('function apiGetCreateStatus'),backend.indexOf('function apiRepairCreateMarker'));
+  assert.match(backend,/function w20WriteCreateDriveReady_\(canonicalKey, attemptId, driveFile, section\)/);
+  assert.match(backend,/String\(current\.attemptId \|\| ''\)\.toLowerCase\(\) !== expectedAttemptId/);
+  assert.match(backend,/function w20CreateDriveReadyUrl_\(ledger\)/);
+  assert.match(status,/return \{ status: 'drive_ready', openUrl: driveReadyUrl \}/);
+  assert.doesNotMatch(status,/canonicalKey|attemptId|driveReadyAt/);
 });
 
 test('download POST is an exact four-field route and only a cached HMAC grant can precompute a direct result', () => {
@@ -97,17 +105,19 @@ test('download POST is an exact four-field route and only a cached HMAC grant ca
   assert.match(backend.slice(backend.indexOf('function w20CacheDownloadMaterials_'),backend.indexOf('function w20GetCachedDownloadMaterial_')),/w20InvalidateDownloadMaterialCache_\(taskId, pageId, false\)/);
 });
 
-test('server-attested fast download packages are short-lived, minimal and issued only behind the epoch lock', () => {
+test('fast packages remain limited to genuinely expiring hosted URLs and are issued only behind the epoch lock', () => {
   const backend=text('Code.gs');
   const prepare=backend.slice(backend.indexOf('function apiPrepareDownload'),backend.indexOf('function apiDownload'));
   const packageSource=backend.slice(backend.indexOf('function w20FastDownloadName_'),backend.indexOf('function w20IssueDownloadGrant_'));
   const issue=backend.slice(backend.indexOf('function w20IssueDownloadGrant_'),backend.indexOf('function w20GetDownloadGrant_'));
   const ttl=Number((backend.match(/W20_FAST_DOWNLOAD_PACKAGE_TTL_SECONDS\s*=\s*(\d+)/)||[])[1]);
   assert.ok(ttl>0&&ttl<=60);
+  assert.ok(prepare.indexOf('w20GetCachedDownloadMaterial_')<prepare.indexOf('w19AssertOwnedBinary_'));
   assert.ok(prepare.indexOf('w19AssertMaterialForTask_')<prepare.indexOf('w19AssertOwnedBinary_'));
-  assert.ok(prepare.indexOf('w19AssertOwnedBinary_')<prepare.indexOf('w20HostedDownloadDispositionMatches_'));
-  assert.ok(prepare.indexOf('w20HostedDownloadDispositionMatches_')<prepare.indexOf('w20IssueDownloadGrant_'));
+  assert.ok(prepare.indexOf('w19AssertOwnedBinary_')<prepare.indexOf('w20DriveDownloadUrl_'));
+  assert.ok(prepare.indexOf('w20DriveDownloadUrl_')<prepare.indexOf('w20IssueDownloadGrant_'));
   assert.match(packageSource,/var payload = \{\s*url: source\.url,\s*name: w20FastDownloadName_\(source\.name\),\s*expiresAt:/);
+  assert.match(packageSource,/w20TrustedHostedDownloadUrl_\(source\.url\) !== source\.url/);
   assert.match(packageSource,/base64EncodeWebSafe/);
   assert.match(packageSource,/replace\(\/=\+\$\/g, ''\)/);
   assert.doesNotMatch(packageSource,/accessToken|script\.google\.com|serviceUrl|console|Logger/);
@@ -118,15 +128,18 @@ test('server-attested fast download packages are short-lived, minimal and issued
   assert.match(issue,/cfg\.deniedPageIds\[task\]/);
 });
 
-test('hosted download verification preserves the exact signed Notion URL', () => {
+test('grant-protected download URLs are canonical, account-bound Drive links without a CDN probe', () => {
   const backend = text('Code.gs');
-  const verifier = backend.slice(backend.indexOf('function w20HostedDownloadDispositionMatches_'), backend.indexOf('function w20DownloadGrantCacheKey_'));
-  assert.match(verifier, /UrlFetchApp\.fetch\(trustedUrl,\s*\{/);
-  assert.match(verifier, /escaping:\s*false/);
-  assert.match(verifier, /validateHttpsCertificates:\s*true/);
+  const builder = backend.slice(backend.indexOf('function w20DriveDownloadUrl_'), backend.indexOf('function w20DownloadDispositionFilename_'));
+  const prepare = backend.slice(backend.indexOf('function apiPrepareDownload'), backend.indexOf('function apiDownload'));
+  assert.match(builder, /https:\/\/drive\.google\.com\/uc\?export=download&authuser=/);
+  assert.match(builder, /encodeURIComponent\(account\)/);
+  assert.match(builder, /encodeURIComponent\(id\)/);
+  assert.match(builder, /w20DriveDownloadUrl_\(match\[2\], account\) === raw/);
+  assert.doesNotMatch(prepare, /UrlFetchApp|attachmentUrl|attachmentExpiry|Content-Disposition/);
 });
 
-test('public download courier accepts strict v3 packages directly and retains strict v1 POST fallback', () => {
+test('public download courier accepts Drive only after the HMAC v1 runner exchange', () => {
   const courier=fs.readFileSync(path.join(root,'..','download-courier.html'),'utf8');
   const fast=courier.slice(courier.indexOf('function validateFastPackage'),courier.indexOf('function validateDirectDownload'));
   assert.match(courier,/\^#v3=\(\[A-Za-z0-9_-\]\{40,9000\}\)\$/);
@@ -138,10 +151,15 @@ test('public download courier accepts strict v3 packages directly and retains st
   assert.match(fast,/safeDownloadName\(payload\.name\)!==payload\.name/);
   assert.match(fast,/expiry-now>60\*1000/);
   assert.doesNotMatch(fast,/accessToken|downloadTicket|script\.google\.com|serviceUrl/);
+  assert.match(courier,/allowDrive===true&&host==='drive\.google\.com'/);
+  assert.match(courier,/url\.pathname==='\/uc'/);
+  assert.match(courier,/entries\.length===3/);
+  assert.match(courier,/url\.searchParams\.get\('authuser'\)/);
   assert.match(courier,/host==='secure\.notion-static\.com'/);
   assert.match(courier,/host==='file\.notion\.so'/);
   assert.match(courier,/prod-files-secure\\\.s3/);
-  assert.match(courier,/if\(decoded\.kind==='fast'\)[\s\S]*startDirectDownload\(decoded\.direct,0\);\s*return;/);
+  assert.match(courier,/if\(decoded\.kind==='fast'\)[\s\S]*startDirectDownload\(decoded\.direct,0,false\);\s*return;/);
+  assert.match(courier,/data\.downloadTicket!==expectedTicket[\s\S]*startDirectDownload\(data,30000,true\)/);
   assert.match(courier,/form\.method='post'/);
   assert.doesNotMatch(courier,/console\.|Logger|fetch\(|XMLHttpRequest|sendBeacon/);
 });
@@ -159,6 +177,12 @@ test('download acceleration caches only server-derived task material coordinates
   assert.match(cache, /cfg\.deniedPageIds/);
   assert.match(cache, /dataSourceId/);
   assert.doesNotMatch(cache, /accessToken|notionToken|attachmentUrl|downloadUrl|sourceUrl/);
+  const registry=text('Registry.gs');
+  const fallback=registry.slice(registry.indexOf('function w20BootstrapFromRegistry_'),registry.indexOf('function w20RegistryMetaReady_'));
+  assert.match(fallback,/if \(actionProof\.ready\) w20CacheDownloadRegistryMaterials_\(taskId, stored, cfg, actionProof\.trustedUntil\)/);
+  const registrySeed=cache.slice(cache.indexOf('function w20CacheDownloadRegistryMaterials_'),cache.indexOf('function w20GetCachedDownloadMaterial_'));
+  assert.match(registrySeed,/Math\.min\(now \+ W20_DOWNLOAD_MATERIAL_CACHE_TTL_SECONDS \* 1000, proofExpiry\)/);
+  assert.match(registrySeed,/cacheTtlSeconds <= 0/);
 });
 
 test('download cache hit avoids Notion after capability authorization and always revalidates current Drive ownership', () => {
@@ -179,19 +203,17 @@ test('download cache hit avoids Notion after capability authorization and always
   assert.match(body, /var task = \{ id: taskId, name: 'Задача' \}/);
 });
 
-test('direct CDN preparation is server-gated by live Notion and Drive ownership checks', () => {
+test('direct Drive preparation is server-gated by a short cache or live Notion plus current Drive ownership', () => {
   const backend = text('Code.gs');
   const body = backend.slice(backend.indexOf('function apiPrepareDownload'), backend.indexOf('function apiDownload'));
   assert.match(body, /w19AuthorizedConfig_\(input\)/);
   assert.match(body, /taskId !== cfg\.authorizedTaskPageId/);
-  assert.match(body, /w19AssertMaterialForTask_\(materialId, taskId, cfg\)/);
+  assert.match(body, /w20GetCachedDownloadMaterial_\(taskId, materialId, cfg\)/);
+  assert.match(body, /if \(!material\)[\s\S]*w19AssertMaterialForTask_\(materialId, taskId, cfg\)/);
   assert.match(body, /w19AssertOwnedBinary_\(material, task, cfg\)/);
-  assert.match(body, /w20TrustedHostedDownloadUrl_\(material\.downloadUrl\)/);
-  assert.match(body, /directUrl !== String\(material\.attachmentUrl \|\| ''\)/);
-  assert.match(body, /w20HostedDownloadDispositionMatches_\(directUrl, direct\.name\)/);
-  assert.match(body, /return w20IssueDownloadGrant_\(taskId, materialId, direct, cfg, grantEpoch\)/);
-  assert.doesNotMatch(body, /attachmentName !== expectedName/);
-  assert.doesNotMatch(body, /Utilities\.base64Encode|DriveApp\.getFileById/);
+  assert.match(body, /w20DriveDownloadUrl_\(drive\.id, cfg\.allowedEmail\)/);
+  assert.match(body, /w20IssueDownloadGrant_\(taskId, materialId, direct, cfg, grantEpoch\)/);
+  assert.doesNotMatch(body, /UrlFetchApp|attachmentUrl|attachmentExpiry|Utilities\.base64Encode|DriveApp\.getFileById/);
 });
 
 test('bootstrap and sync seed the download cache while archive, update and delete invalidate it', () => {

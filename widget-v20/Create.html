@@ -81,6 +81,12 @@
       status.textContent='Файл создан. Открываю…';notify('success','',openUrl);return true;
     }
 
+    function notifyDriveReady(openUrl){
+      const readyUrl=allowedOpenUrl(openUrl);
+      if(!readyUrl)throw new Error('Сервис вернул недопустимый адрес файла.');
+      status.textContent='Документ готов. Открываю…';notify('success','',readyUrl);return true;
+    }
+
     function inspectStatusResponse(response){
       if(!response||response.ok!==true){
         if(operationInProgress(response)||response&&response.error&&response.error.retryable)return {state:'pending'};
@@ -88,6 +94,7 @@
       }
       const data=response.data||{},state=String(data.status||'');
       if(state==='done'&&data.material)return {state:'done',material:data.material};
+      if(state==='drive_ready'&&allowedOpenUrl(data.openUrl))return {state:'drive_ready',openUrl:data.openUrl};
       if(state==='pending')return {state:'pending'};
       if(state==='failed')return {state:'failed'};
       if(state==='missing')return {state:'missing'};
@@ -102,6 +109,7 @@
         let result;
         try{result=await inspectStatus(statusInput);}catch(_error){continue;}
         if(result.state==='done')return notifyMaterial(result.material);
+        if(result.state==='drive_ready')return notifyDriveReady(result.openUrl);
         if(result.state==='failed')throw new Error('Создание не завершилось. Закройте вкладку и повторите нажатие.');
       }
       return false;
@@ -136,6 +144,7 @@
         let result;
         try{result=await inspectStatus(statusInput);}catch(error){if(!error.retryable)throw error;result={state:'pending'};}
         if(result.state==='done'){notifyMaterial(result.material);return;}
+        if(result.state==='drive_ready'){notifyDriveReady(result.openUrl);return;}
         if(result.state==='failed')throw new Error('Создание не завершилось. Закройте вкладку и повторите нажатие.');
         if(await pollUntilDone(statusInput))return;
         const message='Создание продолжается. Новая карточка появится в виджете автоматически.';
