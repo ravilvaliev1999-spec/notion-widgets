@@ -6,6 +6,7 @@
   <meta name="referrer" content="no-referrer">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta id="runtimeParams" data-params="<?= runtimeParamsJson ?>">
+  <meta id="precomputedResult" data-result="<?= precomputedResultJson ?>">
   <title>Скачивание файла</title>
   <style>
     html,body{margin:0;min-height:100%;background:#191919;color:#e6e6e4;font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
@@ -47,6 +48,18 @@
       const meta=document.getElementById('runtimeParams');
       try{return JSON.parse(meta&&meta.dataset&&meta.dataset.params||'{}');}
       catch(_error){throw new Error('Параметры скачивания повреждены.');}
+    }
+
+    function precomputedResult(){
+      const meta=document.getElementById('precomputedResult');
+      let value;
+      try{value=JSON.parse(meta&&meta.dataset&&meta.dataset.result||'null');}
+      catch(_error){throw new Error('Результат скачивания повреждён.');}
+      if(value===null)return null;
+      if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Результат скачивания повреждён.');
+      const keys=Object.keys(value).sort(),expected=['downloadTicket','expiresAt','mimeType','mode','name','size','url'];
+      if(keys.length!==expected.length||keys.some((key,index)=>key!==expected[index])||value.mode!=='direct'||!/^[A-Za-z0-9_-]{32,160}$/.test(String(value.downloadTicket||'')))throw new Error('Результат скачивания повреждён.');
+      return value;
     }
 
     function callPrepare(input){
@@ -106,6 +119,15 @@
     async function startDownload(){
       let objectUrl='';
       try{
+        const precomputed=precomputedResult();
+        if(precomputed){
+          downloadTicket=String(precomputed.downloadTicket||'');
+          const direct=validatedDirect(precomputed);
+          if(!direct)throw new Error('Защищённая ссылка на файл устарела.');
+          setStatus('Проверка завершена. Начинаю прямое скачивание…');
+          notifyCourierDirect(direct);
+          return;
+        }
         const params=resolveRuntimeParams();
         downloadTicket=String(params.downloadTicket||'');
         const taskPageId=String(params.task||params.taskPageId||'');
@@ -113,17 +135,21 @@
         const pageId=String(params.downloadPageId||params.pageId||'');
         if(!/^[A-Za-z0-9_-]{32,160}$/.test(downloadTicket)||!/^[0-9a-fA-F-]{32,36}$/.test(taskPageId)||!/^[0-9a-fA-F-]{32,36}$/.test(pageId)||!/^[A-Za-z0-9._~-]{32,256}$/.test(accessToken))throw new Error('Параметры скачивания повреждены.');
         const input={taskPageId,pageId,accessToken};
-        let prepared=null;
+        let grantedResponse=null;
         try{
           const prepareResponse=await callPrepare(input);
-          if(prepareResponse&&prepareResponse.ok)prepared=validatedDirect(prepareResponse.data);
+          const grant=prepareResponse&&prepareResponse.ok&&prepareResponse.data&&String(prepareResponse.data.downloadGrant||'');
+          if(prepareResponse&&prepareResponse.ok&&prepareResponse.data&&prepareResponse.data.mode==='grant'&&/^[a-f0-9]{96}$/.test(grant)){
+            grantedResponse=await callDownload(Object.assign({},input,{downloadGrant:grant}));
+          }
         }catch(_error){}
-        if(prepared){
+        const granted=grantedResponse&&grantedResponse.ok?validatedDirect(grantedResponse.data):null;
+        if(granted){
           setStatus('Проверка завершена. Начинаю прямое скачивание…');
-          notifyCourierDirect(prepared);
+          notifyCourierDirect(granted);
           return;
         }
-        const response=await callDownload(input);
+        const response=grantedResponse&&grantedResponse.ok?grantedResponse:await callDownload(input);
         if(!response||!response.ok)throw new Error(response&&response.error&&response.error.message||'Файл не удалось получить.');
         const data=response.data||{};
         objectUrl=URL.createObjectURL(base64Blob(data.base64,data.size));

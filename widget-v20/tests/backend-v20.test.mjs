@@ -20,6 +20,14 @@ function loadCore() {
 
 function loadBackend(activeEmail = '') {
   const core = loadCore();
+  const defaultProperties = new Map();
+  const defaultScriptProperties = {
+    getProperty: (key) => defaultProperties.get(key) ?? null,
+    setProperty: (key, value) => { defaultProperties.set(key, String(value)); },
+    deleteProperty: (key) => { defaultProperties.delete(key); },
+    getProperties: () => Object.fromEntries(defaultProperties),
+    setProperties: (values) => Object.entries(values || {}).forEach(([key, value]) => defaultProperties.set(key, String(value)))
+  };
   const context = vm.createContext({
     Object,
     String,
@@ -36,8 +44,14 @@ function loadBackend(activeEmail = '') {
     console: { log() {} },
     WidgetV19Core: core,
     Session: { getActiveUser: () => ({ getEmail: () => activeEmail }) },
+    PropertiesService: { getScriptProperties: () => defaultScriptProperties },
+    LockService: {
+      getScriptLock: () => ({ tryLock: () => true, waitLock() {}, releaseLock() {} }),
+      getUserLock: () => ({ tryLock: () => true, waitLock() {}, releaseLock() {} })
+    },
     Utilities: {
       DigestAlgorithm: { SHA_256: 'SHA_256' },
+      getUuid: () => crypto.randomUUID(),
       newBlob: (value) => ({ getBytes: () => [...Buffer.from(String(value), 'utf8')] }),
       computeDigest: (_algorithm, bytes) => [...crypto.createHash('sha256').update(Buffer.from(bytes)).digest()],
       computeHmacSha256Signature: (value, key) => [...crypto.createHmac('sha256', String(key)).update(String(value)).digest()]
@@ -141,7 +155,7 @@ test('confirmed owner identity remains an independent authorization path', () =>
 
 test('every public data API authenticates the same input payload', () => {
   for (const name of [
-    'apiBootstrap', 'apiCreateGoogle', 'apiAddLink', 'apiUpload', 'apiUpdateMaterial',
+    'apiBootstrap', 'apiCreateGoogle', 'apiGetCreateStatus', 'apiWarmCreateContext', 'apiAddLink', 'apiUpload', 'apiUpdateMaterial',
     'apiReorder', 'apiDeletePhysical', 'apiPrepareDownload', 'apiDownload', 'apiPollDriveMetadata', 'apiSyncTask', 'w19SetArchiveState_'
   ]) {
     const start = backendSource.indexOf(`function ${name}`);
@@ -163,6 +177,7 @@ test('web app routes download and create requests to dedicated couriers', () => 
   assert.match(doGet, /task:\s*String\(params\.task \|\| params\.taskPageId/);
   assert.match(doGet, /downloadPageId:\s*String\(params\.downloadPageId/);
   assert.match(doGet, /output = template\.evaluate\(\)/);
+  assert.match(doGet, /precomputedResultJson = 'null'/);
   assert.match(doGet, /params\.createSection \|\| params\.createRequestId/);
   assert.match(doGet, /createTemplateFromFile\('Create'\)/);
   assert.match(doGet, /createSection:\s*String\(params\.createSection/);
@@ -170,6 +185,69 @@ test('web app routes download and create requests to dedicated couriers', () => 
   assert.match(doGet, /output = createTemplate\.evaluate\(\)/);
   assert.match(doGet, /createHtmlOutputFromFile\('Index'\)/);
   assert.match(doGet, /XFrameOptionsMode\.ALLOWALL/);
+  assert.match(doGet, /function doPost\(event\)/);
+  assert.match(doGet, /w20CreatePostFields_\(event\)/);
+  assert.match(doGet, /template\.runtimeParamsJson = '\{\}'/);
+  assert.match(doGet, /template\.precomputedResultJson = JSON\.stringify\(result\)/);
+});
+
+test('create POST accepts exactly four form fields, executes once and embeds only a safe precomputed result', () => {
+  const backend = loadBackend();
+  const task='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e',requestId='12345678-1234-4abc-8def-1234567890ab';
+  const accessToken='capability_token_0123456789_ABCDEFGH';
+  const rendered=[];
+  const output={setTitle(){return this;},setXFrameOptionsMode(){return this;},addMetaTag(){return this;}};
+  backend.HtmlService={
+    XFrameOptionsMode:{ALLOWALL:'ALLOWALL'},
+    createTemplateFromFile(name){
+      assert.equal(name,'Create');
+      const template={evaluate(){rendered.push({runtime:template.runtimeParamsJson,result:template.precomputedResultJson});return output;}};
+      return template;
+    }
+  };
+  let calls=0,received;
+  backend.apiCreateGoogle=(input)=>{calls+=1;received=input;return {ok:true,data:{material:{openUrl:'https://docs.google.com/document/d/CreatedFile12345/edit',googleFileId:'CreatedFile12345',provider:'Google Drive',format:'Google Docs',section:'Docs',secret:'not-for-client'},internal:'hidden'}};};
+  const event={
+    parameters:{task:[task],accessToken:[accessToken],createSection:['Docs'],createRequestId:[requestId]},
+    postData:{type:'application/x-www-form-urlencoded'}
+  };
+  assert.equal(backend.doPost(event),output);
+  assert.equal(calls,1);
+  assert.deepEqual(JSON.parse(JSON.stringify(received)),{taskPageId:task,accessToken,section:'Docs',idempotencyKey:requestId});
+  assert.equal(rendered[0].runtime,'{}');
+  const safe=JSON.parse(rendered[0].result);
+  assert.deepEqual(safe,{requestId,status:'success',openUrl:'https://docs.google.com/document/d/CreatedFile12345/edit'});
+  assert.doesNotMatch(rendered[0].result,/capability|secret|internal|accessToken/i);
+
+  backend.doPost({...event,parameters:{...event.parameters,extra:['forbidden']}});
+  assert.equal(calls,1,'an extra field must fail before create');
+  assert.equal(JSON.parse(rendered[1].result).status,'error');
+  backend.doPost({...event,parameters:{...event.parameters,task:[task,task]}});
+  assert.equal(calls,1,'a duplicate field must fail before create');
+  backend.doPost({...event,postData:{type:'application/json'}});
+  assert.equal(calls,1,'a non-form body must fail before create');
+  backend.doPost({...event,queryString:'task=must-not-be-in-url'});
+  assert.equal(calls,1,'POST courier fields must not arrive in the query string');
+});
+
+test('concurrent create POST briefly recovers the completed registry result and otherwise reports pending without duplicating', () => {
+  const backend = loadBackend();
+  const task='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e',requestId='12345678-1234-4abc-8def-1234567890ab';
+  const fields={valid:true,taskPageId:task,accessToken:'A'.repeat(48),section:'Docs',requestId};
+  const response={ok:false,error:{code:'OPERATION_IN_PROGRESS',message:'already running'}};
+  backend.Utilities.sleep=()=>{};
+  let reads=0;
+  backend.w20RegistryFindCreateRequest_=()=>{reads+=1;return reads===3?{openUrl:'https://docs.google.com/document/d/CreatedFile12345/edit',googleFileId:'CreatedFile12345',provider:'Google Drive',format:'Google Docs',section:'Docs'}:null;};
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(backend.w20RecoverConcurrentCreatePost_(fields,response))),
+    {requestId,status:'success',openUrl:'https://docs.google.com/document/d/CreatedFile12345/edit'}
+  );
+  assert.equal(reads,3);
+  backend.w20RegistryFindCreateRequest_=()=>null;
+  const pending=backend.w20RecoverConcurrentCreatePost_(fields,response);
+  assert.equal(pending.status,'pending');
+  assert.equal(pending.requestId,requestId);
+  assert.match(pending.message,/Дубликат не будет создан/);
 });
 
 test('bootstrap returns the current deployment URL instead of hard-coding one', () => {
@@ -218,7 +296,7 @@ test('cached bootstrap paints safe registry cards without Notion or Drive calls'
   backend.w19AuthorizedConfig_ = () => ({authorizedTaskPageId:taskId,deniedPageIds:{},maxUploadBytes:8388608});
   for (const name of ['w19AssertSchema_','w19AssertTaskPage_','w19QueryTaskMaterials_','w19EnsureTaskFolder_']) backend[name]=()=>{throw new Error(`${name} must not run`);};
   const result=backend.apiBootstrap({taskPageId:taskId});
-  assert.equal(result.ok,true);
+  assert.equal(result.ok,true,JSON.stringify(result));
   assert.equal(result.data.cached,true);
   assert.equal(result.data.authoritative,false);
   assert.equal(result.data.materials.length,1);
@@ -286,6 +364,206 @@ test('repeated Docs creation with one request id executes the document creation 
   assert.equal(documentsCreated, 1);
 });
 
+test('fresh Google creation uses exactly one Drive CREATE and one Notion CREATE from authoritative registry state', () => {
+  const backend = loadBackend();
+  const taskId = '3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const existingPageId = '3c72d627-39a1-8120-bd0a-f969e6846945';
+  const createdPageId = '3c72d627-39a1-81e5-a840-ecb1c98cc5c5';
+  const requestId = '11111111-1111-4111-8111-111111111111';
+  const values = {};
+  const props = {
+    getProperty: (key) => Object.prototype.hasOwnProperty.call(values,key) ? values[key] : null,
+    getProperties: () => ({...values}),
+    setProperty: (key,value) => { values[key]=String(value); },
+    setProperties: (next) => { Object.assign(values,next); },
+    deleteProperty: (key) => { delete values[key]; }
+  };
+  const scriptLock = { tryLock: () => true, waitLock() {}, releaseLock() {} };
+  let userLockCalls = 0;
+  backend.PropertiesService = { getScriptProperties: () => props };
+  backend.LockService = {
+    getScriptLock: () => scriptLock,
+    getUserLock: () => { userLockCalls += 1; throw new Error('hot path must not acquire UserLock'); }
+  };
+  let uuidIndex = 0;
+  backend.Utilities.getUuid = () => `attempt-${uuidIndex += 1}`;
+  backend.Utilities.formatDate = () => '2026-08-26 21:00';
+  backend.w20RegistryReplaceTask_(taskId,[{
+    id:existingPageId,name:'Существующий документ',section:'Docs',format:'Google Docs',provider:'Google Drive',
+    openUrl:'https://docs.google.com/document/d/ExistingGoogleDoc123/edit',googleFileId:'ExistingGoogleDoc123',
+    folderId:'TaskFolder12345',widgetOwned:true,position:7,syncStatus:'synced'
+  }]);
+  backend.w20RegistryWriteTaskMeta_(taskId,{
+    taskName:'Задача',folderId:'TaskFolder12345',rootFolderId:'RootFolder12345',folderVerified:true,
+    folderValidatedAt:new Date().toISOString(),
+    context:{path:'Основная / Задача',ancestorIds:'ancestor',depth:2,sphereIds:[],directionIds:[],projectIds:[]}
+  });
+  const cfg={authorizedTaskPageId:taskId,deniedPageIds:{},dataSourceId:'3822d627-39a1-8018-a2dc-000b95bf5722',notionToken:'server-only',rootFolderId:'RootFolder12345'};
+  backend.w19AuthorizedConfig_=()=>cfg;
+  for (const name of [
+    'w19AssertSchema_','w19AssertTaskPage_','w19FindMaterialByIdempotency_','w19EnsureTaskFolder_',
+    'w19FindDriveByIdempotency_','w19FindMaterialByGoogleFile_','w19NextPosition_',
+    'w19MarkDriveNotionPage_','w19WithMutationLock_'
+  ]) backend[name]=()=>{throw new Error(`${name} must not run on the hot path`);};
+
+  let driveCreates=0;
+  backend.w19CreateGoogleFile_=(_task,folderId,section,name)=>{
+    driveCreates += 1;
+    assert.equal(folderId,'TaskFolder12345');
+    assert.equal(section,'Docs');
+    return {id:'CreatedGoogleDoc123',name,mimeType:'application/vnd.google-apps.document',webViewLink:'https://docs.google.com/document/d/CreatedGoogleDoc123/edit'};
+  };
+  let notionCreates=0;
+  let notionBody=null;
+  backend.w19NotionRequest_=(method,requestPath,body)=>{
+    notionCreates += 1;
+    assert.equal(method,'post');
+    assert.equal(requestPath,'/v1/pages');
+    notionBody=body;
+    return {id:createdPageId,url:'https://www.notion.so/created',properties:body.properties,created_time:'2026-08-26T18:00:00.000Z',last_edited_time:'2026-08-26T18:00:00.000Z'};
+  };
+
+  const result=backend.apiCreateGoogle({taskPageId:taskId,section:'Docs',name:'Быстрый документ',idempotencyKey:requestId});
+  assert.equal(result.ok,true);
+  assert.equal(result.data.duplicate,false);
+  assert.equal(result.data.material.name,'Быстрый документ');
+  assert.equal(result.data.material.createRequestId,requestId);
+  assert.equal(driveCreates,1);
+  assert.equal(notionCreates,1);
+  assert.equal(userLockCalls,0);
+  assert.equal(notionBody.properties['[SYS] Позиция'].number,8);
+  const canonical=backend.w19CanonicalIdempotency_(taskId,'create-google-Docs',requestId);
+  assert.match(JSON.stringify(notionBody),new RegExp(canonical.replace(/[|]/g,'\\|')));
+  assert.doesNotMatch(JSON.stringify(result),/create-google-Docs|3c62d62739a180a1aac7ec19ffc9ef8e/);
+
+  const status=backend.apiGetCreateStatus({taskPageId:taskId,section:'Docs',createRequestId:requestId});
+  assert.equal(status.ok,true);
+  assert.equal(status.data.status,'done');
+  assert.equal(status.data.material.id,createdPageId);
+  assert.equal(status.data.material.createRequestId,requestId);
+  assert.doesNotMatch(JSON.stringify(status),/create-google-Docs|3c62d62739a180a1aac7ec19ffc9ef8e/);
+  assert.equal(driveCreates,1);
+  assert.equal(notionCreates,1);
+  assert.equal(userLockCalls,0);
+
+  const pendingRequestId='22222222-2222-4222-8222-222222222222';
+  const pendingCanonical=backend.w19CanonicalIdempotency_(taskId,'create-google-Docs',pendingRequestId);
+  props.setProperty(backend.w19IdempotencyLedgerKey_(pendingCanonical),JSON.stringify({status:'pending',at:Date.now(),attemptId:'server-only'}));
+  const pending=backend.apiGetCreateStatus({taskPageId:taskId,section:'Docs',createRequestId:pendingRequestId});
+  assert.deepEqual(JSON.parse(JSON.stringify(pending.data)),{status:'pending',retryable:true});
+});
+
+test('create context warming verifies the task folder once without a Notion request', () => {
+  const backend=loadBackend();
+  const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const values={};
+  const props={
+    getProperty:(key)=>Object.prototype.hasOwnProperty.call(values,key)?values[key]:null,
+    getProperties:()=>({...values}),
+    setProperty:(key,value)=>{values[key]=String(value);},
+    setProperties:(next)=>{Object.assign(values,next);},
+    deleteProperty:(key)=>{delete values[key];}
+  };
+  const lock={tryLock:()=>true,waitLock(){},releaseLock(){}};
+  backend.PropertiesService={getScriptProperties:()=>props};
+  backend.LockService={getScriptLock:()=>lock,getUserLock:()=>lock};
+  backend.w20RegistryWriteTaskMeta_(taskId,{
+    taskName:'Задача',folderId:'UntrustedFolder123',rootFolderId:'RootFolder12345',folderVerified:false,
+    context:{path:'Основная / Задача',ancestorIds:'ancestor',depth:2}
+  });
+  assert.equal(backend.w20RegistryClaimCreateSlot_(taskId,'Docs','RootFolder12345'),null);
+  backend.w19AuthorizedConfig_=()=>({authorizedTaskPageId:taskId,deniedPageIds:{},rootFolderId:'RootFolder12345'});
+  backend.w19NotionRequest_=()=>{throw new Error('warming must not call Notion');};
+  backend.w19AssertSchema_=()=>{throw new Error('warming must not inspect schema');};
+  backend.w19AssertTaskPage_=()=>{throw new Error('warming must not fetch the task');};
+  let folderChecks=0;
+  backend.w19EnsureTaskFolder_=(task)=>{
+    folderChecks+=1;
+    assert.equal(task.id,taskId);
+    assert.equal(task.name,'Задача');
+    return {id:'VerifiedFolder123'};
+  };
+
+  const warmed=backend.apiWarmCreateContext({taskPageId:taskId});
+  assert.deepEqual(JSON.parse(JSON.stringify(warmed)),{ok:true,data:{ready:true,cached:false}});
+  assert.equal(folderChecks,1);
+  const meta=backend.w20RegistryReadFreshTaskMeta_(taskId);
+  assert.equal(meta.folderId,'VerifiedFolder123');
+  assert.equal(meta.folderVerified,true);
+
+  const cached=backend.apiWarmCreateContext({taskPageId:taskId});
+  assert.deepEqual(JSON.parse(JSON.stringify(cached)),{ok:true,data:{ready:true,cached:true}});
+  assert.equal(folderChecks,1);
+});
+
+test('failed and stale Google-create ledger entries always run full duplicate recovery', () => {
+  for (const ledgerEntry of [
+    {status:'failed',at:Date.now()-1000,attemptId:'old-failed'},
+    {status:'pending',at:Date.now()-421000,attemptId:'old-stale'}
+  ]) {
+    const backend=loadBackend();
+    const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+    const pageId='3c72d627-39a1-81e5-a840-ecb1c98cc5c5';
+    const requestId='11111111-1111-4111-8111-111111111111';
+    const canonical=backend.w19CanonicalIdempotency_(taskId,'create-google-Docs',requestId);
+    const values={};
+    const props={
+      getProperty:(key)=>Object.prototype.hasOwnProperty.call(values,key)?values[key]:null,
+      getProperties:()=>({...values}),
+      setProperty:(key,value)=>{values[key]=String(value);},
+      setProperties:(next)=>{Object.assign(values,next);},
+      deleteProperty:(key)=>{delete values[key];}
+    };
+    props.setProperty(backend.w19IdempotencyLedgerKey_(canonical),JSON.stringify(ledgerEntry));
+    const lock={tryLock:()=>true,waitLock(){},releaseLock(){}};
+    backend.PropertiesService={getScriptProperties:()=>props};
+    backend.LockService={getScriptLock:()=>lock};
+    backend.Utilities.getUuid=()=>`recovery-${ledgerEntry.status}`;
+    backend.Utilities.formatDate=()=> '2026-08-26 21:00';
+    const cfg={authorizedTaskPageId:taskId,deniedPageIds:{},notionToken:'server-only'};
+    backend.w19AuthorizedConfig_=()=>cfg;
+    let schemaChecks=0,taskChecks=0,mutationLocks=0,idempotencyQueries=0,markerRepairs=0,hotClaims=0;
+    backend.w19AssertSchema_=()=>{schemaChecks+=1;};
+    backend.w19AssertTaskPage_=()=>{taskChecks+=1;return {id:taskId,name:'Задача',page:{properties:{}}};};
+    backend.w19WithMutationLock_=(fn)=>{mutationLocks+=1;return fn();};
+    const existingPage={
+      id:pageId,url:'https://www.notion.so/existing',
+      properties:{
+        Name:{title:[{plain_text:'Уже создан'}]},
+        'Ссылка':{url:'https://docs.google.com/document/d/CreatedGoogleDoc123/edit'},
+        'Архив':{checkbox:false},
+        '[SYS] Формат файла':{select:{name:'Google Docs'}},
+        '[SYS] Раздел виджета':{select:{name:'Docs'}},
+        '[SYS] Провайдер':{select:{name:'Google Drive'}},
+        '[SYS] Google File ID':{rich_text:[{plain_text:'CreatedGoogleDoc123'}]},
+        '[SYS] Google Folder ID':{rich_text:[{plain_text:'TaskFolder12345'}]},
+        '[SYS] Sync status':{select:{name:'synced'}},
+        '[SYS] Idempotency key':{rich_text:[{plain_text:canonical}]}
+      }
+    };
+    backend.w19FindMaterialByIdempotency_=()=>{idempotencyQueries+=1;return existingPage;};
+    backend.w19GetDriveMetadata_=()=>({id:'CreatedGoogleDoc123',appProperties:{materialState:'active'}});
+    backend.w19MarkDriveNotionPage_=()=>{markerRepairs+=1;};
+    backend.w20RegistryClaimCreateSlot_=()=>{hotClaims+=1;throw new Error('recovery must not claim a hot slot');};
+    for (const name of ['w19EnsureTaskFolder_','w19FindDriveByIdempotency_','w19CreateGoogleFile_','w19CreateNotionMaterial_']) {
+      backend[name]=()=>{throw new Error(`${name} would create a duplicate`);};
+    }
+
+    const result=backend.apiCreateGoogle({taskPageId:taskId,section:'Docs',idempotencyKey:requestId});
+    assert.equal(result.ok,true,`${ledgerEntry.status}: ${JSON.stringify(result)}`);
+    assert.equal(result.data.duplicate,true,ledgerEntry.status);
+    assert.equal(result.data.material.id,pageId,ledgerEntry.status);
+    assert.equal(result.data.material.createRequestId,requestId,ledgerEntry.status);
+    assert.equal(schemaChecks,1,ledgerEntry.status);
+    assert.equal(taskChecks,1,ledgerEntry.status);
+    assert.equal(mutationLocks,1,ledgerEntry.status);
+    assert.equal(idempotencyQueries,1,ledgerEntry.status);
+    assert.equal(markerRepairs,1,ledgerEntry.status);
+    assert.equal(hotClaims,0,ledgerEntry.status);
+    assert.doesNotMatch(JSON.stringify(result),/create-google-Docs|3c62d62739a180a1aac7ec19ffc9ef8e/);
+  }
+});
+
 test('scheduled sync rejects browser calls that are neither owner nor the installed trigger', () => {
   const scheduled = backendSource.slice(backendSource.indexOf('function scheduledSync'), backendSource.indexOf('function w19ClaimScheduledSync_'));
   const guard = backendSource.slice(backendSource.indexOf('function w19AssertScheduledInvocation_'), backendSource.indexOf('/* ========================= Authorization/config'));
@@ -351,7 +629,7 @@ test('signed Drive poll makes zero Notion calls when metadata is unchanged and o
   assert.equal(patches, 1);
   assert.ok(patchedProperties.Name);
   assert.ok(patchedProperties['[SYS] Download name']);
-  assert.ok(patchedProperties['[SYS] Последняя синхронизация']);
+  assert.equal(patchedProperties['[SYS] Последняя синхронизация'],undefined);
   assert.equal(changed.data.materials[0].name, 'Новое имя');
 });
 
@@ -714,6 +992,8 @@ test('download cache refuses archived, cross-task, cross-source, denied and Goog
   };
   assert.equal(backend.w20CacheDownloadMaterials_(taskId, [clone()], cfg), 1);
   assert.equal(values.size, 1);
+  values.set(backend.w20DownloadGrantCacheKey_(taskId,base.id),'server-attested-grant');
+  assert.equal(values.size,2);
   assert.equal(backend.w20CacheDownloadMaterials_(taskId, [archived], cfg), 0);
   assert.equal(values.size, 0);
 });
@@ -963,6 +1243,122 @@ test('durable fallback registry keeps only safe server-derived card metadata and
   assert.equal(values.get('NOTION_TOKEN'), 'must-remain-unread');
 });
 
+test('registry tombstones block stale upserts and snapshots until an explicit restore', () => {
+  const backend = loadBackend();
+  const taskId = '3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const pageId = '3c72d627-39a1-81e5-a840-ecb1c98cc5c5';
+  const values = new Map();
+  backend.PropertiesService = {
+    getScriptProperties: () => ({
+      getProperty: (key) => values.get(key) ?? null,
+      getProperties: () => Object.fromEntries(values),
+      setProperty: (key, value) => values.set(key, value),
+      setProperties: (entries) => Object.entries(entries).forEach(([key, value]) => values.set(key, value)),
+      deleteProperty: (key) => values.delete(key)
+    })
+  };
+  const material = {
+    id: pageId,
+    name: 'Исходная карточка',
+    section: 'Docs',
+    format: 'Google Docs',
+    provider: 'Google Drive',
+    openUrl: 'https://docs.google.com/document/d/OwnedGoogleDoc123/edit',
+    googleFileId: 'OwnedGoogleDoc123',
+    folderId: 'OwnedTaskFolder123',
+    position: 0,
+    syncStatus: 'synced'
+  };
+
+  assert.equal(backend.w20RegistryUpsert_(taskId, material), true);
+  const snapshotStartedAt = Date.now();
+  assert.equal(backend.w20RegistryRemove_(taskId, pageId), true);
+  const key = backend.w20RegistryKey_(taskId, pageId);
+  assert.equal(JSON.parse(values.get(key)).recordType, 'tombstone');
+  assert.equal(backend.w20RegistryReadTask_(taskId, null).length, 0);
+
+  assert.equal(backend.w20RegistryUpsert_(taskId, { ...material, name: 'Поздний stale upsert' }), false);
+  assert.equal(backend.w20RegistryReplaceTask_(taskId, [{ ...material, name: 'Stale snapshot' }], snapshotStartedAt), 0);
+  assert.equal(JSON.parse(values.get(key)).recordType, 'tombstone');
+  assert.equal(backend.w20RegistryReadTask_(taskId, null).length, 0);
+
+  assert.equal(backend.w20RegistryRestore_(taskId, { ...material, name: 'Восстановленная карточка' }), true);
+  const restored = backend.w20RegistryReadTask_(taskId, null);
+  assert.equal(restored.length, 1);
+  assert.equal(restored[0].name, 'Восстановленная карточка');
+  assert.equal(JSON.parse(values.get(key)).recordType, undefined);
+
+  const addLink = backendSource.slice(backendSource.indexOf('function apiAddLink'), backendSource.indexOf('function apiUpload'));
+  const archiveState = backendSource.slice(backendSource.indexOf('function w19SetArchiveState_'), backendSource.indexOf('function w19Audit_'));
+  assert.match(addLink, /outcome\.restored\s*\?\s*w20RegistryRestore_/);
+  assert.match(archiveState, /w20RegistryRestore_\(task\.id, material\)/);
+  assert.match(archiveState, /w20RegistryRestore_\(task\.id, updatedMaterial\)/);
+});
+
+test('authoritative bootstrap and sync return the tombstone-aware merged registry', () => {
+  for (const apiName of ['apiBootstrap', 'apiSyncTask']) {
+    const backend = loadBackend();
+    const taskId = '3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+    const stalePageId = '3c72d627-39a1-81e5-a840-ecb1c98cc5c5';
+    const concurrentPageId = '3c72d627-39a1-8120-bd0a-f969e6846945';
+    const values = new Map();
+    backend.PropertiesService = {
+      getScriptProperties: () => ({
+        getProperty: (key) => values.get(key) ?? null,
+        getProperties: () => Object.fromEntries(values),
+        setProperty: (key, value) => values.set(key, value),
+        setProperties: (entries) => Object.entries(entries).forEach(([key, value]) => values.set(key, value)),
+        deleteProperty: (key) => values.delete(key)
+      })
+    };
+    backend.ScriptApp = { getService: () => ({ getUrl: () => 'https://script.google.com/macros/s/abcdefghijklmnopqrstuvwxyz0123456789_-AB/exec' }) };
+    const base = {
+      section: 'Docs',
+      format: 'Google Docs',
+      provider: 'Google Drive',
+      folderId: 'OwnedTaskFolder123',
+      position: 0,
+      syncStatus: 'synced'
+    };
+    const stale = {
+      ...base,
+      id: stalePageId,
+      name: 'Уже архивированная карточка',
+      openUrl: 'https://docs.google.com/document/d/StaleGoogleDoc123/edit',
+      googleFileId: 'StaleGoogleDoc123'
+    };
+    const concurrent = {
+      ...base,
+      id: concurrentPageId,
+      name: 'Параллельно созданная карточка',
+      openUrl: 'https://docs.google.com/document/d/ConcurrentGoogleDoc123/edit',
+      googleFileId: 'ConcurrentGoogleDoc123',
+      position: 1
+    };
+    assert.equal(backend.w20RegistryRemove_(taskId, stalePageId), true);
+    backend.w19AuthorizedConfig_ = () => ({
+      authorizedTaskPageId: taskId,
+      deniedPageIds: {},
+      rootFolderId: 'OwnedRootFolder123',
+      maxUploadBytes: 8 * 1024 * 1024,
+      notionToken: 'test-notion-hmac-secret'
+    });
+    backend.w19AssertSchema_ = () => ({ ok: true });
+    backend.w19AssertTaskPage_ = () => ({ id: taskId, name: 'Задача', page: { properties: {} } });
+    backend.w20CacheDownloadMaterials_ = () => 0;
+    backend.w19MaterialFromPage_ = (page) => page;
+    backend.w19QueryTaskMaterials_ = () => {
+      assert.equal(backend.w20RegistryUpsert_(taskId, concurrent), true);
+      return [stale];
+    };
+
+    const response = backend[apiName]({ taskPageId: taskId, forceRefresh: true });
+    assert.equal(response.ok, true, `${apiName}: ${JSON.stringify(response)}`);
+    assert.deepEqual(Array.from(response.data.materials, (item) => item.id), [concurrentPageId]);
+    assert.equal(backend.w20RegistryReadTask_(taskId, null).some((item) => item.id === stalePageId), false);
+  }
+});
+
 test('material parser prefers the fresh Notion-hosted file URL for downloads', () => {
   const backend = loadBackend();
   const signedUrl = 'https://prod-files-secure.s3.us-west-2.amazonaws.com/file.docx?signature=fresh';
@@ -1025,6 +1421,7 @@ test('hosted Notion attachments are attached on creation and preserved during Dr
 
 test('next position reads only the highest active position in the requested section', () => {
   const backend = loadBackend();
+  backend.w20RegistryReservePosition_=(_taskId,_section,minimumNext)=>minimumNext;
   let request;
   backend.w19NotionRequest_ = (method, requestPath, body, cfg) => {
     request={method,requestPath,body,cfg};
@@ -1042,12 +1439,50 @@ test('next position reads only the highest active position in the requested sect
   assert.equal(request.body.filter.and[2].checkbox.equals,false);
 });
 
+test('hot and queried material paths share one atomic per-section position allocator', () => {
+  function setup() {
+    const backend=loadBackend();
+    const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+    const values={};
+    const props={
+      getProperty:(key)=>Object.prototype.hasOwnProperty.call(values,key)?values[key]:null,
+      getProperties:()=>({...values}),
+      setProperty:(key,value)=>{values[key]=String(value);},
+      setProperties:(next)=>{Object.assign(values,next);},
+      deleteProperty:(key)=>{delete values[key];}
+    };
+    backend.PropertiesService={getScriptProperties:()=>props};
+    backend.LockService={getScriptLock:()=>({tryLock:()=>true,releaseLock(){}})};
+    backend.w20RegistryReplaceTask_(taskId,[{
+      id:'3c72d627-39a1-8120-bd0a-f969e6846945',name:'Существующий',section:'Docs',format:'Google Docs',provider:'Google Drive',
+      openUrl:'https://docs.google.com/document/d/ExistingGoogleDoc123/edit',googleFileId:'ExistingGoogleDoc123',folderId:'TaskFolder12345',widgetOwned:true,position:7,syncStatus:'synced'
+    }]);
+    backend.w20RegistryWriteTaskMeta_(taskId,{taskName:'Задача',folderId:'TaskFolder12345',rootFolderId:'RootFolder12345',folderVerified:true,folderValidatedAt:new Date().toISOString()});
+    return {backend,taskId};
+  }
+
+  const hotFirst=setup();
+  assert.equal(hotFirst.backend.w20RegistryClaimCreateSlot_(hotFirst.taskId,'Docs','RootFolder12345').position,8);
+  assert.equal(hotFirst.backend.w20RegistryReservePosition_(hotFirst.taskId,'Docs',8),9);
+  assert.equal(hotFirst.backend.w20RegistryReservePosition_(hotFirst.taskId,'Sheets',0),0);
+
+  const queriedFirst=setup();
+  assert.equal(queriedFirst.backend.w20RegistryReservePosition_(queriedFirst.taskId,'Docs',8),8);
+  assert.equal(queriedFirst.backend.w20RegistryClaimCreateSlot_(queriedFirst.taskId,'Docs','RootFolder12345').position,9);
+  queriedFirst.backend.w19NotionRequest_=()=>({results:[{properties:{'[SYS] Позиция':{number:20}}}]});
+  assert.equal(queriedFirst.backend.w19NextPosition_(queriedFirst.taskId,'Docs',{dataSourceId:'3822d627-39a1-8018-a2dc-000b95bf5722'}),21);
+});
+
 test('bootstrap metadata sync is a no-op when Drive metadata did not change', () => {
   const sync = backendSource.slice(backendSource.indexOf('function w19SyncOnePageUnlocked_'), backendSource.indexOf('function w19MarkSyncError_'));
   assert.match(sync, /if \(!Object\.keys\(props\)\.length\) return page;/);
-  assert.ok(sync.indexOf('if (!Object.keys(props).length) return page;') < sync.indexOf('props[W19_P.LAST_SYNC]'));
+  assert.doesNotMatch(sync, /LAST_SYNC|Последняя синхронизация/);
   assert.match(sync, /nameChanged/);
   assert.match(sync, /driveData\.name !== material\.downloadName/);
+});
+
+test('write-only SHA and last-sync properties are not required or written', () => {
+  assert.doesNotMatch(backendSource, /W19_P\.(?:SHA256|LAST_SYNC)|\[SYS\] (?:SHA-256|Последняя синхронизация)/);
 });
 
 test('download API is restricted to widget-owned binary files below the configured limit', () => {
@@ -1066,11 +1501,19 @@ test('download API is restricted to widget-owned binary files below the configur
   assert.match(guard, /size > cfg\.maxUploadBytes/);
 });
 
-test('prepare download revalidates Notion and Drive before returning an allowlisted hosted URL', () => {
+test('prepare download revalidates Notion and Drive before issuing an opaque hosted-download grant', () => {
   const backend = loadBackend();
   const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e',pageId='3c72d627-39a1-81e1-971f-c6b30665ce55';
+  const dataSourceId='3822d627-39a1-8018-a2dc-000b95bf5722';
   const signed='https://prod-files-secure.s3.us-west-2.amazonaws.com/space/file/report.xlsx?X-Amz-Signature=abc';
-  const cfg={authorizedTaskPageId:taskId,deniedPageIds:{}};
+  const cache=new Map();
+  backend.CacheService={getScriptCache:()=>({put:(key,value)=>cache.set(key,value),get:(key)=>cache.get(key)||null,remove:(key)=>cache.delete(key)})};
+  backend.UrlFetchApp={fetch:(url,options)=>{
+    assert.equal(url,signed);
+    assert.equal(options.headers.Range,'bytes=0-0');
+    return {getResponseCode:()=>206,getAllHeaders:()=>({'Content-Disposition':"attachment; filename*=UTF-8''report.xlsx"})};
+  }};
+  const cfg={authorizedTaskPageId:taskId,dataSourceId,notionToken:'test-notion-hmac-secret',deniedPageIds:{}};
   backend.w19AuthorizedConfig_=()=>cfg;
   backend.w19AssertMaterialForTask_=(receivedPage,receivedTask)=>({id:receivedPage,taskId:receivedTask});
   backend.w19MaterialFromPage_=()=>({
@@ -1082,8 +1525,10 @@ test('prepare download revalidates Notion and Drive before returning an allowlis
   backend.w19AssertOwnedBinary_=()=>{guardCalls+=1;return {id:'DRIVEFILE123',name:'report.xlsx',mimeType:'application/octet-stream',size:'123'};};
   const result=backend.apiPrepareDownload({taskPageId:taskId,pageId});
   assert.equal(result.ok,true);
-  assert.equal(result.data.mode,'direct');
-  assert.equal(result.data.url,signed);
+  assert.equal(result.data.mode,'grant');
+  assert.match(result.data.downloadGrant,/^[a-f0-9]{96}$/);
+  assert.equal(result.data.url,undefined,'the priming client must never receive the direct hosted URL');
+  assert.equal(backend.w20GetDownloadGrant_(taskId,pageId,result.data.downloadGrant,cfg).url,signed);
   assert.equal(guardCalls,1);
   backend.w19MaterialFromPage_=()=>({
     name:'report.xlsx',downloadName:'report.xlsx',attachmentName:'report.xlsx',
@@ -1094,6 +1539,114 @@ test('prepare download revalidates Notion and Drive before returning an allowlis
   assert.equal(rejected.ok,true);
   assert.equal(rejected.data.mode,'proxy');
   assert.equal(guardCalls,2);
+});
+
+test('prepare download keeps a direct hosted path only when attachment disposition has the exact renamed filename', () => {
+  const backend = loadBackend();
+  const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e',pageId='3c72d627-39a1-81e1-971f-c6b30665ce55';
+  const dataSourceId='3822d627-39a1-8018-a2dc-000b95bf5722';
+  const signed='https://prod-files-secure.s3.us-west-2.amazonaws.com/space/file/report.xlsx?X-Amz-Signature=abc';
+  const cache=new Map();
+  backend.CacheService={getScriptCache:()=>({put:(key,value)=>cache.set(key,value),get:(key)=>cache.get(key)||null,remove:(key)=>cache.delete(key)})};
+  let disposition="attachment; filename*=UTF-8''%D0%9D%D0%BE%D0%B2%D0%BE%D0%B5%20%D0%B8%D0%BC%D1%8F.xlsx";
+  backend.UrlFetchApp={fetch:()=>({getResponseCode:()=>206,getAllHeaders:()=>({'content-disposition':disposition})})};
+  const cfg={authorizedTaskPageId:taskId,dataSourceId,notionToken:'test-notion-hmac-secret',deniedPageIds:{}};
+  backend.w19AuthorizedConfig_=()=>cfg;
+  backend.w19AssertMaterialForTask_=()=>({id:pageId});
+  backend.w19MaterialFromPage_=()=>({
+    id:pageId,name:'Новое имя.xlsx',downloadName:'Новое имя.xlsx',attachmentName:'Старое имя.xlsx',
+    downloadUrl:signed,attachmentUrl:signed,attachmentExpiry:'2099-01-01T00:00:00.000Z',
+    hostedAttachment:true,attachmentType:'file',widgetOwnedBinary:true,mimeType:'application/octet-stream',size:123
+  });
+  backend.w19AssertOwnedBinary_=()=>({id:'DRIVEFILE123',name:'Новое имя.xlsx',mimeType:'application/octet-stream',size:'123'});
+  const result=backend.apiPrepareDownload({taskPageId:taskId,pageId});
+  assert.equal(result.ok,true);
+  assert.equal(result.data.mode,'grant');
+  const direct=backend.w20GetDownloadGrant_(taskId,pageId,result.data.downloadGrant,cfg);
+  assert.equal(direct.name,'Новое имя.xlsx');
+  assert.equal(direct.url,signed);
+  disposition="inline; filename*=UTF-8''%D0%9D%D0%BE%D0%B2%D0%BE%D0%B5%20%D0%B8%D0%BC%D1%8F.xlsx";
+  assert.equal(backend.apiPrepareDownload({taskPageId:taskId,pageId}).data.mode,'proxy');
+  disposition="attachment; filename*=UTF-8''%D0%A1%D1%82%D0%B0%D1%80%D0%BE%D0%B5%20%D0%B8%D0%BC%D1%8F.xlsx";
+  assert.equal(backend.apiPrepareDownload({taskPageId:taskId,pageId}).data.mode,'proxy');
+});
+
+test('download grants are HMAC-bound to task and page, expire in 60 seconds and are revoked with the material cache', () => {
+  const backend=loadBackend();
+  const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e',otherTask='3c62d627-39a1-80a1-aac7-ec19ffc9ef8f';
+  const pageId='3c72d627-39a1-81e1-971f-c6b30665ce55',otherPage='3c72d627-39a1-81e1-971f-c6b30665ce56';
+  const dataSourceId='3822d627-39a1-8018-a2dc-000b95bf5722';
+  const cfg={authorizedTaskPageId:taskId,dataSourceId,notionToken:'test-notion-hmac-secret',deniedPageIds:{}};
+  const values=new Map(),writes=[];
+  let now=1_800_000_000_000;
+  const RealDate=Date;
+  function TestDate(...args){return new RealDate(...args);}
+  TestDate.now=()=>now;TestDate.parse=RealDate.parse;TestDate.prototype=RealDate.prototype;
+  backend.Date=TestDate;
+  backend.CacheService={getScriptCache:()=>({
+    put:(key,value,ttl)=>{values.set(key,value);writes.push({key,ttl});},
+    get:(key)=>values.get(key)||null,
+    remove:(key)=>values.delete(key),
+    removeAll:(keys)=>keys.forEach((key)=>values.delete(key))
+  })};
+  backend.Utilities.getUuid=()=> '12345678-1234-4abc-8def-1234567890ab';
+  const direct={mode:'direct',url:'https://prod-files-secure.s3.us-west-2.amazonaws.com/space/file/report.xlsx?X-Amz-Signature=abc',name:'report.xlsx',mimeType:'application/octet-stream',size:123,expiresAt:'2099-01-01T00:00:00.000Z'};
+
+  const issued=backend.w20IssueDownloadGrant_(taskId,pageId,direct,cfg);
+  assert.equal(issued.mode,'grant');
+  assert.match(issued.downloadGrant,/^[a-f0-9]{96}$/);
+  assert.equal(writes[0].ttl,60);
+  assert.equal(Date.parse(issued.expiresAt)-now,60_000);
+  const overlapping=backend.w20IssueDownloadGrant_(taskId,pageId,direct,cfg);
+  assert.equal(overlapping.downloadGrant,issued.downloadGrant,'overlapping prime must reuse the still-valid grant');
+  assert.equal(writes.length,1,'overlapping prime must not overwrite the cache entry');
+  assert.equal(backend.w20GetDownloadGrant_(taskId,pageId,issued.downloadGrant,cfg).url,direct.url);
+  assert.equal(backend.w20GetDownloadGrant_(otherTask,pageId,issued.downloadGrant,{...cfg,authorizedTaskPageId:otherTask}),null);
+  assert.equal(backend.w20GetDownloadGrant_(taskId,otherPage,issued.downloadGrant,cfg),null);
+  assert.equal(backend.w20GetDownloadGrant_(taskId,pageId,issued.downloadGrant,{...cfg,deniedPageIds:{[taskId]:true}}),null);
+  assert.equal(backend.w20GetDownloadGrant_(taskId,pageId,`f${issued.downloadGrant.slice(1)}`,cfg),null);
+  assert.ok(backend.w20GetDownloadGrant_(taskId,pageId,issued.downloadGrant,cfg),'a bad token must not revoke the real grant');
+
+  backend.w20InvalidateDownloadMaterialCache_(taskId,pageId);
+  assert.equal(backend.w20GetDownloadGrant_(taskId,pageId,issued.downloadGrant,cfg),null);
+  const replacement=backend.w20IssueDownloadGrant_(taskId,pageId,direct,cfg);
+  assert.notEqual(replacement.downloadGrant,issued.downloadGrant,'revocation epoch must bind replacement grants');
+  now+=60_001;
+  assert.equal(backend.w20GetDownloadGrant_(taskId,pageId,replacement.downloadGrant,cfg),null);
+});
+
+test('download POST redeems a valid grant from cache without Notion or Drive and invalid grants fall back safely', () => {
+  const backend=loadBackend();
+  const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e',pageId='3c72d627-39a1-81e1-971f-c6b30665ce55';
+  const cfg={authorizedTaskPageId:taskId,dataSourceId:'3822d627-39a1-8018-a2dc-000b95bf5722',notionToken:'test-notion-hmac-secret',deniedPageIds:{}};
+  const accessToken='A'.repeat(48),values=new Map();
+  backend.CacheService={getScriptCache:()=>({put:(key,value)=>values.set(key,value),get:(key)=>values.get(key)||null,remove:(key)=>values.delete(key),removeAll:(keys)=>keys.forEach((key)=>values.delete(key))})};
+  backend.Utilities.getUuid=()=> '12345678-1234-4abc-8def-1234567890ab';
+  const issued=backend.w20IssueDownloadGrant_(taskId,pageId,{mode:'direct',url:'https://prod-files-secure.s3.us-west-2.amazonaws.com/space/file/report.xlsx?X-Amz-Signature=abc',name:'report.xlsx',mimeType:'application/octet-stream',size:123,expiresAt:'2099-01-01T00:00:00.000Z'},cfg);
+  let authCalls=0;
+  backend.w19AuthorizedConfig_=()=>{authCalls+=1;return cfg;};
+  backend.w19AssertMaterialForTask_=()=>{throw new Error('valid POST grant must make zero Notion calls');};
+  backend.w19AssertOwnedBinary_=()=>{throw new Error('valid POST grant must make zero Drive calls');};
+  const rendered=[];
+  const output={setTitle(){return this;},setXFrameOptionsMode(){return this;},addMetaTag(){return this;}};
+  backend.HtmlService={XFrameOptionsMode:{ALLOWALL:'ALLOWALL'},createTemplateFromFile(name){assert.equal(name,'Download');const template={evaluate(){rendered.push({runtime:template.runtimeParamsJson,result:template.precomputedResultJson});return output;}};return template;}};
+  const event={parameters:{task:[taskId],accessToken:[accessToken],downloadPageId:[pageId],downloadTicket:[issued.downloadGrant]},postData:{type:'application/x-www-form-urlencoded'}};
+  assert.equal(backend.doPost(event),output);
+  assert.equal(rendered[0].runtime,'{}');
+  const precomputed=JSON.parse(rendered[0].result);
+  assert.equal(precomputed.mode,'direct');
+  assert.equal(precomputed.downloadTicket,issued.downloadGrant);
+  assert.equal(authCalls,1);
+
+  backend.doPost({...event,parameters:{...event.parameters,downloadTicket:['f'.repeat(96)]}});
+  assert.equal(JSON.parse(rendered[1].result),null);
+  assert.deepEqual(JSON.parse(rendered[1].runtime),{task:taskId,accessToken,downloadPageId:pageId,downloadTicket:'f'.repeat(96)});
+  assert.equal(authCalls,2);
+  backend.doPost({...event,parameters:{...event.parameters,extra:['forbidden']}});
+  backend.doPost({...event,parameters:{...event.parameters,task:[taskId,taskId]}});
+  assert.equal(authCalls,2,'extra and duplicate POST fields must fail before authorization');
+  assert.equal(JSON.parse(rendered[2].result),null);
+  assert.equal(JSON.parse(rendered[3].result),null);
 });
 
 test('deployment contract supports a capability-authenticated iframe with full Drive metadata access', () => {
