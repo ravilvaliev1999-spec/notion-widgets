@@ -99,7 +99,20 @@ W19Error_.prototype.constructor = W19Error_;
 function doGet(event) {
   var params = event && event.parameter || {};
   var isDownloadCourier = Boolean(params.downloadPageId || params.downloadTicket);
-  return HtmlService.createHtmlOutputFromFile(isDownloadCourier ? 'Download' : 'Index')
+  var output;
+  if (isDownloadCourier) {
+    var template = HtmlService.createTemplateFromFile('Download');
+    template.runtimeParamsJson = JSON.stringify({
+      taskPageId: String(params.task || params.taskPageId || '').slice(0, 100),
+      pageId: String(params.downloadPageId || '').slice(0, 100),
+      accessToken: String(params.accessToken || '').slice(0, 300),
+      downloadTicket: String(params.downloadTicket || '').slice(0, 200)
+    });
+    output = template.evaluate();
+  } else {
+    output = HtmlService.createHtmlOutputFromFile('Index');
+  }
+  return output
     .setTitle(isDownloadCourier ? 'Скачивание файла' : 'Файлы задачи')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
     .addMetaTag('viewport', 'width=device-width, initial-scale=1, viewport-fit=cover');
@@ -165,13 +178,16 @@ function apiCreateGoogle(input) {
 
         var folder = w19EnsureTaskFolder_(task, cfg);
         var driveFile = w19FindDriveByIdempotency_(task.id, idemHash);
+        var driveWasExisting = Boolean(driveFile);
         if (!driveFile) driveFile = w19CreateGoogleFile_(task, folder.id, section, name, idemHash);
 
-        var byFile = w19FindMaterialByGoogleFile_(task.id, driveFile.id, cfg);
-        if (byFile) {
-          var byFileMaterial = w19MaterialFromPage_(byFile);
-          w19MarkDriveNotionPage_(driveFile, task.id, idemHash, byFile.id, w20DriveStateForMaterial_(byFileMaterial));
-          return { material: byFileMaterial, duplicate: true };
+        if (driveWasExisting) {
+          var byFile = w19FindMaterialByGoogleFile_(task.id, driveFile.id, cfg);
+          if (byFile) {
+            var byFileMaterial = w19MaterialFromPage_(byFile);
+            w19MarkDriveNotionPage_(driveFile, task.id, idemHash, byFile.id, w20DriveStateForMaterial_(byFileMaterial));
+            return { material: byFileMaterial, duplicate: true };
+          }
         }
 
         var format = section === 'Docs' ? 'Google Docs' : (section === 'Sheets' ? 'Google Sheets' : 'Google Slides');
@@ -304,11 +320,13 @@ function apiUpload(input) {
     var detected = WidgetV19Core.classify({ name: name, mimeType: mime });
     var section = input && input.section ? WidgetV19Core.assertSection(input.section) : detected.section;
     var idem = w19CanonicalIdempotency_(task.id, 'upload', input && input.idempotencyKey);
+    var pageForDownloadCache = null;
     var outcome = w19WithIdempotency_(idem, function () {
       return w19WithMutationLock_(function () {
         var idemHash = w19Hash_(idem).slice(0, 40);
         var existing = w19FindMaterialByIdempotency_(task.id, idem, cfg);
         if (existing) {
+          pageForDownloadCache = existing;
           var existingMaterial = w19MaterialFromPage_(existing);
           if (existingMaterial.googleFileId && existingMaterial.widgetOwned) {
             var existingDrive = w19GetDriveMetadata_(existingMaterial.googleFileId);
@@ -319,14 +337,18 @@ function apiUpload(input) {
 
         var folder = w19EnsureTaskFolder_(task, cfg);
         var driveFile = w19FindDriveByIdempotency_(task.id, idemHash);
+        var driveWasExisting = Boolean(driveFile);
         var sha256 = w19DigestHex_(bytes, Utilities.DigestAlgorithm.SHA_256);
         if (!driveFile) driveFile = w19CreateBinaryFile_(task, folder.id, name, mime, bytes, idemHash);
 
-        var byFile = w19FindMaterialByGoogleFile_(task.id, driveFile.id, cfg);
-        if (byFile) {
-          var byFileMaterial = w19MaterialFromPage_(byFile);
-          w19MarkDriveNotionPage_(driveFile, task.id, idemHash, byFile.id, w20DriveStateForMaterial_(byFileMaterial));
-          return { material: byFileMaterial, duplicate: true };
+        if (driveWasExisting) {
+          var byFile = w19FindMaterialByGoogleFile_(task.id, driveFile.id, cfg);
+          if (byFile) {
+            pageForDownloadCache = byFile;
+            var byFileMaterial = w19MaterialFromPage_(byFile);
+            w19MarkDriveNotionPage_(driveFile, task.id, idemHash, byFile.id, w20DriveStateForMaterial_(byFileMaterial));
+            return { material: byFileMaterial, duplicate: true };
+          }
         }
         var openUrl = driveFile.webViewLink || WidgetV19Core.makeDriveOpenUrl(driveFile.id, detected.format);
         var notionUpload = w19CreateAndSendNotionUpload_(bytes, driveFile.mimeType || mime, driveFile.name || name, cfg);
@@ -353,14 +375,14 @@ function apiUpload(input) {
           position: w19NextPosition_(task.id, section, cfg),
           idempotency: idem
         }, cfg);
+        pageForDownloadCache = page;
         w19MarkDriveNotionPage_(driveFile, task.id, idemHash, page.id, 'active');
         return { material: w19MaterialFromPage_(page), duplicate: false };
       });
     });
     if (outcome && outcome.material && outcome.material.id) {
-      var freshPage = w19AssertMaterialForTask_(outcome.material.id, task.id, cfg, true);
-      outcome.material = w20MaterialForClient_(w19MaterialFromPage_(freshPage), task.id, cfg);
-      w20CacheDownloadMaterials_(task.id, [freshPage], cfg);
+      outcome.material = w20MaterialForClient_(outcome.material, task.id, cfg);
+      if (pageForDownloadCache) w20CacheDownloadMaterials_(task.id, [pageForDownloadCache], cfg);
       w20RegistryUpsert_(task.id, outcome.material);
     }
     return outcome;
@@ -542,6 +564,40 @@ function apiDeletePhysical(input) {
       return { material: w19MaterialFromPage_(updated), deleted: true };
       });
     });
+  });
+}
+
+function apiPrepareDownload(input) {
+  return w19ApiResult_(function () {
+    var cfg = w19AuthorizedConfig_(input);
+    var taskId = WidgetV19Core.normalizeUuid(input && input.taskPageId);
+    if (!taskId) throw new W19Error_('TASK_ID_REQUIRED', 'В URL виджета отсутствует корректный task_page_id.', false);
+    if (taskId !== cfg.authorizedTaskPageId || cfg.deniedPageIds[taskId]) {
+      throw new W19Error_('WRITE_BARRIER', 'Эта задача не разрешена для скачивания.', false);
+    }
+    var materialId = WidgetV19Core.normalizeUuid(input && input.pageId);
+    if (!materialId) throw new W19Error_('MATERIAL_ID_REQUIRED', 'Не указан материал.', false);
+    var page = w19AssertMaterialForTask_(materialId, taskId, cfg);
+    var material = w19MaterialFromPage_(page);
+    var task = { id: taskId, name: 'Задача' };
+    var drive = w19AssertOwnedBinary_(material, task, cfg);
+    var directUrl = w20TrustedHostedDownloadUrl_(material.downloadUrl);
+    var expiryAt = Date.parse(String(material.attachmentExpiry || ''));
+    var expectedName = WidgetV19Core.cleanName(material.downloadName || material.name, 'Файл');
+    var attachmentName = WidgetV19Core.cleanName(material.attachmentName, 'Файл');
+    if (!material.hostedAttachment || material.attachmentType !== 'file' ||
+        directUrl !== String(material.attachmentUrl || '') || attachmentName !== expectedName ||
+        !isFinite(expiryAt) || expiryAt <= Date.now() + 60000) {
+      return { mode: 'proxy' };
+    }
+    return {
+      mode: 'direct',
+      url: directUrl,
+      name: WidgetV19Core.cleanName(drive.name || expectedName, 'Файл'),
+      mimeType: WidgetV19Core.cleanMime(drive.mimeType || material.mimeType),
+      size: drive.size ? Number(drive.size) : material.size,
+      expiresAt: new Date(expiryAt).toISOString()
+    };
   });
 }
 
@@ -1484,14 +1540,24 @@ function w19FindOneMaterial_(taskId, extraFilter, cfg) {
 }
 
 function w19NextPosition_(taskId, section, cfg) {
-  var pages = w19QueryTaskMaterials_(taskId, cfg);
-  var max = -1;
-  pages.forEach(function (page) {
-    if (w19SelectValue_(page.properties && page.properties[W19_P.SECTION]) === section) {
-      max = Math.max(max, w19NumberValue_(page.properties && page.properties[W19_P.POSITION], -1));
-    }
-  });
-  return max + 1;
+  var normalizedSection = WidgetV19Core.assertSection(section);
+  var result = w19NotionRequest_('post', '/v1/data_sources/' + cfg.dataSourceId + '/query', {
+    page_size: 1,
+    filter: {
+      and: [
+        { property: W19_P.TYPE, select: { equals: 'Знание' } },
+        { property: W19_P.INSIDE, relation: { contains: taskId } },
+        { property: W19_P.ARCHIVE, checkbox: { equals: false } },
+        { property: W19_P.SECTION, select: { equals: normalizedSection } }
+      ]
+    },
+    sorts: [
+      { property: W19_P.POSITION, direction: 'descending' },
+      { timestamp: 'created_time', direction: 'descending' }
+    ]
+  }, cfg);
+  var page = result.results && result.results.length ? result.results[0] : null;
+  return w19NumberValue_(page && page.properties && page.properties[W19_P.POSITION], -1) + 1;
 }
 
 function w19CreateNotionMaterial_(task, data, cfg) {
@@ -1549,6 +1615,17 @@ function w19AppendContextProperties_(props, task, materialName) {
 
 function w19UpdateNotionPage_(pageId, properties, cfg) {
   return w19NotionRequest_('patch', '/v1/pages/' + pageId, { properties: properties }, cfg);
+}
+
+function w20TrustedHostedDownloadUrl_(value) {
+  var raw = String(value || '').trim();
+  if (!raw || raw.length > 6000 || raw.indexOf('#') !== -1) return '';
+  var match = /^https:\/\/([^\/?#]+)(\/[^#]*)$/i.exec(raw);
+  if (!match) return '';
+  var host = String(match[1] || '').toLowerCase();
+  var notionHost = host === 'secure.notion-static.com' || host === 'file.notion.so';
+  var notionS3Host = /^prod-files-secure\.s3(?:\.[a-z0-9-]+)?\.amazonaws\.com$/.test(host);
+  return notionHost || notionS3Host ? raw : '';
 }
 
 function w19MaterialFromPage_(page) {

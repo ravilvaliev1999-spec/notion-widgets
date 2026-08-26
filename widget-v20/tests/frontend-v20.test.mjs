@@ -66,7 +66,7 @@ test('the access capability is added centrally to backend payloads and is never 
   assert.doesNotMatch(frontend, /console\.(?:log|debug|info|warn|error)/);
 });
 
-test('owned binaries are immediate real links to the neutral courier', () => {
+test('owned binaries always enter the revocation-aware neutral courier', () => {
   const materialCard = frontend.slice(frontend.indexOf('function materialCard'), frontend.indexOf('async function bootstrap'));
   const gridClick = frontend.slice(frontend.indexOf('function handleGridClick'), frontend.indexOf('function handleGridKeydown'));
   assert.match(materialCard, /const courierHref=downloadCourierHref\(item\)/);
@@ -77,7 +77,7 @@ test('owned binaries are immediate real links to the neutral courier', () => {
   assert.match(gridClick, /if\(itemCard\.dataset\.downloadCourier==='true'\)return/);
   assert.ok(gridClick.indexOf("const edit=event.target.closest('[data-edit-id]')") < gridClick.indexOf("const itemCard=event.target.closest('[data-item-id]')"));
   assert.match(gridClick, /if\(edit\)\{event\.preventDefault\(\);event\.stopPropagation\(\);openEdit/);
-  assert.doesNotMatch(gridClick, /downloadCourier==='true'[\s\S]{0,80}(?:preventDefault|window\.open)/);
+  assert.doesNotMatch(frontend, /directHostedDownloadHref/);
 });
 
 test('courier href carries the service URL only in a fragment and uses a fresh cryptographic ticket', () => {
@@ -128,6 +128,10 @@ test('neutral courier is credentialless, fragment-only, strict, referrerless and
   assert.doesNotMatch(publicCourier, /event\.source/);
   assert.match(publicCourier, /event\.origin!=='null'/);
   assert.match(publicCourier, /data\.downloadTicket!==expectedTicket/);
+  assert.match(publicCourier, /data\.status==='direct'/);
+  assert.match(publicCourier, /validateDirectDownload\(data\)/);
+  assert.match(publicCourier, /prod-files-secure\\\.s3/);
+  assert.match(publicCourier, /DIRECT_CLOSE_AFTER_MS=2500/);
   assert.match(publicCourier, /\},1200\)/);
   assert.match(publicCourier, /const CLOSE_AFTER_MS=60\*1000/);
   assert.doesNotMatch(publicCourier, /script\.google\.com\/macros\/s\/[A-Za-z0-9_-]{20,}/);
@@ -135,9 +139,13 @@ test('neutral courier is credentialless, fragment-only, strict, referrerless and
 });
 
 test('Apps Script courier fetches only after its page is opened and forces an exact named download', () => {
-  assert.match(downloader, /google\.script\.url/);
+  assert.match(downloader, /id="runtimeParams" data-params="<\?= runtimeParamsJson \?>"/);
+  assert.doesNotMatch(downloader, /google\.script\.url|getLocation/);
+  assert.match(downloader, /apiPrepareDownload\(input\)/);
   assert.match(downloader, /apiDownload\(input\)/);
-  assert.match(downloader, /callDownload\(\{taskPageId,pageId,accessToken\}\)/);
+  assert.match(downloader, /const input=\{taskPageId,pageId,accessToken\}/);
+  assert.match(downloader, /if\(prepared\)[\s\S]*notifyCourierDirect\(prepared\)/);
+  assert.doesNotMatch(downloader, /payload=\{[^\n]+status:'direct'[^\n]+opener\.postMessage/);
   assert.match(downloader, /const MAX_DOWNLOAD_BYTES=20\*1024\*1024/);
   assert.match(downloader, /encoded\.length\/4\*3-padding!==expected/);
   assert.match(downloader, /new Blob\(chunks,\{type:'application\/octet-stream'\}\)/);
@@ -149,12 +157,16 @@ test('Apps Script courier fetches only after its page is opened and forces an ex
   assert.doesNotMatch(downloader, /postMessage\([^\n]*(?:accessToken|base64)/);
 });
 
-test('rename synchronization uses a Drive-only poll on focus, visibility and every five visible seconds', () => {
-  assert.match(frontend, /window\.addEventListener\('focus',pollDriveMetadata\)/);
-  assert.match(frontend, /visibilitychange[\s\S]*visibilityState==='visible'\)pollDriveMetadata\(\)/);
-  assert.match(frontend, /window\.setInterval\([\s\S]*,5000\)/);
+test('rename synchronization polls immediately on return and uses a staggered visible interval', () => {
+  assert.match(frontend, /const DRIVE_POLL_INTERVAL_MS = 15000/);
+  assert.match(frontend, /const DRIVE_POLL_MIN_GAP_MS = 12000/);
+  assert.match(frontend, /window\.addEventListener\('focus',\(\)=>pollDriveMetadata\(true\)\)/);
+  assert.match(frontend, /visibilitychange[\s\S]*visibilityState==='visible'\)pollDriveMetadata\(true\)/);
+  assert.match(frontend, /pollInterval=DRIVE_POLL_INTERVAL_MS\+Math\.floor\(Math\.random\(\)\*5000\)/);
+  assert.match(frontend, /window\.setInterval\([\s\S]*pollDriveMetadata\(false\)[\s\S]*,pollInterval\)/);
   const poll = frontend.slice(frontend.indexOf('async function pollDriveMetadata'), frontend.indexOf('async function createGoogle'));
   assert.match(poll, /callBackground\('apiPollDriveMetadata',\{taskPageId,materials\}\)/);
+  assert.match(poll, /state\.busy\.size\|\|now-state\.lastDrivePollAt<minGap/);
   assert.doesNotMatch(poll, /apiSyncTask/);
   assert.match(frontend, /\^Google \(\?:Docs\|Sheets\|Slides\)\$/);
   assert.match(frontend, /currentName:item\.name/);

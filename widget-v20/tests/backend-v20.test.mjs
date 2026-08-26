@@ -142,7 +142,7 @@ test('confirmed owner identity remains an independent authorization path', () =>
 test('every public data API authenticates the same input payload', () => {
   for (const name of [
     'apiBootstrap', 'apiCreateGoogle', 'apiAddLink', 'apiUpload', 'apiUpdateMaterial',
-    'apiReorder', 'apiDeletePhysical', 'apiDownload', 'apiPollDriveMetadata', 'apiSyncTask', 'w19SetArchiveState_'
+    'apiReorder', 'apiDeletePhysical', 'apiPrepareDownload', 'apiDownload', 'apiPollDriveMetadata', 'apiSyncTask', 'w19SetArchiveState_'
   ]) {
     const start = backendSource.indexOf(`function ${name}`);
     assert.notEqual(start, -1, `${name} must exist`);
@@ -158,7 +158,10 @@ test('web app routes download requests to a dedicated top-level courier', () => 
   const doGet = backendSource.slice(backendSource.indexOf('function doGet'), backendSource.indexOf('/* ========================= Public client API'));
   assert.match(doGet, /event && event\.parameter/);
   assert.match(doGet, /params\.downloadPageId \|\| params\.downloadTicket/);
-  assert.match(doGet, /createHtmlOutputFromFile\(isDownloadCourier \? 'Download' : 'Index'\)/);
+  assert.match(doGet, /createTemplateFromFile\('Download'\)/);
+  assert.match(doGet, /template\.runtimeParamsJson = JSON\.stringify/);
+  assert.match(doGet, /output = template\.evaluate\(\)/);
+  assert.match(doGet, /createHtmlOutputFromFile\('Index'\)/);
   assert.match(doGet, /XFrameOptionsMode\.ALLOWALL/);
 });
 
@@ -916,10 +919,30 @@ test('hosted Notion attachments are attached on creation and preserved during Dr
   assert.match(upload, /type:\s*'file_upload'/);
   assert.match(upload, /file_upload:\s*\{\s*id:\s*notionUpload\.id\s*\}/);
   assert.match(upload, /var outcome = w19WithIdempotency_/);
-  assert.match(upload, /w19AssertMaterialForTask_\(outcome\.material\.id, task\.id, cfg, true\)/);
-  assert.match(upload, /w20CacheDownloadMaterials_\(task\.id, \[freshPage\], cfg\)/);
+  assert.doesNotMatch(upload, /w19AssertMaterialForTask_\(outcome\.material\.id/);
+  assert.match(upload, /pageForDownloadCache = page/);
+  assert.match(upload, /w20CacheDownloadMaterials_\(task\.id, \[pageForDownloadCache\], cfg\)/);
   assert.match(create, /Array\.isArray\(data\.attachments\)/);
   assert.match(sync, /driveData\.sourceUrl\s*&&\s*!material\.widgetOwnedBinary\s*&&\s*!material\.hostedAttachment/);
+});
+
+test('next position reads only the highest active position in the requested section', () => {
+  const backend = loadBackend();
+  let request;
+  backend.w19NotionRequest_ = (method, requestPath, body, cfg) => {
+    request={method,requestPath,body,cfg};
+    return {results:[{properties:{'[SYS] Позиция':{number:7}}}]};
+  };
+  const cfg={dataSourceId:'3822d627-39a1-8018-a2dc-000b95bf5722'};
+  assert.equal(backend.w19NextPosition_('3c62d627-39a1-80a1-aac7-ec19ffc9ef8e','Docs',cfg),8);
+  assert.equal(request.method,'post');
+  assert.equal(request.body.page_size,1);
+  assert.deepEqual(JSON.parse(JSON.stringify(request.body.sorts)),[
+    {property:'[SYS] Позиция',direction:'descending'},
+    {timestamp:'created_time',direction:'descending'}
+  ]);
+  assert.equal(request.body.filter.and[3].select.equals,'Docs');
+  assert.equal(request.body.filter.and[2].checkbox.equals,false);
 });
 
 test('bootstrap metadata sync is a no-op when Drive metadata did not change', () => {
@@ -944,6 +967,36 @@ test('download API is restricted to widget-owned binary files below the configur
   assert.match(guard, /driveParents\.indexOf\(folder\.id\) === -1/);
   assert.match(guard, /DOWNLOAD_NATIVE_GOOGLE_FILE/);
   assert.match(guard, /size > cfg\.maxUploadBytes/);
+});
+
+test('prepare download revalidates Notion and Drive before returning an allowlisted hosted URL', () => {
+  const backend = loadBackend();
+  const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e',pageId='3c72d627-39a1-81e1-971f-c6b30665ce55';
+  const signed='https://prod-files-secure.s3.us-west-2.amazonaws.com/space/file/report.xlsx?X-Amz-Signature=abc';
+  const cfg={authorizedTaskPageId:taskId,deniedPageIds:{}};
+  backend.w19AuthorizedConfig_=()=>cfg;
+  backend.w19AssertMaterialForTask_=(receivedPage,receivedTask)=>({id:receivedPage,taskId:receivedTask});
+  backend.w19MaterialFromPage_=()=>({
+    id:pageId,name:'report.xlsx',downloadName:'report.xlsx',attachmentName:'report.xlsx',
+    downloadUrl:signed,attachmentUrl:signed,attachmentExpiry:'2099-01-01T00:00:00.000Z',
+    hostedAttachment:true,attachmentType:'file',widgetOwnedBinary:true,mimeType:'application/octet-stream',size:123
+  });
+  let guardCalls=0;
+  backend.w19AssertOwnedBinary_=()=>{guardCalls+=1;return {id:'DRIVEFILE123',name:'report.xlsx',mimeType:'application/octet-stream',size:'123'};};
+  const result=backend.apiPrepareDownload({taskPageId:taskId,pageId});
+  assert.equal(result.ok,true);
+  assert.equal(result.data.mode,'direct');
+  assert.equal(result.data.url,signed);
+  assert.equal(guardCalls,1);
+  backend.w19MaterialFromPage_=()=>({
+    name:'report.xlsx',downloadName:'report.xlsx',attachmentName:'report.xlsx',
+    downloadUrl:'https://evil.example/report.xlsx',attachmentUrl:'https://evil.example/report.xlsx',attachmentExpiry:'2099-01-01T00:00:00.000Z',
+    hostedAttachment:true,attachmentType:'file',widgetOwnedBinary:true
+  });
+  const rejected=backend.apiPrepareDownload({taskPageId:taskId,pageId});
+  assert.equal(rejected.ok,true);
+  assert.equal(rejected.data.mode,'proxy');
+  assert.equal(guardCalls,2);
 });
 
 test('deployment contract supports a capability-authenticated iframe with full Drive metadata access', () => {

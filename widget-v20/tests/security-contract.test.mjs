@@ -73,6 +73,18 @@ test('download cache hit avoids Notion after capability authorization and always
   assert.match(body, /var task = \{ id: taskId, name: 'Задача' \}/);
 });
 
+test('direct CDN preparation is server-gated by live Notion and Drive ownership checks', () => {
+  const backend = text('Code.gs');
+  const body = backend.slice(backend.indexOf('function apiPrepareDownload'), backend.indexOf('function apiDownload'));
+  assert.match(body, /w19AuthorizedConfig_\(input\)/);
+  assert.match(body, /taskId !== cfg\.authorizedTaskPageId/);
+  assert.match(body, /w19AssertMaterialForTask_\(materialId, taskId, cfg\)/);
+  assert.match(body, /w19AssertOwnedBinary_\(material, task, cfg\)/);
+  assert.match(body, /w20TrustedHostedDownloadUrl_\(material\.downloadUrl\)/);
+  assert.match(body, /attachmentName !== expectedName/);
+  assert.doesNotMatch(body, /Utilities\.base64Encode|DriveApp\.getFileById/);
+});
+
 test('bootstrap and sync seed the download cache while archive, update and delete invalidate it', () => {
   const backend = text('Code.gs');
   const bootstrap = backend.slice(backend.indexOf('function apiBootstrap'), backend.indexOf('function apiCreateGoogle'));
@@ -83,7 +95,8 @@ test('bootstrap and sync seed the download cache while archive, update and delet
   const archive = backend.slice(backend.indexOf('function w19SetArchiveState_'), backend.indexOf('function w19Audit_'));
   assert.match(bootstrap, /w20CacheDownloadMaterials_\(task\.id, pages, cfg\)/);
   assert.match(sync, /w20CacheDownloadMaterials_\(task\.id, pages, cfg\)/);
-  assert.match(upload, /w20CacheDownloadMaterials_\(task\.id, \[freshPage\], cfg\)/);
+  assert.match(upload, /w20CacheDownloadMaterials_\(task\.id, \[pageForDownloadCache\], cfg\)/);
+  assert.doesNotMatch(upload, /w19AssertMaterialForTask_\(outcome\.material\.id/);
   assert.match(update, /w20InvalidateDownloadMaterialCache_\(task\.id, materialId\)/);
   assert.match(remove, /w20InvalidateDownloadMaterialCache_\(task\.id, materialId\)/);
   assert.match(archive, /w20InvalidateDownloadMaterialCache_\(task\.id, materialId\)/);

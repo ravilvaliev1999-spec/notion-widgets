@@ -296,8 +296,10 @@
   const mockRequested = requestedMock && (isLocal || isPublishedCanary);
   const DOWNLOAD_COURIER_URL = 'https:\/\/ravilvaliev1999-spec.github.io/notion-widgets/download-courier.html';
   const EMBED_BRIDGE_ORIGIN = 'https:\/\/ravilvaliev1999-spec.github.io';
+  const DRIVE_POLL_INTERVAL_MS = 15000;
+  const DRIVE_POLL_MIN_GAP_MS = 12000;
   const bridgeInstanceId = uid();
-  const state = { task:null, folderUrl:null, serviceUrl:null, materials:[], busy:new Set(), syncing:false, drivePolling:false, claimRefreshNotBefore:0, bootstrapped:false, maxUploadBytes:8388608, dragId:null, mock:false };
+  const state = { task:null, folderUrl:null, serviceUrl:null, materials:[], busy:new Set(), syncing:false, drivePolling:false, lastDrivePollAt:0, claimRefreshNotBefore:0, bootstrapped:false, maxUploadBytes:8388608, dragId:null, mock:false };
   const retryUpload = new Map();
   const memoryIdempotency = new Map();
   const $ = (id) => document.getElementById(id);
@@ -597,10 +599,12 @@
     return changed;
   }
 
-  async function pollDriveMetadata() {
-    if(!taskPageId||!state.bootstrapped||state.drivePolling)return;
+  async function pollDriveMetadata(urgent) {
+    const now=Date.now(),minGap=urgent?2000:DRIVE_POLL_MIN_GAP_MS;
+    if(!taskPageId||!state.bootstrapped||state.drivePolling||state.syncing||state.busy.size||now-state.lastDrivePollAt<minGap)return;
     const materials=drivePollCoordinates();
     if(!materials.length)return;
+    state.lastDrivePollAt=now;
     state.drivePolling=true;
     try {
       const data=await callBackground('apiPollDriveMetadata',{taskPageId,materials});applyDriveMetadata(data.materials);
@@ -700,12 +704,12 @@
 
   function announceEmbedBridgeReady() {
     if(!isEmbedBridgeMode()||!state.bootstrapped)return;
-    postToEmbedAncestors({type:'notion-widget-v20-bridge-ready',instanceId:bridgeInstanceId,geometry:primaryGeometry()});
+    postToEmbedAncestors({type:'notion-widget-v20-bridge-ready',instanceId:bridgeInstanceId,geometry:primaryGeometry(),viewport:{width:window.innerWidth,height:window.innerHeight}});
   }
 
   function postEmbedBridgeGeometry() {
     if(!isEmbedBridgeMode()||!state.bootstrapped)return;
-    postToEmbedAncestors({type:'notion-widget-v20-primary-geometry',geometry:primaryGeometry()});
+    postToEmbedAncestors({type:'notion-widget-v20-primary-geometry',geometry:primaryGeometry(),viewport:{width:window.innerWidth,height:window.innerHeight}});
   }
 
   function scheduleEmbedBridgeGeometry() {
@@ -716,6 +720,9 @@
   async function receiveEmbedBridgeMessage(event) {
     const data=event.data;
     if(!validEmbedBridgeEvent(event,data))return;
+    if(data.type==='notion-widget-v20-primary-geometry-request'&&Number.isSafeInteger(Number(data.requestId))&&Number(data.requestId)>0){
+      replyToEmbedBridge(event.source,event.origin,{type:'notion-widget-v20-primary-geometry',requestId:Number(data.requestId),geometry:primaryGeometry(),viewport:{width:window.innerWidth,height:window.innerHeight}});return;
+    }
     if(data.type==='notion-widget-v20-primary-hover'&&SECTIONS.includes(data.section)){
       const card=document.querySelector(`.group-card[data-service="${data.section}"]`);if(card)card.classList.toggle('bridge-hover',data.active===true);return;
     }
@@ -868,11 +875,12 @@
     document.querySelectorAll('[data-close]').forEach(button=>button.addEventListener('click',()=>closeModal(button.dataset.close)));
     document.querySelectorAll('.modal-back').forEach(modal=>modal.addEventListener('click',(event)=>{if(event.target===modal)closeModal(modal.id);}));
     document.addEventListener('keydown',(event)=>{if(event.key==='Escape')document.querySelectorAll('.modal-back.open').forEach(modal=>closeModal(modal.id));});
-    window.addEventListener('focus',pollDriveMetadata);
+    window.addEventListener('focus',()=>pollDriveMetadata(true));
     window.addEventListener('resize',scheduleEmbedBridgeGeometry);
     window.addEventListener('scroll',scheduleEmbedBridgeGeometry,{passive:true});
-    document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')pollDriveMetadata();});
-    window.setInterval(()=>{if(document.visibilityState==='visible')pollDriveMetadata();},5000);
+    document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')pollDriveMetadata(true);});
+    const pollInterval=DRIVE_POLL_INTERVAL_MS+Math.floor(Math.random()*5000);
+    window.setInterval(()=>{if(document.visibilityState==='visible')pollDriveMetadata(false);},pollInterval);
     if(window.ResizeObserver)new ResizeObserver(()=>{postHeight();scheduleEmbedBridgeGeometry();}).observe(document.body);
   }
 

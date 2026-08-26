@@ -57,7 +57,11 @@ test('credentialless create uses a synchronous wrapper-owned popup', () => {
   assert.match(frontend, /if\(isEmbedBridgeMode\(\)\)return;/);
   assert.match(frontend, /card\.tabIndex=-1/);
   assert.match(frontend, /type:'notion-widget-v20-primary-geometry'/);
+  assert.match(frontend, /data\.type==='notion-widget-v20-primary-geometry-request'/);
   assert.match(frontend, /pencilRect=pencil\.getBoundingClientRect\(\)/);
+  assert.match(wrapperJs, /window\.setInterval\(runGeometryHeartbeat, 750\)/);
+  assert.match(wrapperJs, /Date\.now\(\) - lastGeometryAckAt > 2000/);
+  assert.match(wrapperJs, /numbers\[0\] < -tolerance/);
 });
 
 test('wrapper runtime opens the placeholder before sending one authenticated create request', () => {
@@ -82,6 +86,8 @@ test('wrapper runtime opens the placeholder before sending one authenticated cre
     return slot;
   });
   const widget = new FakeElement();
+  widget.clientWidth = 868;
+  widget.clientHeight = 523;
   const interactionGrid = new FakeElement();
   interactionGrid.hidden = true;
   interactionGrid.querySelectorAll = (selector) => {
@@ -102,6 +108,7 @@ test('wrapper runtime opens the placeholder before sending one authenticated cre
   const bridgeSource = { length: 0, frames: [], postMessage(message, origin) { events.push(['post', message, origin]); } };
   widget.contentWindow = { length: 1, frames: [bridgeSource] };
   const windowListeners = {};
+  let intervalCallback = null;
   const windowObject = {
     crypto: { randomUUID: (() => {
       const ids = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
@@ -110,11 +117,14 @@ test('wrapper runtime opens the placeholder before sending one authenticated cre
     addEventListener(type, listener) { windowListeners[type] = listener; },
     open() { events.push(['open']); return popup; },
     setTimeout() { return 1; },
+    setInterval(callback) { intervalCallback=callback; return 2; },
     clearTimeout() {}
   };
   const context = {
     window: windowObject,
     document: {
+      visibilityState: 'visible',
+      addEventListener() {},
       getElementById(id) { return { widget, interactionGrid, fatal }[id]; },
       createElement() { return new FakeElement(); }
     },
@@ -127,6 +137,7 @@ test('wrapper runtime opens the placeholder before sending one authenticated cre
     String,
     Number,
     Boolean,
+    Date,
     Math,
     RegExp
   };
@@ -142,6 +153,7 @@ test('wrapper runtime opens the placeholder before sending one authenticated cre
       type: 'notion-widget-v20-bridge-ready',
       embedNonce,
       instanceId: '33333333-3333-4333-8333-333333333333',
+      viewport: {width:868,height:523},
       geometry: ['Drive', 'Docs', 'Sheets', 'Slides'].map((section, index) => ({
         section,
         left: index * 220,
@@ -153,6 +165,16 @@ test('wrapper runtime opens the placeholder before sending one authenticated cre
     }
   });
   assert.equal(interactionGrid.hidden, false);
+  const geometryRequest=events.find((entry)=>entry[0]==='post'&&entry[1].type==='notion-widget-v20-primary-geometry-request');
+  assert.equal(geometryRequest[1].requestId,1);
+  windowListeners.message({source:bridgeSource,origin,data:{type:'notion-widget-v20-primary-geometry',embedNonce,requestId:1,viewport:{width:868,height:523},geometry:['Drive','Docs','Sheets','Slides'].map((section,index)=>({section,left:index*220,top:-105,width:208,height:70,pencil:{left:index*220+180,top:-98,width:22,height:22}}))}});
+  assert.equal(interactionGrid.hidden,true);
+  intervalCallback();
+  const retryRequest=events.filter((entry)=>entry[0]==='post'&&entry[1].type==='notion-widget-v20-primary-geometry-request').at(-1);
+  assert.equal(retryRequest[1].requestId,2);
+  windowListeners.message({source:bridgeSource,origin,data:{type:'notion-widget-v20-primary-geometry',embedNonce,requestId:2,viewport:{width:868,height:523},geometry:['Drive','Docs','Sheets','Slides'].map((section,index)=>({section,left:index*220,top:0,width:208,height:70,pencil:{left:index*220+180,top:7,width:22,height:22}}))}});
+  assert.equal(interactionGrid.hidden,false);
+  events.length=0;
   const docsSlot = slots.find((slot) => slot.dataset.slot === 'Docs');
   assert.equal(docsSlot.style.left, '220px');
   assert.equal(docsSlot.style.height, '70px');

@@ -10,6 +10,9 @@
   const embedNonce = randomId().replace(/-/g, '');
   let bridge = null;
   let noticeTimer = 0;
+  let geometryRequestId = 0;
+  let latestGeometryResponseId = 0;
+  let lastGeometryAckAt = 0;
 
   function randomId() {
     if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
@@ -80,19 +83,49 @@
     return Boolean(bridge && event.source === bridge.source && event.origin === bridge.origin);
   }
 
-  function applyPrimaryGeometry(value) {
+  function rejectPrimaryGeometry() {
+    interactionGrid.hidden = true;
+    return false;
+  }
+
+  function widgetViewport() {
+    let rect = null;
+    try { rect = widget.getBoundingClientRect(); } catch (_error) {}
+    return {
+      width: Number(widget.clientWidth) || Number(rect && rect.width) || Number(interactionGrid.clientWidth) || 0,
+      height: Number(widget.clientHeight) || Number(rect && rect.height) || Number(interactionGrid.clientHeight) || 0
+    };
+  }
+
+  function reportedViewportMatches(value, viewport) {
+    if (!value) return true;
+    const width = Number(value.width);
+    const height = Number(value.height);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return false;
+    const tolerance = 8;
+    if (viewport.width > 0 && Math.abs(width - viewport.width) > tolerance) return false;
+    if (viewport.height > 0 && Math.abs(height - viewport.height) > tolerance) return false;
+    return true;
+  }
+
+  function applyPrimaryGeometry(value, reportedViewport) {
     const rows = Array.isArray(value) ? value : [];
-    if (rows.length !== SECTIONS.length) return false;
+    if (rows.length !== SECTIONS.length) return rejectPrimaryGeometry();
+    const viewport = widgetViewport();
+    if (!reportedViewportMatches(reportedViewport, viewport)) return rejectPrimaryGeometry();
     const bySection = new Map(rows.map((row) => [row && row.section, row]));
     for (const section of SECTIONS) {
       const row = bySection.get(section);
       const numbers = row && [row.left, row.top, row.width, row.height].map(Number);
       const pencil = row && row.pencil;
       const pencilNumbers = pencil && [pencil.left, pencil.top, pencil.width, pencil.height].map(Number);
-      if (!numbers || !pencilNumbers || numbers.concat(pencilNumbers).some((number) => !Number.isFinite(number) || Math.abs(number) > 100000) || numbers[2] < 40 || numbers[3] < 30 || pencilNumbers[2] < 16 || pencilNumbers[3] < 16) return false;
+      if (!numbers || !pencilNumbers || numbers.concat(pencilNumbers).some((number) => !Number.isFinite(number) || Math.abs(number) > 100000) || numbers[2] < 24 || numbers[3] < 30 || pencilNumbers[2] < 16 || pencilNumbers[3] < 16) return rejectPrimaryGeometry();
       const relativeLeft = pencilNumbers[0] - numbers[0];
       const relativeTop = pencilNumbers[1] - numbers[1];
-      if (relativeLeft < 0 || relativeTop < 0 || relativeLeft + pencilNumbers[2] > numbers[2] || relativeTop + pencilNumbers[3] > numbers[3]) return false;
+      if (relativeLeft < 0 || relativeTop < 0 || relativeLeft + pencilNumbers[2] > numbers[2] || relativeTop + pencilNumbers[3] > numbers[3]) return rejectPrimaryGeometry();
+      const tolerance = 8;
+      if (viewport.width > 0 && (numbers[0] < -tolerance || numbers[0] + numbers[2] > viewport.width + tolerance)) return rejectPrimaryGeometry();
+      if (viewport.height > 0 && (numbers[1] < -tolerance || numbers[1] + numbers[3] > viewport.height + tolerance)) return rejectPrimaryGeometry();
     }
     interactionGrid.querySelectorAll('[data-slot]').forEach((slot) => {
       const row = bySection.get(slot.dataset.slot);
@@ -117,6 +150,7 @@
       });
     });
     interactionGrid.hidden = false;
+    lastGeometryAckAt = Date.now();
     return true;
   }
 
@@ -128,6 +162,23 @@
     } catch (_error) {
       return false;
     }
+  }
+
+  function requestPrimaryGeometry() {
+    if (!bridge) return false;
+    geometryRequestId += 1;
+    return sendToBridge({ type: 'notion-widget-v20-primary-geometry-request', requestId: geometryRequestId });
+  }
+
+  function refreshPrimaryGeometry() {
+    interactionGrid.hidden = true;
+    requestPrimaryGeometry();
+  }
+
+  function runGeometryHeartbeat() {
+    if (document.visibilityState === 'hidden') return;
+    if (bridge && Date.now() - lastGeometryAckAt > 2000) interactionGrid.hidden = true;
+    requestPrimaryGeometry();
   }
 
   function sendPending(record) {
@@ -179,14 +230,23 @@
     if (data.type === 'notion-widget-v20-bridge-ready') {
       if (!isWidgetDescendant(event.source) || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(data.instanceId || ''))) return;
       bridge = { source: event.source, origin: event.origin, instanceId: data.instanceId };
-      interactionGrid.hidden = !applyPrimaryGeometry(data.geometry);
+      geometryRequestId = 0;
+      latestGeometryResponseId = 0;
+      lastGeometryAckAt = 0;
+      applyPrimaryGeometry(data.geometry, data.viewport);
       fatal.hidden = true;
       sendAllPending();
+      requestPrimaryGeometry();
       return;
     }
     if (!isCurrentBridgeEvent(event)) return;
     if (data.type === 'notion-widget-v20-primary-geometry') {
-      applyPrimaryGeometry(data.geometry);
+      if (data.requestId !== undefined) {
+        const responseId = Number(data.requestId);
+        if (!Number.isSafeInteger(responseId) || responseId <= latestGeometryResponseId || responseId > geometryRequestId) return;
+        latestGeometryResponseId = responseId;
+      }
+      applyPrimaryGeometry(data.geometry, data.viewport);
       return;
     }
     if (data.type === 'notion-widget-v20-primary-result') finishPrimaryAction(data);
@@ -258,5 +318,9 @@
   }
   installInteractionControls();
   window.addEventListener('message', handleWidgetMessage);
+  window.addEventListener('resize', refreshPrimaryGeometry);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshPrimaryGeometry(); });
+  if (window.ResizeObserver) new ResizeObserver(refreshPrimaryGeometry).observe(widget);
+  window.setInterval(runGeometryHeartbeat, 750);
   widget.src = `${DEPLOYMENT_URL}?${params.toString()}`;
 })();
