@@ -160,6 +160,8 @@ test('web app routes download requests to a dedicated top-level courier', () => 
   assert.match(doGet, /params\.downloadPageId \|\| params\.downloadTicket/);
   assert.match(doGet, /createTemplateFromFile\('Download'\)/);
   assert.match(doGet, /template\.runtimeParamsJson = JSON\.stringify/);
+  assert.match(doGet, /task:\s*String\(params\.task \|\| params\.taskPageId/);
+  assert.match(doGet, /downloadPageId:\s*String\(params\.downloadPageId/);
   assert.match(doGet, /output = template\.evaluate\(\)/);
   assert.match(doGet, /createHtmlOutputFromFile\('Index'\)/);
   assert.match(doGet, /XFrameOptionsMode\.ALLOWALL/);

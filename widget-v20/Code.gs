@@ -103,8 +103,8 @@ function doGet(event) {
   if (isDownloadCourier) {
     var template = HtmlService.createTemplateFromFile('Download');
     template.runtimeParamsJson = JSON.stringify({
-      taskPageId: String(params.task || params.taskPageId || '').slice(0, 100),
-      pageId: String(params.downloadPageId || '').slice(0, 100),
+      task: String(params.task || params.taskPageId || '').slice(0, 100),
+      downloadPageId: String(params.downloadPageId || '').slice(0, 100),
       accessToken: String(params.accessToken || '').slice(0, 300),
       downloadTicket: String(params.downloadTicket || '').slice(0, 200)
     });

@@ -143,6 +143,7 @@ test('Apps Script courier fetches only after its page is opened and forces an ex
   assert.doesNotMatch(downloader, /google\.script\.url|getLocation/);
   assert.match(downloader, /apiPrepareDownload\(input\)/);
   assert.match(downloader, /apiDownload\(input\)/);
+  assert.match(downloader, /params\.downloadPageId\|\|params\.pageId/);
   assert.match(downloader, /const input=\{taskPageId,pageId,accessToken\}/);
   assert.match(downloader, /if\(prepared\)[\s\S]*notifyCourierDirect\(prepared\)/);
   assert.doesNotMatch(downloader, /payload=\{[^\n]+status:'direct'[^\n]+opener\.postMessage/);

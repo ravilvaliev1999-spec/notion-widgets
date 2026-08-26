@@ -110,7 +110,7 @@
         downloadTicket=String(params.downloadTicket||'');
         const taskPageId=String(params.task||params.taskPageId||'');
         const accessToken=String(params.accessToken||'');
-        const pageId=String(params.downloadPageId||'');
+        const pageId=String(params.downloadPageId||params.pageId||'');
         if(!/^[A-Za-z0-9_-]{32,160}$/.test(downloadTicket)||!/^[0-9a-fA-F-]{32,36}$/.test(taskPageId)||!/^[0-9a-fA-F-]{32,36}$/.test(pageId)||!/^[A-Za-z0-9._~-]{32,256}$/.test(accessToken))throw new Error('Параметры скачивания повреждены.');
         const input={taskPageId,pageId,accessToken};
         let prepared=null;
