@@ -56,6 +56,24 @@ test('create POST accepts only the four courier fields and never echoes its capa
   assert.doesNotMatch(post, /runtimeParamsJson\s*=\s*JSON\.stringify\([^;]*accessToken/);
 });
 
+test('create GET rendezvous is noopener, exact-field and status-only', () => {
+  const courier=fs.readFileSync(path.join(root,'..','create-courier.html'),'utf8');
+  const creator=text('Create.html');
+  assert.match(courier,/\^#v2=\(\[A-Za-z0-9_-\]\{80,6000\}\)\$/);
+  assert.match(courier,/allowed=new Set\(\['task','accessToken','createSection','createRequestId'\]\)/);
+  assert.match(courier,/entries\.length!==4/);
+  assert.match(courier,/if\(mode==='v2'\)runner\.src=request\.href;else submitCreate\(request\)/);
+  assert.ok(courier.indexOf("history.replaceState(null,'',location.pathname)") < courier.indexOf("runner.src=request.href"));
+  assert.doesNotMatch(courier,/BroadcastChannel|window\.open\(/);
+  assert.match(creator,/expected=\['accessToken','createRequestId','createSection','task'\]/);
+  assert.match(creator,/apiGetCreateStatus\(input\)/);
+  assert.doesNotMatch(creator,/\.apiCreateGoogle\(/);
+  assert.match(creator,/const statusInput=\{taskPageId,accessToken,section,createRequestId:requestId\}/);
+  assert.match(creator,/if\(result\.state==='failed'\)throw new Error/);
+  assert.match(creator,/for\(const delay of POLL_DELAYS\)/);
+  assert.doesNotMatch(creator,/randomUUID|window\.open|BroadcastChannel|postMessage\([^\n]*(?:accessToken|idempotencyKey)/);
+});
+
 test('download POST is an exact four-field route and only a cached HMAC grant can precompute a direct result', () => {
   const backend=text('Code.gs');
   const fields=backend.slice(backend.indexOf('function w20DownloadPostFields_'),backend.indexOf('function w20SafeCreateOpenUrl_'));
@@ -77,6 +95,47 @@ test('download POST is an exact four-field route and only a cached HMAC grant ca
   assert.match(grant,/entry\.epoch === currentEpoch/);
   assert.match(grant,/WidgetV19Core\.safeEqual\(expected, supplied\)/);
   assert.match(backend.slice(backend.indexOf('function w20CacheDownloadMaterials_'),backend.indexOf('function w20GetCachedDownloadMaterial_')),/w20InvalidateDownloadMaterialCache_\(taskId, pageId, false\)/);
+});
+
+test('server-attested fast download packages are short-lived, minimal and issued only behind the epoch lock', () => {
+  const backend=text('Code.gs');
+  const prepare=backend.slice(backend.indexOf('function apiPrepareDownload'),backend.indexOf('function apiDownload'));
+  const packageSource=backend.slice(backend.indexOf('function w20FastDownloadName_'),backend.indexOf('function w20IssueDownloadGrant_'));
+  const issue=backend.slice(backend.indexOf('function w20IssueDownloadGrant_'),backend.indexOf('function w20GetDownloadGrant_'));
+  const ttl=Number((backend.match(/W20_FAST_DOWNLOAD_PACKAGE_TTL_SECONDS\s*=\s*(\d+)/)||[])[1]);
+  assert.ok(ttl>0&&ttl<=60);
+  assert.ok(prepare.indexOf('w19AssertMaterialForTask_')<prepare.indexOf('w19AssertOwnedBinary_'));
+  assert.ok(prepare.indexOf('w19AssertOwnedBinary_')<prepare.indexOf('w20HostedDownloadDispositionMatches_'));
+  assert.ok(prepare.indexOf('w20HostedDownloadDispositionMatches_')<prepare.indexOf('w20IssueDownloadGrant_'));
+  assert.match(packageSource,/var payload = \{\s*url: source\.url,\s*name: w20FastDownloadName_\(source\.name\),\s*expiresAt:/);
+  assert.match(packageSource,/base64EncodeWebSafe/);
+  assert.match(packageSource,/replace\(\/=\+\$\/g, ''\)/);
+  assert.doesNotMatch(packageSource,/accessToken|script\.google\.com|serviceUrl|console|Logger/);
+  const epochCheck=issue.indexOf('currentEpoch !== requestedEpoch');
+  const packageReturn=issue.indexOf('w20DownloadGrantResponse_');
+  assert.ok(epochCheck!==-1&&epochCheck<packageReturn,'package must be formed only after the locked epoch recheck');
+  assert.match(issue,/task !== cfg\.authorizedTaskPageId/);
+  assert.match(issue,/cfg\.deniedPageIds\[task\]/);
+});
+
+test('public download courier accepts strict v3 packages directly and retains strict v1 POST fallback', () => {
+  const courier=fs.readFileSync(path.join(root,'..','download-courier.html'),'utf8');
+  const fast=courier.slice(courier.indexOf('function validateFastPackage'),courier.indexOf('function validateDirectDownload'));
+  assert.match(courier,/\^#v3=\(\[A-Za-z0-9_-\]\{40,9000\}\)\$/);
+  assert.match(courier,/\^#v1=\(\[A-Za-z0-9_-\]\{80,6000\}\)\$/);
+  assert.match(fast,/keys\.length!==3/);
+  assert.match(fast,/keys\.includes\('url'\)/);
+  assert.match(fast,/keys\.includes\('name'\)/);
+  assert.match(fast,/keys\.includes\('expiresAt'\)/);
+  assert.match(fast,/safeDownloadName\(payload\.name\)!==payload\.name/);
+  assert.match(fast,/expiry-now>60\*1000/);
+  assert.doesNotMatch(fast,/accessToken|downloadTicket|script\.google\.com|serviceUrl/);
+  assert.match(courier,/host==='secure\.notion-static\.com'/);
+  assert.match(courier,/host==='file\.notion\.so'/);
+  assert.match(courier,/prod-files-secure\\\.s3/);
+  assert.match(courier,/if\(decoded\.kind==='fast'\)[\s\S]*startDirectDownload\(decoded\.direct,0\);\s*return;/);
+  assert.match(courier,/form\.method='post'/);
+  assert.doesNotMatch(courier,/console\.|Logger|fetch\(|XMLHttpRequest|sendBeacon/);
 });
 
 test('download acceleration caches only server-derived task material coordinates for at most two minutes', () => {

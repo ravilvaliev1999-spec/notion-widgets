@@ -40,16 +40,22 @@
       return visit(root,0);
     }
 
-    function decodeFragment(hash){
-      const match=/^#v1=([A-Za-z0-9_-]{80,6000})$/.exec(String(hash||''));
-      if(!match)throw new Error('Ссылка на скачивание повреждена.');
-      const encoded=match[1];
+    function decodeBase64Url(encoded){
       const padding='='.repeat((4-encoded.length%4)%4);
       let binary;
       try{binary=atob(encoded.replace(/-/g,'+').replace(/_/g,'/')+padding);}catch(_error){throw new Error('Ссылка на скачивание повреждена.');}
       const bytes=new Uint8Array(binary.length);
       for(let index=0;index<binary.length;index+=1)bytes[index]=binary.charCodeAt(index);
       try{return new TextDecoder('utf-8',{fatal:true}).decode(bytes);}catch(_error){throw new Error('Ссылка на скачивание повреждена.');}
+    }
+
+    function decodeFragment(hash){
+      const value=String(hash||'');
+      const fast=/^#v3=([A-Za-z0-9_-]{40,9000})$/.exec(value);
+      if(fast)return {kind:'fast',direct:validateFastPackage(decodeBase64Url(fast[1]))};
+      const fallback=/^#v1=([A-Za-z0-9_-]{80,6000})$/.exec(value);
+      if(fallback)return {kind:'fallback',serviceUrl:decodeBase64Url(fallback[1])};
+      throw new Error('Ссылка на скачивание повреждена.');
     }
 
     function validateServiceUrl(raw){
@@ -87,19 +93,33 @@
       return (name||'Файл').slice(0,180);
     }
 
-    function validateDirectDownload(data){
+    function validateFastPackage(raw){
+      if(typeof raw!=='string'||raw.length<40||raw.length>7000)throw new Error('Быстрая ссылка на скачивание повреждена.');
+      let payload;
+      try{payload=JSON.parse(raw);}catch(_error){throw new Error('Быстрая ссылка на скачивание повреждена.');}
+      const keys=payload&&typeof payload==='object'&&!Array.isArray(payload)?Object.keys(payload):[];
+      if(keys.length!==3||!keys.includes('url')||!keys.includes('name')||!keys.includes('expiresAt'))throw new Error('Быстрая ссылка на скачивание повреждена.');
+      if(typeof payload.url!=='string'||typeof payload.name!=='string'||typeof payload.expiresAt!=='string'||!payload.name||payload.name.length>180||safeDownloadName(payload.name)!==payload.name)throw new Error('Быстрая ссылка на скачивание повреждена.');
+      if(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(payload.expiresAt))throw new Error('Быстрая ссылка на скачивание повреждена.');
+      const expiry=Date.parse(payload.expiresAt),now=Date.now();
+      if(!Number.isFinite(expiry)||new Date(expiry).toISOString()!==payload.expiresAt||expiry<=now+1000||expiry-now>60*1000)throw new Error('Быстрая ссылка на скачивание устарела.');
+      return {url:payload.url,name:payload.name,expiresAt:payload.expiresAt};
+    }
+
+    function validateDirectDownload(data,minRemainingMs){
       const raw=String(data&&data.url||'');
       if(!raw||raw.length>6000)throw new Error('Сервис вернул недопустимый адрес файла.');
       const url=new URL(raw),host=url.hostname.toLowerCase();
       const trusted=host==='secure.notion-static.com'||host==='file.notion.so'||/^prod-files-secure\.s3(?:\.[a-z0-9-]+)?\.amazonaws\.com$/.test(host);
       const expiry=Date.parse(String(data&&data.expiresAt||''));
-      if(url.protocol!=='https:'||url.port||url.username||url.password||url.hash||!trusted||!Number.isFinite(expiry)||expiry<=Date.now()+30000)throw new Error('Защищённая ссылка на файл уже устарела.');
-      return {url:url.href,name:safeDownloadName(data&&data.name)};
+      const remaining=Math.max(0,Number(minRemainingMs)||0);
+      if(url.protocol!=='https:'||url.port||url.username||url.password||url.hash||url.href!==raw||!trusted||!Number.isFinite(expiry)||expiry<=Date.now()+remaining)throw new Error('Защищённая ссылка на файл уже устарела.');
+      return {url:raw,name:safeDownloadName(data&&data.name)};
     }
 
-    function startDirectDownload(data){
+    function startDirectDownload(data,minRemainingMs){
       window.clearTimeout(responseTimer);
-      const direct=validateDirectDownload(data);
+      const direct=validateDirectDownload(data,minRemainingMs);
       runner.remove();
       const anchor=document.createElement('a');
       anchor.href=direct.url;anchor.download=direct.name;anchor.target='_self';anchor.rel='noopener noreferrer';anchor.hidden=true;
@@ -113,7 +133,12 @@
       const fragment=location.hash;
       history.replaceState(null,'',location.pathname);
       try{window.opener=null;}catch(_error){}
-      const request=validateServiceUrl(decodeFragment(fragment));
+      const decoded=decodeFragment(fragment);
+      if(decoded.kind==='fast'){
+        startDirectDownload(decoded.direct,0);
+        return;
+      }
+      const request=validateServiceUrl(decoded.serviceUrl);
       expectedTicket=request.fields.downloadTicket||'';
       runner.setAttribute('credentialless','');runner.credentialless=true;submitDownload(request);
       status.textContent='Проверяю файл и права доступа…';
@@ -129,7 +154,7 @@
       const data=event.data;
       if(!data||data.type!=='notion-widget-v20-download'||data.downloadTicket!==expectedTicket)return;
       if(data.status==='direct'){
-        try{startDirectDownload(data);}catch(error){fail(error&&error.message||'Не удалось начать скачивание.');}
+        try{startDirectDownload(data,30000);}catch(error){fail(error&&error.message||'Не удалось начать скачивание.');}
       }
       else if(data.status==='success'){window.clearTimeout(responseTimer);status.textContent='Скачивание началось. Эта вкладка закроется автоматически.';window.setTimeout(()=>{try{window.close();}catch(_error){}},1200);}
       else if(data.status==='error'){window.clearTimeout(responseTimer);status.textContent=String(data.message||'Не удалось скачать файл.').slice(0,500);}

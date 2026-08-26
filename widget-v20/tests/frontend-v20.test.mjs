@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
+import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -88,7 +89,7 @@ test('courier href carries the service URL only in a fragment and uses a fresh c
   const windowMock = { crypto: { getRandomValues(bytes) { for (let i=0;i<bytes.length;i+=1) bytes[i]=(seed+i)&255; seed+=1; return bytes; } } };
   const normalizeUuid = (value) => String(value || '').toLowerCase();
   const canPrepareDownload = (item) => Boolean(item?.canDownload && item?.widgetOwned && !item?.archived);
-  const state = { authoritative:true, serviceUrl:'https://script.google.com/macros/s/abcdefghijklmnopqrstuvwxyz0123456789_-AB/exec' };
+  const state = { authoritative:true, bootstrapped:true, serviceUrl:'https://script.google.com/macros/s/abcdefghijklmnopqrstuvwxyz0123456789_-AB/exec' };
   const taskPageId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',accessToken='A'.repeat(48);
   const downloadGrants=new Map();
   const build = new Function('window','TextEncoder','btoa','URL','normalizeUuid','state','taskPageId','accessToken','canPrepareDownload','DOWNLOAD_COURIER_URL','downloadGrants',`${helpersSource};return {strongDownloadTicket,downloadCourierHref};`);
@@ -108,22 +109,27 @@ test('courier href carries the service URL only in a fragment and uses a fresh c
   assert.deepEqual([...service.searchParams.keys()].sort(),['accessToken','downloadPageId','downloadTicket','task']);
 });
 
-test('a fresh memory-only server grant replaces the random ticket without putting a direct URL in the fragment', () => {
+test('a fresh memory-only package uses v3 immediately while a grant keeps the strict v1 fallback', () => {
   const helpersSource = frontend.slice(frontend.indexOf('function strongDownloadTicket'), frontend.indexOf('function canPrepareDownload'));
   let seed = 0;
   const windowMock = { crypto: { getRandomValues(bytes) { for (let i=0;i<bytes.length;i+=1) bytes[i]=(seed+i)&255; seed+=1; return bytes; } } };
   const normalizeUuid = (value) => String(value || '').toLowerCase();
   const canPrepareDownload = (item) => Boolean(item?.canDownload && item?.widgetOwned && !item?.archived);
-  const state = { authoritative:true, serviceUrl:'https://script.google.com/macros/s/abcdefghijklmnopqrstuvwxyz0123456789_-AB/exec' };
+  const state = { authoritative:true, bootstrapped:true, serviceUrl:'https://script.google.com/macros/s/abcdefghijklmnopqrstuvwxyz0123456789_-AB/exec' };
   const taskPageId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',accessToken='A'.repeat(48);
   const item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',canDownload:true,widgetOwned:true};
-  const grant='a'.repeat(96),downloadGrants=new Map([[item.id,{downloadGrant:grant,expiresAt:'2099-01-01T00:00:00.000Z'}]]);
+  const grant='a'.repeat(96),downloadPackage='B'.repeat(80),packageExpiresAt=new Date(Date.now()+30000).toISOString();
+  const downloadGrants=new Map([[item.id,{downloadGrant:grant,expiresAt:'2099-01-01T00:00:00.000Z',downloadPackage,packageExpiresAt}]]);
   const build = new Function('window','TextEncoder','btoa','URL','normalizeUuid','state','taskPageId','accessToken','canPrepareDownload','DOWNLOAD_COURIER_URL','downloadGrants',`${helpersSource};return {freshDownloadGrant,downloadCourierHref};`);
   const helpers = build(windowMock,TextEncoder,btoa,URL,normalizeUuid,state,taskPageId,accessToken,canPrepareDownload,'https://ravilvaliev1999-spec.github.io/notion-widgets/download-courier.html',downloadGrants);
   const fast=helpers.downloadCourierHref(item);
-  assert.match(fast,/^https:\/\/ravilvaliev1999-spec\.github\.io\/notion-widgets\/download-courier\.html#v1=[A-Za-z0-9_-]+$/);
-  assert.doesNotMatch(fast,/#v2=/);
-  const encoded=fast.split('#v1=')[1],padded=encoded.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-encoded.length%4)%4);
+  assert.equal(fast,`https://ravilvaliev1999-spec.github.io/notion-widgets/download-courier.html#v3=${downloadPackage}`);
+  assert.equal(fast.includes(accessToken),false);
+  downloadGrants.set(item.id,{downloadGrant:grant,expiresAt:'2099-01-01T00:00:00.000Z'});
+  const fallbackGrant=helpers.downloadCourierHref(item);
+  assert.match(fallbackGrant,/^https:\/\/ravilvaliev1999-spec\.github\.io\/notion-widgets\/download-courier\.html#v1=[A-Za-z0-9_-]+$/);
+  assert.doesNotMatch(fallbackGrant,/#v2=/);
+  const encoded=fallbackGrant.split('#v1=')[1],padded=encoded.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-encoded.length%4)%4);
   const serviceText=Buffer.from(padded,'base64').toString('utf8'),service=new URL(serviceText);
   assert.equal(service.searchParams.get('downloadTicket'),grant);
   assert.doesNotMatch(serviceText,/prod-files-secure|notion-static|file\.notion\.so/i);
@@ -134,19 +140,25 @@ test('a fresh memory-only server grant replaces the random ticket without puttin
   assert.notEqual(fallbackService.searchParams.get('downloadTicket'),grant);
 });
 
-test('authoritative bootstrap primes downloadable binaries asynchronously and keeps grants in memory only', () => {
+test('bootstrap primes downloads while preserving unchanged unexpired packages in memory', () => {
   const bootstrap=frontend.slice(frontend.indexOf('function applyBootstrapData'),frontend.indexOf('function refresh('));
   const prime=frontend.slice(frontend.indexOf('function freshDownloadGrant'),frontend.indexOf('function downloadCourierHref'));
   assert.match(frontend,/const downloadGrants = new Map\(\)/);
   assert.match(frontend,/const downloadGrantPrimeInFlight = new Map\(\)/);
   assert.match(frontend,/const downloadGrantRetryNotBefore = new Map\(\)/);
-  assert.match(bootstrap,/downloadPrimeGeneration\+=1;downloadGrants\.clear\(\);downloadGrantRetryNotBefore\.clear\(\)/);
-  assert.match(bootstrap,/if\(state\.authoritative\)scheduleDownloadGrantPrime\(downloadPrimeGeneration\)/);
+  assert.match(bootstrap,/const previousDownloadFingerprints=new Map\(state\.materials\.filter\(canPrepareDownload\)\.map/);
+  assert.match(bootstrap,/downloadGrants\.forEach\(\(_record,pageId\)=>/);
+  assert.match(bootstrap,/previousDownloadFingerprints\.get\(pageId\)!==downloadMaterialFingerprint\(current\)/);
+  assert.match(bootstrap,/downloadGrants\.delete\(pageId\)/);
+  assert.doesNotMatch(bootstrap,/downloadGrants\.clear\(\)/);
+  assert.match(bootstrap,/downloadGrantRetryNotBefore\.clear\(\)/);
+  assert.match(bootstrap,/scheduleDownloadGrantPrime\(downloadPrimeGeneration\)/);
   assert.match(prime,/window\.setTimeout\(async\(\)=>/);
   assert.match(prime,/Promise\.all\(\[worker\(\),worker\(\)\]\)/);
   assert.match(prime,/call\('apiPrepareDownload',\{taskPageId,pageId:materialId\}\)/);
   assert.match(prime,/data&&data\.mode==='grant'/);
-  assert.match(prime,/downloadGrants\.set\(materialId,\{downloadGrant:grant,expiresAt:[^}]+refreshNotBefore:0,refreshFailures:0\}\)/);
+  assert.match(prime,/downloadPackage:packageValid\?downloadPackage:''/);
+  assert.match(prime,/packageExpiresAt:packageValid\?new Date\(packageExpiresAt\)\.toISOString\(\):''/);
   assert.match(prime,/refreshDownloadGrantLink\(materialId\)/);
   assert.match(frontend,/upsert\(data\.material\);render\(\);primeDownloadGrant\(data\.material&&data\.material\.id,downloadPrimeGeneration\)/);
   assert.doesNotMatch(prime,/localStorage|sessionStorage|indexedDB|downloadUrl|attachmentUrl/);
@@ -175,10 +187,12 @@ test('grant refresh eligibility honors expiry lead and suppresses repeated proxy
   const normalizeUuid=(value)=>String(value||'').toLowerCase();
   const needs=new Function('normalizeUuid','downloadGrants','downloadGrantRetryNotBefore','DOWNLOAD_GRANT_RENEW_LEAD_MS',`${source};return downloadGrantNeedsRefresh;`)(normalizeUuid,downloadGrants,downloadGrantRetryNotBefore,15000);
   const item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'},grant='a'.repeat(96),now=Date.now();
-  downloadGrants.set(item.id,{downloadGrant:grant,expiresAt:new Date(now+30000).toISOString()});
+  downloadGrants.set(item.id,{downloadGrant:grant,expiresAt:new Date(now+30000).toISOString(),downloadPackage:'B'.repeat(80),packageExpiresAt:new Date(now+30000).toISOString()});
   assert.equal(needs(item,true),false);
-  downloadGrants.set(item.id,{downloadGrant:grant,expiresAt:new Date(now+10000).toISOString()});
+  downloadGrants.set(item.id,{downloadGrant:grant,expiresAt:new Date(now+10000).toISOString(),downloadPackage:'B'.repeat(80),packageExpiresAt:new Date(now+10000).toISOString()});
   assert.equal(needs(item,false),true);
+  downloadGrants.set(item.id,{downloadGrant:grant,expiresAt:new Date(now+30000).toISOString()});
+  assert.equal(needs(item,false),true,'a legacy grant without v3 package should be upgraded');
   downloadGrants.delete(item.id);downloadGrantRetryNotBefore.set(item.id,Number.POSITIVE_INFINITY);
   assert.equal(needs(item,true),false);
   downloadGrantRetryNotBefore.delete(item.id);
@@ -217,7 +231,7 @@ test('neutral courier is credentialless, fragment-only, strict, referrerless and
   assert.match(publicCourier, /event\.origin!=='null'/);
   assert.match(publicCourier, /data\.downloadTicket!==expectedTicket/);
   assert.match(publicCourier, /data\.status==='direct'/);
-  assert.match(publicCourier, /validateDirectDownload\(data\)/);
+  assert.match(publicCourier, /validateDirectDownload\(data,minRemainingMs\)/);
   assert.match(publicCourier, /prod-files-secure\\\.s3/);
   assert.match(publicCourier, /DIRECT_CLOSE_AFTER_MS=2500/);
   assert.match(publicCourier, /\},1200\)/);
@@ -254,6 +268,8 @@ test('Apps Script courier fetches only after its page is opened and forces an ex
 test('create courier uses a credentialless fragment-only handoff and opens only Google file URLs', () => {
   assert.match(publicCreateCourier, /<iframe[^>]+name="createRunner"[^>]+credentialless[^>]+referrerpolicy="no-referrer"/);
   assert.match(publicCreateCourier, /\^#v1=\(\[A-Za-z0-9_-\]\{80,6000\}\)\$/);
+  assert.match(publicCreateCourier, /\^#v2=\(\[A-Za-z0-9_-\]\{80,6000\}\)\$/);
+  assert.match(publicCreateCourier, /window\.addEventListener\('pagehide',cleanup\)/);
   assert.match(publicCreateCourier, /allowed=new Set\(\['task','accessToken','createSection','createRequestId'\]\)/);
   assert.match(publicCreateCourier, /entries\.length!==4/);
   assert.match(publicCreateCourier, /history\.replaceState\(null,'',location\.pathname\)/);
@@ -262,25 +278,72 @@ test('create courier uses a credentialless fragment-only handoff and opens only 
   assert.match(publicCreateCourier, /form\.method='post';form\.action=action\.href;form\.target='createRunner';form\.enctype='application\/x-www-form-urlencoded'/);
   assert.match(publicCreateCourier, /document\.body\.appendChild\(form\);form\.submit\(\)/);
   assert.match(publicCreateCourier, /Object\.keys\(request\.fields\)\.length!==4/);
-  assert.doesNotMatch(publicCreateCourier, /runner\.src=serviceUrl|\.method='get'/i);
+  assert.match(publicCreateCourier, /if\(mode==='v2'\)runner\.src=request\.href;else submitCreate\(request\)/);
   assert.match(publicCreateCourier, /data\.type!=='notion-widget-v20-create'/);
   assert.match(publicCreateCourier, /function isRunnerDescendant\(source\)/);
   assert.match(publicCreateCourier, /if\(!isRunnerDescendant\(event\.source\)\)return/);
   assert.match(publicCreateCourier, /if\(depth>=4\)return false/);
   assert.match(publicCreateCourier, /url\.hostname!=='docs\.google\.com'&&url\.hostname!=='drive\.google\.com'/);
-  assert.match(publicCreateCourier, /location\.replace\(allowedOpenUrl\(data\.openUrl\)\)/);
+  assert.match(publicCreateCourier, /const openUrl=allowedOpenUrl\(data\.openUrl\)[\s\S]*location\.replace\(openUrl\)/);
   assert.match(publicCreateCourier, /data\.status==='pending'/);
-  assert.doesNotMatch(publicCreateCourier, /window\.open\(|accessToken[^\n]+postMessage|analytics|fetch\(/i);
+  assert.doesNotMatch(publicCreateCourier, /window\.open\(|BroadcastChannel|accessToken[^\n]+postMessage|analytics|fetch\(/i);
   assert.match(creator, /id="runtimeParams" data-params="<\?= runtimeParamsJson \?>"/);
   assert.match(creator, /id="precomputedResult" data-result="<\?= precomputedResultJson \?>"/);
   assert.match(creator, /const prepared=precomputedResult\(\)/);
-  assert.ok(creator.indexOf('const prepared=precomputedResult()') < creator.indexOf('const response=await callCreate'));
-  assert.match(creator, /apiCreateGoogle\(input\)/);
-  assert.match(creator, /idempotencyKey:requestId/);
+  assert.match(creator, /apiGetCreateStatus\(input\)/);
+  assert.doesNotMatch(creator, /\.apiCreateGoogle\(/);
+  assert.match(creator, /const statusInput=\{taskPageId,accessToken,section,createRequestId:requestId\}/);
+  assert.match(creator, /if\(result\.state==='failed'\)throw new Error/);
+  assert.match(creator, /error\.code==='OPERATION_IN_PROGRESS'/);
+  assert.match(creator, /for\(const delay of POLL_DELAYS\)/);
+  assert.doesNotMatch(creator, /randomUUID|createRequestId:\s*(?:uid|random)/);
   assert.match(creator, /prepared\.status==='pending'/);
   assert.match(creator, /type:'notion-widget-v20-create'/);
   assert.match(creator, /window\.top&&window\.top!==window/);
   assert.doesNotMatch(creator, /window\.open|window\.opener/);
+});
+
+test('Create GET rendezvous is status-only and never issues a second create RPC', async () => {
+  const script=creator.match(/<script>\s*([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(script);
+  const taskPageId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e',requestId='77777777-7777-4777-8777-777777777777',accessToken='a'.repeat(64);
+  async function run(statusResponses){
+    const calls=[],posts=[];
+    let successHandler=()=>{},failureHandler=()=>{};
+    const runtime={
+      withSuccessHandler(handler){successHandler=handler;return this;},
+      withFailureHandler(handler){failureHandler=handler;return this;},
+      apiGetCreateStatus(input){calls.push(['status',input]);const value=statusResponses.shift();if(value instanceof Error)failureHandler(value);else successHandler(value);}
+    };
+    let resolveTerminal;
+    const terminal=new Promise((resolve)=>{resolveTerminal=resolve;});
+    const top={postMessage(payload){posts.push(payload);resolveTerminal(payload);}};
+    const windowObject={google:{script:{run:runtime}},top,setTimeout(callback){queueMicrotask(callback);return 1;}};
+    const metas={
+      status:{textContent:''},
+      runtimeParams:{dataset:{params:JSON.stringify({task:taskPageId,accessToken,createSection:'Docs',createRequestId:requestId})}},
+      precomputedResult:{dataset:{result:'null'}}
+    };
+    vm.runInNewContext(script,{window:windowObject,google:windowObject.google,document:{getElementById(id){return metas[id];}},URL,Promise,Error,Object,Array,String,Boolean,RegExp});
+    await terminal;
+    return {calls,posts};
+  }
+  const doneMaterial={openUrl:'https://docs.google.com/document/d/CreatedDocument12345/edit'};
+  const immediate=await run([{ok:true,data:{status:'done',material:doneMaterial}}]);
+  assert.deepEqual(immediate.calls.map(([kind])=>kind),['status']);
+  assert.equal(immediate.posts[0].status,'success');
+
+  const recovered=await run([
+    {ok:true,data:{status:'missing'}},{ok:true,data:{status:'missing'}},{ok:true,data:{status:'pending'}},{ok:true,data:{status:'done',material:doneMaterial}}
+  ]);
+  assert.deepEqual(recovered.calls.map(([kind])=>kind),['status','status','status','status']);
+  assert.equal(recovered.calls.filter(([kind])=>kind==='create').length,0);
+  assert.ok(recovered.calls.filter(([kind])=>kind==='status').every(([,input])=>input.createRequestId===requestId));
+  assert.equal(recovered.posts[0].status,'success');
+
+  const failed=await run([{ok:true,data:{status:'failed'}},{ok:true,data:{status:'done',material:doneMaterial}}]);
+  assert.deepEqual(failed.calls.map(([kind])=>kind),['status']);
+  assert.equal(failed.posts[0].status,'error');
 });
 
 test('rename synchronization polls immediately on return and uses a staggered visible interval', () => {
@@ -345,7 +408,15 @@ test('native create clicks render one optimistic card and poll only the server l
   assert.match(frontend, /pendingId:`pending:create:\$\{normalized\}`/);
   assert.match(frontend, /call\('apiGetCreateStatus',\{taskPageId,section:record\.section,createRequestId:record\.requestId\}\)/);
   assert.match(frontend, /data\.status==='done'&&data\.material/);
-  assert.match(frontend, /state\.materials=state\.materials\.filter\(\(item\)=>item\.id!==record\.pendingId\);upsert\(data\.material\)/);
+  assert.match(frontend, /function completeOptimisticCreate\(requestId,material,announce\)/);
+  assert.match(frontend, /state\.materials=state\.materials\.filter\(\(item\)=>item\.id!==record\.pendingId\)/);
+  assert.match(frontend, /upsert\(material\);if\(material\)\{recentCompletedCreates\.set\(normalized,material\);recentDrivePageIds\.add\(material\.id\);\}/);
+  assert.match(frontend, /startOptimisticCreate\(section,bridgeRequest\.requestId,false\)/);
+  assert.match(frontend, /completeOptimisticCreate\(bridgeRequest\.requestId,data\.material,false\);reply\(\{ok:true,openUrl:/);
+  assert.ok(frontend.indexOf("reply({ok:true,openUrl:") < frontend.indexOf('announceEmbedBridgeReady();}'));
+  assert.match(frontend, /state\.actionReady===true\|\|state\.authoritative/);
+  assert.match(frontend, /actionReady:state\.actionReady===true\|\|state\.authoritative/);
+  assert.match(frontend, /state\.materials\.filter\(\(item\)=>item&&!String\(item\.id\|\|''\)\.startsWith\('pending:'\)&&item\.syncStatus!=='pending'\)/);
   assert.match(frontend, /pendingCreatePolls\.delete\(requestId\);recentDrivePageIds\.add\(completed\.id\)/);
   assert.match(frontend, /call\('apiWarmCreateContext',\{taskPageId\}\)\.catch\(\(\)=>\{\}\)/);
   assert.doesNotMatch(frontend, /apiGetCreateStatus[^\n]+idempotencyKey/);
@@ -367,23 +438,22 @@ test('sync triggers coalesce in one background RPC lane', async () => {
 });
 
 test('a degraded force refresh never unlocks provisional cards', async () => {
-  const applyBootstrapData=frontend.slice(frontend.indexOf('function applyBootstrapData'),frontend.indexOf('async function bootstrap'));
-  const bootstrap=frontend.slice(frontend.indexOf('async function bootstrap'),frontend.indexOf('function refresh('));
-  assert.match(bootstrap,/if\(fresh\.cached\|\|fresh\.authoritative!==true\)/);
-  assert.ok(bootstrap.indexOf('fresh.cached||fresh.authoritative!==true') < bootstrap.indexOf('applyBootstrapData(fresh,true)'));
-  const responses=[
-    {task:{id:'task',name:'Cached'},materials:[{id:'cached'}],cached:true,authoritative:false},
-    {task:{id:'task',name:'Still cached'},materials:[{id:'stale'}],cached:true,authoritative:false}
-  ];
-  const state={task:null,folderUrl:null,serviceUrl:null,materials:[],maxUploadBytes:8388608,claimRefreshNotBefore:0,bootstrapped:false,authoritative:false};
-  const fatals=[];
-  const harness=new Function('state','taskPageId','clearFatal','call','render','announceEmbedBridgeReady','pollDriveMetadata','showFatal','pendingCreatePolls','recentCompletedCreates','recentDrivePageIds',`let downloadPrimeGeneration=0;const downloadGrants=new Map();const scheduleDownloadGrantPrime=()=>{};${applyBootstrapData};${bootstrap};return {bootstrap};`)(
-    state,'task',()=>{},async()=>responses.shift(),()=>{},()=>{},()=>{throw new Error('provisional bootstrap must not poll Drive');},(message)=>fatals.push(message),new Map(),new Map(),new Set()
+  const refreshCachedBootstrap=frontend.slice(frontend.indexOf('async function refreshCachedBootstrap'),frontend.indexOf('async function bootstrap'));
+  assert.match(refreshCachedBootstrap,/if\(fresh\.cached\|\|fresh\.authoritative!==true\)/);
+  assert.ok(refreshCachedBootstrap.indexOf('fresh.cached||fresh.authoritative!==true') < refreshCachedBootstrap.indexOf('applyBootstrapData(fresh,true)'));
+  const stale={task:{id:'task',name:'Still cached'},materials:[{id:'stale'}],cached:true,authoritative:false};
+  const state={authoritative:false,materials:[{id:'cached'}]};
+  const applications=[],scheduled=[],toasts=[];
+  const refresh=new Function('state','taskPageId','call','applyBootstrapData','toast','scheduleCachedRefresh','pollDriveMetadata','window',`let cachedRefreshAttempt=0;${refreshCachedBootstrap};return refreshCachedBootstrap;`)(
+    state,'task',async()=>stale,(data,authoritative)=>{applications.push([data,authoritative]);state.authoritative=Boolean(authoritative);state.materials=data.materials;},
+    (message)=>toasts.push(message),(delay)=>scheduled.push(delay),()=>{throw new Error('provisional refresh must not poll Drive');},{setTimeout(){throw new Error('provisional refresh must not schedule Drive polling');}}
   );
-  await harness.bootstrap();
+  await refresh();
   assert.equal(state.authoritative,false);
-  assert.deepEqual(state.materials,[{id:'cached'}]);
-  assert.equal(fatals.length,1);
+  assert.deepEqual(state.materials,[{id:'stale'}]);
+  assert.deepEqual(applications,[[stale,false]]);
+  assert.deepEqual(scheduled,[2000]);
+  assert.equal(toasts.length,1);
 });
 
 test('production bridge and local mock expose all required scenarios and scripts parse', () => {

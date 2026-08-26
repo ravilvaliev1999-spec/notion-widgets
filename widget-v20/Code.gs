@@ -15,6 +15,7 @@ var W20_DOWNLOAD_GRANT_CACHE_PREFIX = 'w20:download-grant:';
 var W20_DOWNLOAD_GRANT_EPOCH_PREFIX = 'w20:download-grant-epoch:';
 var W20_DOWNLOAD_GRANT_TTL_SECONDS = 60;
 var W20_DOWNLOAD_GRANT_SCHEMA = 2;
+var W20_FAST_DOWNLOAD_PACKAGE_TTL_SECONDS = 60;
 var W20_DRIVE_POLL_CLAIM_TTL_SECONDS = 60;
 var W19_IDEMPOTENCY_PENDING_TTL_MS = 7 * 60 * 1000;
 var W19_NOTION_RATE_CACHE_KEY = 'w20:notion:last-request-at';
@@ -310,6 +311,7 @@ function apiBootstrap(input) {
       var registrySnapshotStartedAt = Date.now();
       w19AssertSchema_(cfg);
       var task = w19AssertTaskPage_(input && input.taskPageId, cfg);
+      var taskValidatedAt = new Date().toISOString();
       var pages = w19QueryTaskMaterials_(task.id, cfg);
       w20CacheDownloadMaterials_(task.id, pages, cfg);
       var materials = pages.map(function (page) {
@@ -317,25 +319,37 @@ function apiBootstrap(input) {
       });
       var previousMeta = w20RegistryReadTaskMeta_(task.id);
       var folderId = w20RegistryFolderId_(task.id, materials);
-      var folderVerified = Boolean(previousMeta && previousMeta.folderVerified && previousMeta.folderId === folderId && previousMeta.rootFolderId === cfg.rootFolderId);
+      var folderVerified = Boolean(previousMeta && previousMeta.folderId === folderId &&
+        w20RegistryFolderMetaFresh_(previousMeta, cfg.rootFolderId));
       var folderValidatedAt = folderVerified ? previousMeta.folderValidatedAt : '';
-      if (!folderId) {
+      if (!folderVerified) {
         folderId = w19WithMutationLock_(function () {
           return w19EnsureTaskFolder_(task, cfg).id;
         });
         folderVerified = true;
         folderValidatedAt = new Date().toISOString();
       }
-      w20RegistryReplaceTask_(task.id, materials, registrySnapshotStartedAt);
-      materials = w20RegistryReadTask_(task.id, cfg);
+      var replacement = w20RegistryReplaceTaskResult_(task.id, materials, registrySnapshotStartedAt);
+      if (!replacement.ok) throw new W19Error_('BUSY', 'Не удалось сохранить актуальный снимок карточек. Повторите обновление.', true);
+      var registry = w20RegistryReadTaskResult_(task.id, cfg);
+      if (!registry.ok || !registry.integrityOk || registry.activeCount !== replacement.activeCount) {
+        throw new W19Error_('BUSY', 'Не удалось подтвердить актуальный снимок карточек. Повторите обновление.', true);
+      }
+      materials = registry.materials;
+      var snapshotValidatedAt = new Date().toISOString();
       w20RegistryWriteTaskMeta_(task.id, {
         taskName: task.name,
         folderId: folderId,
         rootFolderId: cfg.rootFolderId,
         folderVerified: folderVerified,
         folderValidatedAt: folderValidatedAt,
+        taskValidatedAt: taskValidatedAt,
+        snapshotValidatedAt: snapshotValidatedAt,
+        snapshotActiveCount: registry.activeCount,
         context: w20TaskContextSnapshot_(task)
       });
+      var actionRegistry = w20RegistryReadTaskResult_(task.id, null);
+      var actionProof = w20RegistryActionProof_(w20RegistryReadTaskMeta_(task.id), actionRegistry, cfg.rootFolderId);
       return {
         version: W19_VERSION,
         task: { id: task.id, name: task.name },
@@ -345,6 +359,9 @@ function apiBootstrap(input) {
         materials: materials,
         cached: false,
         authoritative: true,
+        actionReady: actionProof.ready,
+        trustedUntil: actionProof.trustedUntil,
+        fullySynced: true,
         refreshRequired: false
       };
     } catch (err) {
@@ -453,14 +470,13 @@ function apiWarmCreateContext(input) {
       if (w20RegistryFolderMetaFresh_(current, cfg.rootFolderId)) return { ready: true, cached: true };
       var task = w20TaskFromRegistryMeta_(taskId, current);
       var folder = w19EnsureTaskFolder_(task, cfg);
-      w20RegistryWriteTaskMeta_(taskId, {
-        taskName: task.name,
+      var stored = w20RegistryWriteFolderProof_(taskId, {
         folderId: folder.id,
         rootFolderId: cfg.rootFolderId,
         folderVerified: true,
-        folderValidatedAt: new Date().toISOString(),
-        context: current.context
+        folderValidatedAt: new Date().toISOString()
       });
+      if (!stored) return { ready: false };
       return { ready: true, cached: false };
     });
   });
@@ -505,6 +521,7 @@ function w20CreateGoogleHot_(taskId, section, name, idem, slot, cfg) {
 function w20CreateGoogleRecovery_(taskId, section, name, idem, cfg) {
   w19AssertSchema_(cfg);
   var task = w19AssertTaskPage_(taskId, cfg);
+  var taskValidatedAt = new Date().toISOString();
   return w19WithMutationLock_(function () {
     var idemHash = w19Hash_(idem).slice(0, 40);
     var existing = w19FindMaterialByIdempotency_(task.id, idem, cfg);
@@ -524,6 +541,7 @@ function w20CreateGoogleRecovery_(taskId, section, name, idem, cfg) {
       rootFolderId: cfg.rootFolderId,
       folderVerified: true,
       folderValidatedAt: new Date().toISOString(),
+      taskValidatedAt: taskValidatedAt,
       context: w20TaskContextSnapshot_(task)
     });
     var driveFile = w19FindDriveByIdempotency_(task.id, idemHash);
@@ -1077,6 +1095,7 @@ function apiSyncTask(input) {
     var cfg = w19AuthorizedConfig_(input);
     var registrySnapshotStartedAt = Date.now();
     var task = w19AssertTaskPage_(input && input.taskPageId, cfg);
+    var taskValidatedAt = new Date().toISOString();
     var pages = w19QueryTaskMaterials_(task.id, cfg);
     w20CacheDownloadMaterials_(task.id, pages, cfg);
     var materials = pages.map(function (page) {
@@ -1084,18 +1103,37 @@ function apiSyncTask(input) {
     });
     var previousMeta = w20RegistryReadTaskMeta_(task.id);
     var folderId = w20RegistryFolderId_(task.id, materials);
-    var folderVerified = Boolean(previousMeta && previousMeta.folderVerified && previousMeta.folderId === folderId && previousMeta.rootFolderId === cfg.rootFolderId);
+    var folderVerified = Boolean(previousMeta && previousMeta.folderId === folderId &&
+      w20RegistryFolderMetaFresh_(previousMeta, cfg.rootFolderId));
     var folderValidatedAt = folderVerified ? previousMeta.folderValidatedAt : '';
-    w20RegistryReplaceTask_(task.id, materials, registrySnapshotStartedAt);
-    materials = w20RegistryReadTask_(task.id, cfg);
+    if (!folderVerified) {
+      folderId = w19WithMutationLock_(function () {
+        return w19EnsureTaskFolder_(task, cfg).id;
+      });
+      folderVerified = true;
+      folderValidatedAt = new Date().toISOString();
+    }
+    var replacement = w20RegistryReplaceTaskResult_(task.id, materials, registrySnapshotStartedAt);
+    if (!replacement.ok) throw new W19Error_('BUSY', 'Не удалось сохранить актуальный снимок карточек. Повторите обновление.', true);
+    var registry = w20RegistryReadTaskResult_(task.id, cfg);
+    if (!registry.ok || !registry.integrityOk || registry.activeCount !== replacement.activeCount) {
+      throw new W19Error_('BUSY', 'Не удалось подтвердить актуальный снимок карточек. Повторите обновление.', true);
+    }
+    materials = registry.materials;
+    var snapshotValidatedAt = new Date().toISOString();
     w20RegistryWriteTaskMeta_(task.id, {
       taskName: task.name,
       folderId: folderId,
       rootFolderId: cfg.rootFolderId,
       folderVerified: folderVerified,
       folderValidatedAt: folderValidatedAt,
+      taskValidatedAt: taskValidatedAt,
+      snapshotValidatedAt: snapshotValidatedAt,
+      snapshotActiveCount: registry.activeCount,
       context: w20TaskContextSnapshot_(task)
     });
+    var actionRegistry = w20RegistryReadTaskResult_(task.id, null);
+    var actionProof = w20RegistryActionProof_(w20RegistryReadTaskMeta_(task.id), actionRegistry, cfg.rootFolderId);
     return {
       task: { id: task.id, name: task.name },
       folderUrl: folderId ? 'https://drive.google.com/drive/folders/' + encodeURIComponent(folderId) : null,
@@ -1103,6 +1141,9 @@ function apiSyncTask(input) {
       maxUploadBytes: cfg.maxUploadBytes,
       materials: materials,
       authoritative: true,
+      actionReady: actionProof.ready,
+      trustedUntil: actionProof.trustedUntil,
+      fullySynced: true,
       syncedAt: new Date().toISOString()
     };
   });
@@ -2177,6 +2218,51 @@ function w20DownloadGrantSignature_(payload, cfg) {
   }).join('');
 }
 
+function w20FastDownloadName_(value) {
+  var name = WidgetV19Core.cleanName(value, 'Файл')
+    .replace(/[\\/\\\\]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return (name || 'Файл').slice(0, 180);
+}
+
+function w20FastDownloadPackage_(direct, now) {
+  var source = w20DownloadGrantDirect_(direct);
+  var issuedAt = Math.floor(Number(now));
+  if (!source || !isFinite(issuedAt) || issuedAt <= 0) return null;
+  var expiresAt = issuedAt + W20_FAST_DOWNLOAD_PACKAGE_TTL_SECONDS * 1000;
+  if (Date.parse(source.expiresAt) <= expiresAt + 30000) return null;
+  var payload = {
+    url: source.url,
+    name: w20FastDownloadName_(source.name),
+    expiresAt: new Date(expiresAt).toISOString()
+  };
+  var encoded = '';
+  try {
+    encoded = String(Utilities.base64EncodeWebSafe(
+      Utilities.newBlob(JSON.stringify(payload), 'application/json').getBytes()
+    ) || '').replace(/=+$/g, '');
+  } catch (_packageEncodeError) {
+    return null;
+  }
+  if (!/^[A-Za-z0-9_-]{40,9000}$/.test(encoded)) return null;
+  return { downloadPackage: encoded, packageExpiresAt: payload.expiresAt };
+}
+
+function w20DownloadGrantResponse_(token, expiresAt, direct, now) {
+  var result = {
+    mode: 'grant',
+    downloadGrant: String(token || ''),
+    expiresAt: new Date(Number(expiresAt)).toISOString()
+  };
+  var fast = w20FastDownloadPackage_(direct, now);
+  if (fast) {
+    result.downloadPackage = fast.downloadPackage;
+    result.packageExpiresAt = fast.packageExpiresAt;
+  }
+  return result;
+}
+
 function w20IssueDownloadGrant_(taskId, pageId, direct, cfg, expectedEpoch) {
   var task = WidgetV19Core.normalizeUuid(taskId);
   var page = WidgetV19Core.normalizeUuid(pageId);
@@ -2184,7 +2270,8 @@ function w20IssueDownloadGrant_(taskId, pageId, direct, cfg, expectedEpoch) {
   var key = w20DownloadGrantCacheKey_(task, page);
   var epochKey = w20DownloadGrantEpochKey_(task, page);
   if (!task || !page || !safeDirect || !key || !cfg || !cfg.notionToken ||
-      (cfg.deniedPageIds && cfg.deniedPageIds[page])) return { mode: 'proxy' };
+      task !== cfg.authorizedTaskPageId ||
+      (cfg.deniedPageIds && (cfg.deniedPageIds[task] || cfg.deniedPageIds[page]))) return { mode: 'proxy' };
   var requestedEpoch = expectedEpoch === undefined ? w20DownloadGrantEpoch_(task, page) : w20ParseDownloadGrantEpoch_(expectedEpoch);
   if (requestedEpoch === null) return { mode: 'proxy' };
   var now = Date.now();
@@ -2210,7 +2297,7 @@ function w20IssueDownloadGrant_(taskId, pageId, direct, cfg, expectedEpoch) {
       var existingPayload = w20DownloadGrantPayload_(task, page, existingExpiry, existing.nonce, existingDirect, cfg, currentEpoch);
       var expectedToken = String(existing.nonce || '') + w20DownloadGrantSignature_(existingPayload, cfg);
       if (WidgetV19Core.safeEqual(expectedToken, String(existing.token))) {
-        return { mode: 'grant', downloadGrant: existing.token, expiresAt: new Date(existingExpiry).toISOString() };
+        return w20DownloadGrantResponse_(existing.token, existingExpiry, existingDirect, now);
       }
     }
     var nonce = String(Utilities.getUuid()).replace(/-/g, '').toLowerCase();
@@ -2230,7 +2317,7 @@ function w20IssueDownloadGrant_(taskId, pageId, direct, cfg, expectedEpoch) {
       direct: safeDirect
     };
     cache.put(key, JSON.stringify(entry), W20_DOWNLOAD_GRANT_TTL_SECONDS);
-    return { mode: 'grant', downloadGrant: token, expiresAt: new Date(expiresAt).toISOString() };
+    return w20DownloadGrantResponse_(token, expiresAt, safeDirect, now);
   } catch (_grantError) {
     return { mode: 'proxy' };
   } finally {

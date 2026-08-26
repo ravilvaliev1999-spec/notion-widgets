@@ -10,11 +10,12 @@ const root = path.resolve(here, '..', '..');
 const frontend = fs.readFileSync(path.join(here, '..', 'Index.html'), 'utf8');
 const wrapper = fs.readFileSync(path.join(root, 'apps-script-embed.html'), 'utf8');
 const wrapperJs = fs.readFileSync(path.join(root, 'apps-script-embed.js'), 'utf8');
+const createCourier = fs.readFileSync(path.join(root, 'create-courier.html'), 'utf8');
 
 test('public wrapper isolates Apps Script from multi-login cookies', () => {
   assert.match(wrapper, /<iframe[^>]+id="widget"[^>]+credentialless|<iframe[^>]+credentialless[^>]+id="widget"/);
   assert.match(wrapper, /referrerpolicy="no-referrer"/);
-  assert.match(wrapper, /script src="apps-script-embed\.js\?v=37"/);
+  assert.match(wrapper, /script src="apps-script-embed\.js\?v=38"/);
   assert.match(wrapper, /class="skeleton"/);
   assert.match(wrapper, /body\.widget-ready iframe\{opacity:1\}/);
 });
@@ -31,7 +32,7 @@ test('wrapper forwards only validated task runtime parameters', () => {
 
 test('wrapper binds one authenticated child channel without relaying local file contents', () => {
   assert.match(wrapperJs, /type === 'notion-widget-v20-bridge-ready'/);
-  assert.match(wrapperJs, /bridge = \{ source: event\.source, origin: event\.origin, instanceId: data\.instanceId, authoritative: data\.authoritative === true, folderUrl: allowedDriveFolderUrl\(data\.folderUrl\) \}/);
+  assert.match(wrapperJs, /bridge = \{ source: event\.source, origin: event\.origin, instanceId: data\.instanceId, authoritative: data\.authoritative === true, actionReady: data\.actionReady === true, folderUrl: allowedDriveFolderUrl\(data\.folderUrl\) \}/);
   assert.match(wrapperJs, /bridge\.source\.postMessage\(Object\.assign\(\{\}, message, \{ embedNonce \}\), bridge\.origin\)/);
   assert.doesNotMatch(wrapperJs, /postMessage\([^\n]+, '\*'\)/);
   assert.doesNotMatch(wrapperJs, /type: 'notion-widget-v20-upload-files'|\bFile\b|dataBase64/);
@@ -56,12 +57,16 @@ test('credentialless create uses native anchors and a fragment-only neutral cour
   assert.match(wrapperJs, /const existing = createRequests\.get\(section\)/);
   assert.match(wrapperJs, /completeCreateRequests\(data\.completedCreateRequestIds\)/);
   assert.match(wrapperJs, /const requestId = rememberedCreateRequest\(section\) \|\| randomId\(\)/);
-  assert.match(wrapperJs, /createRequestId', requestId\)/);
-  assert.match(wrapperJs, /createRequests\.set\(section, \{ requestId, href \}\)/);
+  assert.match(wrapperJs, /service\.searchParams\.set\('task', params\.get\('task'\)\)/);
+  assert.match(wrapperJs, /service\.searchParams\.set\('accessToken', params\.get\('accessToken'\)\)/);
+  assert.match(wrapperJs, /service\.searchParams\.set\('createSection', section\)/);
+  assert.match(wrapperJs, /service\.searchParams\.set\('createRequestId', requestId\)/);
+  assert.match(wrapperJs, /Array\.from\(service\.searchParams\.keys\(\)\)\.length !== 4/);
+  assert.match(wrapperJs, /createRequests\.set\(section, record\)/);
   assert.match(wrapperJs, /now - record\.lastNavigationAt < 1500/);
-  assert.match(wrapperJs, /#v1=\$\{encodeCourierFragment\(service\.href\)\}/);
-  assert.match(wrapperJs, /type: 'notion-widget-v20-create-started', section, requestId: record\.requestId/);
-  assert.doesNotMatch(wrapperJs, /window\.open|notion-widget-v20-primary-action|notion-widget-v20-primary-result/);
+  assert.match(wrapperJs, /#v2=\$\{encodeCourierFragment\(service\.href\)\}/);
+  assert.match(wrapperJs, /type: 'notion-widget-v20-primary-action', section: record\.section, requestId: record\.requestId/);
+  assert.doesNotMatch(wrapperJs, /window\.open|BroadcastChannel/);
   assert.match(frontend, /if\(isEmbedBridgeMode\(\)\)return;/);
   assert.match(frontend, /card\.tabIndex=-1/);
   assert.match(frontend, /type:'notion-widget-v20-primary-geometry'/);
@@ -158,6 +163,7 @@ test('wrapper runtime exposes validated native create links without opening a po
       embedNonce,
       instanceId: '33333333-3333-4333-8333-333333333333',
       authoritative: true,
+      actionReady: true,
       folderUrl: 'https://drive.google.com/drive/folders/TaskFolder12345',
       viewport: {width:868,height:523},
       geometry: ['Drive', 'Docs', 'Sheets', 'Slides'].map((section, index) => ({
@@ -195,32 +201,83 @@ test('wrapper runtime exposes validated native create links without opening a po
   assert.equal(docsPrimary.target,'_blank');
   assert.equal(docsPrimary.rel,'noopener noreferrer');
   docsPrimary.listeners.click({preventDefault(){throw new Error('valid create link must keep native navigation');}});
-  const createStarted=events.find((entry)=>entry[0]==='post'&&entry[1].type==='notion-widget-v20-create-started');
-  assert.equal(createStarted[1].section,'Docs');
-  assert.match(docsPrimary.href,/^https:\/\/ravilvaliev1999-spec\.github\.io\/notion-widgets\/create-courier\.html#v1=[A-Za-z0-9_-]+$/);
-  const encoded=docsPrimary.href.split('#v1=')[1];
+  const primaryAction=events.find((entry)=>entry[0]==='post'&&entry[1].type==='notion-widget-v20-primary-action');
+  assert.equal(primaryAction[1].section,'Docs');
+  assert.match(docsPrimary.href,/^https:\/\/ravilvaliev1999-spec\.github\.io\/notion-widgets\/create-courier\.html#v2=[A-Za-z0-9_-]+$/);
+  const encoded=docsPrimary.href.split('#v2=')[1];
   const padded=encoded.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-encoded.length%4)%4);
   const service=new URL(Buffer.from(padded,'base64').toString('utf8'));
   assert.equal(service.origin,'https://script.google.com');
+  assert.deepEqual(Array.from(service.searchParams.keys()).sort(),['accessToken','createRequestId','createSection','task']);
   assert.equal(service.searchParams.get('task'),'3c62d627-39a1-80a1-aac7-ec19ffc9ef8e');
   assert.equal(service.searchParams.get('accessToken'),'a'.repeat(64));
   assert.equal(service.searchParams.get('createSection'),'Docs');
   assert.match(service.searchParams.get('createRequestId'),/^[0-9a-f-]{36}$/);
-  assert.equal(createStarted[1].requestId,service.searchParams.get('createRequestId'));
+  assert.equal(primaryAction[1].requestId,service.searchParams.get('createRequestId'));
   const firstCreateHref=docsPrimary.href;
   let preventedClicks=0;
   docsPrimary.listeners.click({preventDefault(){preventedClicks+=1;}});
   assert.equal(docsPrimary.href,firstCreateHref,'double click must reuse one idempotency key');
   assert.equal(preventedClicks,1,'double click must navigate to the create courier only once');
+  assert.equal(events.filter((entry)=>entry[0]==='post'&&entry[1].type==='notion-widget-v20-primary-action').length,1,'double click must send one create RPC');
   now+=1500;
   docsPrimary.listeners.click({preventDefault(){preventedClicks+=1;}});
-  assert.equal(preventedClicks,1,'a later retry may reuse the same idempotent request');
+  assert.equal(preventedClicks,2,'an in-flight request must never open a second courier tab');
+  assert.equal(events.filter((entry)=>entry[0]==='post'&&entry[1].type==='notion-widget-v20-primary-action').length,1,'reopening the same request must not repeat the RPC');
+  windowListeners.message({source:bridgeSource,origin,data:{
+    type:'notion-widget-v20-primary-result',embedNonce,requestId:service.searchParams.get('createRequestId'),ok:false,message:'temporary failure'
+  }});
+  docsPrimary.listeners.click({preventDefault(){throw new Error('a failed warm action must allow one native recovery navigation');}});
+  assert.equal(docsPrimary.href,firstCreateHref,'a recovery click must retain the original idempotency key');
+  const recoveryActions=events.filter((entry)=>entry[0]==='post'&&entry[1].type==='notion-widget-v20-primary-action');
+  assert.equal(recoveryActions.length,2,'a reported warm-action failure must unlock exactly one retry');
+  assert.equal(recoveryActions[1][1].requestId,service.searchParams.get('createRequestId'),'the retry must reuse the same request id');
   windowListeners.message({source:bridgeSource,origin,data:{
     type:'notion-widget-v20-bridge-ready',embedNonce,instanceId:'33333333-3333-4333-8333-333333333333',authoritative:true,
-    folderUrl:'https://drive.google.com/drive/folders/TaskFolder12345',completedCreateRequestIds:[service.searchParams.get('createRequestId')],
+    actionReady:true,folderUrl:'https://drive.google.com/drive/folders/TaskFolder12345',completedCreateRequestIds:[service.searchParams.get('createRequestId')],
     viewport:{width:868,height:523},geometry:['Drive','Docs','Sheets','Slides'].map((section,index)=>({section,left:index*220,top:0,width:208,height:70,pencil:{left:index*220+180,top:7,width:22,height:22}}))
   }});
   assert.notEqual(docsPrimary.href,firstCreateHref,'a confirmed knowledge must release the key for the next intentional create');
   const drivePrimary=slots.find((slot)=>slot.dataset.slot==='Drive').children[0];
   assert.equal(drivePrimary.href,'https://drive.google.com/drive/folders/TaskFolder12345');
+});
+
+test('v2 create courier clears the fragment, loads the exact GET rendezvous and validates its result', () => {
+  const script=createCourier.match(/<script>\s*([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(script);
+  const requestId='55555555-5555-4555-8555-555555555555';
+  const service=new URL('https://script.google.com/macros/s/DeploymentIdentifier123456789/exec');
+  service.searchParams.set('task','3c62d627-39a1-80a1-aac7-ec19ffc9ef8e');
+  service.searchParams.set('accessToken','a'.repeat(64));
+  service.searchParams.set('createSection','Docs');
+  service.searchParams.set('createRequestId',requestId);
+  const encoded=Buffer.from(service.href).toString('base64url');
+  const locationObject={
+    protocol:'https:',hostname:'ravilvaliev1999-spec.github.io',pathname:'/notion-widgets/create-courier.html',search:'',hash:`#v2=${encoded}`,
+    replaced:'',replace(value){this.replaced=value;}
+  };
+  const runnerSource={length:0,frames:[]};
+  const status={textContent:''},runner={removed:false,src:'',remove(){this.removed=true;},setAttribute(){},contentWindow:runnerSource};
+  const timers=[];
+  const listeners={};
+  const windowObject={
+    opener:{},
+    setTimeout(callback,delay){const timer={callback,delay,cancelled:false};timers.push(timer);return timer;},
+    clearTimeout(timer){if(timer)timer.cancelled=true;},
+    addEventListener(type,listener){listeners[type]=listener;},
+    close(){}
+  };
+  vm.runInNewContext(script,{
+    window:windowObject,document:{getElementById(id){return id==='status'?status:runner;}},location:locationObject,
+    history:{replaceState(){locationObject.hash='';}},URL,URLSearchParams,TextDecoder,Uint8Array,Set,Array,Object,String,Number,
+    atob,Error,RegExp
+  });
+  assert.equal(runner.src,service.href);
+  assert.equal(locationObject.hash,'');
+  listeners.message({source:runnerSource,origin:'https://script.googleusercontent.com',data:{type:'notion-widget-v20-create',requestId:'66666666-6666-4666-8666-666666666666',status:'success',openUrl:'https://docs.google.com/document/d/Wrong/edit'}});
+  assert.equal(locationObject.replaced,'');
+  listeners.message({source:runnerSource,origin:'https://script.googleusercontent.com',data:{type:'notion-widget-v20-create',requestId,status:'success',openUrl:'https://docs.google.com/document/d/CreatedDocument12345/edit'}});
+  assert.equal(locationObject.replaced,'https://docs.google.com/document/d/CreatedDocument12345/edit');
+  assert.equal(timers.find((timer)=>timer.delay===180000).cancelled,true);
+  assert.doesNotMatch(script,/BroadcastChannel|window\.open\(/);
 });

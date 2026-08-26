@@ -301,7 +301,7 @@
   const DOWNLOAD_GRANT_RENEW_LEAD_MS = 15000;
   const DOWNLOAD_GRANT_RETRY_DELAY_MS = 5000;
   const bridgeInstanceId = uid();
-  const state = { task:null, folderUrl:null, serviceUrl:null, materials:[], busy:new Set(), syncing:false, drivePolling:false, urgentDrivePolling:false, lastDrivePollAt:0, claimRefreshNotBefore:0, bootstrapped:false, authoritative:false, maxUploadBytes:8388608, dragId:null, mock:false };
+  const state = { task:null, folderUrl:null, serviceUrl:null, materials:[], busy:new Set(), syncing:false, drivePolling:false, urgentDrivePolling:false, lastDrivePollAt:0, claimRefreshNotBefore:0, bootstrapped:false, authoritative:false, actionReady:false, fullySynced:false, trustedUntil:0, maxUploadBytes:8388608, dragId:null, mock:false };
   const retryUpload = new Map();
   const memoryIdempotency = new Map();
   const pendingCreatePolls = new Map();
@@ -326,6 +326,9 @@
   let urgentDriveRetryDelay = 250;
   let downloadPrimeGeneration = 0;
   let downloadGrantRenewTimer = 0;
+  let actionReadyExpiryTimer = 0;
+  let cachedRefreshTimer = 0;
+  let cachedRefreshAttempt = 0;
 
   function normalizeUuid(value) {
     const raw = String(value || '').toLowerCase().replace(/[^0-9a-f]/g, '');
@@ -547,21 +550,34 @@
   }
 
   function render() {
+    const actionReady=state.actionReady||state.authoritative;
     SECTIONS.forEach((section)=>{
       const col=document.querySelector(`.col[data-section="${section}"]`);
       if(!col)return;
       const materials=activeMaterials(section);
       const primary=col.querySelector('.group-card');
       primary.querySelector('.count').textContent=materials.length;
-      primary.classList.toggle('busy',state.busy.has(`create:${section}`)||!state.authoritative);
-      primary.setAttribute('aria-busy',String(state.busy.has(`create:${section}`)||!state.authoritative));
-      primary.setAttribute('aria-disabled',String(!state.authoritative));
-      const uploadButton=primary.querySelector('[data-upload-section]');if(uploadButton)uploadButton.disabled=!state.authoritative;
+      primary.classList.toggle('busy',state.busy.has(`create:${section}`)||!actionReady);
+      primary.setAttribute('aria-busy',String(state.busy.has(`create:${section}`)||!actionReady));
+      primary.setAttribute('aria-disabled',String(!actionReady));
+      const uploadButton=primary.querySelector('[data-upload-section]');if(uploadButton)uploadButton.disabled=!actionReady;
       const files=$(`files-${section}`);files.textContent='';
       materials.forEach((item)=>files.appendChild(materialCard(item,materials.length)));
-      const add=document.createElement('button');add.type='button';add.className='file-add';add.dataset.addLink=section;add.textContent='+ добавить ссылку';add.disabled=!state.authoritative||state.busy.has(`link:${section}`);add.setAttribute('aria-label',`Добавить ссылку в ${section}`);files.appendChild(add);
+      const add=document.createElement('button');add.type='button';add.className='file-add';add.dataset.addLink=section;add.textContent='+ добавить ссылку';add.disabled=!actionReady||state.busy.has(`link:${section}`);add.setAttribute('aria-label',`Добавить ссылку в ${section}`);files.appendChild(add);
     });
     postHeight();scheduleEmbedBridgeGeometry();scheduleDownloadGrantRenewal();
+  }
+
+  function scheduleActionReadyExpiry() {
+    window.clearTimeout(actionReadyExpiryTimer);actionReadyExpiryTimer=0;
+    if(state.authoritative||!state.actionReady||!Number.isFinite(state.trustedUntil)||state.trustedUntil<=0)return;
+    const remaining=state.trustedUntil-Date.now();
+    if(remaining<=0){state.actionReady=false;render();announceEmbedBridgeReady();return;}
+    actionReadyExpiryTimer=window.setTimeout(()=>{
+      actionReadyExpiryTimer=0;
+      if(state.authoritative||!state.actionReady||Date.now()<state.trustedUntil)return;
+      state.actionReady=false;render();announceEmbedBridgeReady();
+    },Math.min(remaining+25,2147483000));
   }
 
   function materialCard(item,count) {
@@ -582,7 +598,12 @@
     return card;
   }
 
+  function downloadMaterialFingerprint(item) {
+    return [item&&item.id,item&&item.googleFileId,item&&item.folderId,item&&item.name,item&&item.downloadName,item&&item.mimeType,item&&item.size,item&&item.driveMd5,item&&item.updatedAt].map((value)=>String(value??'')).join('|');
+  }
+
   function applyBootstrapData(data,authoritative) {
+    const previousDownloadFingerprints=new Map(state.materials.filter(canPrepareDownload).map((item)=>[item.id,downloadMaterialFingerprint(item)]));
     state.task=data.task||state.task;
     if(data.folderUrl)state.folderUrl=data.folderUrl;
     if(data.serviceUrl)state.serviceUrl=data.serviceUrl;
@@ -603,30 +624,49 @@
     state.maxUploadBytes=data.maxUploadBytes||state.maxUploadBytes;
     state.claimRefreshNotBefore=0;
     state.bootstrapped=true;
-    state.authoritative=Boolean(authoritative);
-    downloadPrimeGeneration+=1;downloadGrants.clear();downloadGrantRetryNotBefore.clear();window.clearTimeout(downloadGrantRenewTimer);downloadGrantRenewTimer=0;
-    render();announceEmbedBridgeReady();
-    if(state.authoritative)scheduleDownloadGrantPrime(downloadPrimeGeneration);
+    state.authoritative=Boolean(authoritative&&data&&data.authoritative!==false);
+    state.fullySynced=state.authoritative;
+    const trustedUntil=Date.parse(String(data&&data.trustedUntil||''));
+    state.trustedUntil=Number.isFinite(trustedUntil)?trustedUntil:0;
+    state.actionReady=state.authoritative||Boolean(data&&data.actionReady===true&&state.trustedUntil>Date.now());
+    downloadPrimeGeneration+=1;downloadGrants.forEach((_record,pageId)=>{const current=state.materials.find((item)=>item.id===pageId);if(!canPrepareDownload(current)||previousDownloadFingerprints.get(pageId)!==downloadMaterialFingerprint(current))downloadGrants.delete(pageId);});downloadGrantRetryNotBefore.clear();window.clearTimeout(downloadGrantRenewTimer);downloadGrantRenewTimer=0;
+    scheduleActionReadyExpiry();render();announceEmbedBridgeReady();scheduleDownloadGrantPrime(downloadPrimeGeneration);
+  }
+
+  function scheduleCachedRefresh(delay) {
+    window.clearTimeout(cachedRefreshTimer);
+    cachedRefreshTimer=window.setTimeout(()=>{cachedRefreshTimer=0;refreshCachedBootstrap();},Math.max(0,Number(delay)||0));
+  }
+
+  async function refreshCachedBootstrap() {
+    if(!taskPageId||state.authoritative)return;
+    try {
+      const fresh=await call('apiBootstrap',{taskPageId,forceRefresh:true});
+      if(fresh.cached||fresh.authoritative!==true){
+        applyBootstrapData(fresh,false);
+        const staleError=new Error('Не удалось подтвердить актуальность данных.');staleError.retryable=true;throw staleError;
+      }
+      cachedRefreshAttempt=0;applyBootstrapData(fresh,true);
+      call('apiWarmCreateContext',{taskPageId}).catch(()=>{});
+      window.setTimeout(()=>pollDriveMetadata(false),2500);
+    } catch(error) {
+      const delays=[2000,5000,15000,30000,60000];
+      const delay=delays[Math.min(cachedRefreshAttempt,delays.length-1)];
+      if(cachedRefreshAttempt===0)toast(`Карточки показаны из последнего снимка. ${error.message}`);
+      cachedRefreshAttempt+=1;scheduleCachedRefresh(delay);
+    }
   }
 
   async function bootstrap() {
     clearFatal();
     if(!taskPageId){showFatal('В адресе виджета отсутствует корректный параметр task.');return;}
     try {
+      window.clearTimeout(cachedRefreshTimer);cachedRefreshTimer=0;cachedRefreshAttempt=0;
       const data=await call('apiBootstrap',{taskPageId});
-      applyBootstrapData(data,!data.cached&&data.authoritative!==false);
-      if(data.cached){
-        try {
-          const fresh=await call('apiBootstrap',{taskPageId,forceRefresh:true});
-          if(fresh.cached||fresh.authoritative!==true){const staleError=new Error('Не удалось подтвердить актуальность данных.');staleError.retryable=true;throw staleError;}
-          applyBootstrapData(fresh,true);
-        } catch(error) {
-          showFatal(`Карточки показаны из последнего снимка. ${error.message}`,Boolean(error.retryable));
-          return;
-        }
-      }
+      applyBootstrapData(data,!data.cached&&data.authoritative===true);
+      if(data.cached)scheduleCachedRefresh(0);
       call('apiWarmCreateContext',{taskPageId}).catch(()=>{});
-      window.setTimeout(()=>pollDriveMetadata(false),2500);
+      if(!data.cached)window.setTimeout(()=>pollDriveMetadata(false),2500);
     } catch(error) { showFatal(error.message,Boolean(error.retryable)); }
   }
 
@@ -746,7 +786,7 @@
   async function pollDriveMetadata(urgent,onlyPageIds) {
     const now=Date.now(),targets=new Set(Array.from(onlyPageIds||[]).map(normalizeUuid).filter(Boolean));
     if(urgent&&targets.size)targets.forEach((id)=>urgentDriveTargets.add(id));
-    if(!taskPageId||!state.bootstrapped)return;
+    if(!taskPageId||!state.bootstrapped||!state.authoritative)return;
     if(urgent) {
       if(!targets.size)drivePollCoordinates().forEach((item)=>urgentDriveTargets.add(item.pageId));
       if(state.busy.size){scheduleUrgentDriveRetry();return {refreshed:false};}
@@ -777,7 +817,7 @@
     record.timer=window.setTimeout(()=>{record.timer=0;pollCreateStatus(record.requestId,false);},delays[Math.min(record.attempts,delays.length-1)]);
   }
 
-  function startOptimisticCreate(section,requestId) {
+  function startOptimisticCreate(section,requestId,pollLedger) {
     const normalized=String(requestId||'').toLowerCase();
     if(!['Docs','Sheets','Slides'].includes(section)||!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(normalized))return;
     if(state.materials.some((item)=>String(item&&item.createRequestId||'').toLowerCase()===normalized)){announceEmbedBridgeReady();return;}
@@ -787,7 +827,21 @@
       state.materials.push({id:record.pendingId,name:pendingCreateName(section),section,format:section==='Docs'?'Google Docs':section==='Sheets'?'Google Sheets':'Google Slides',provider:'Google Drive',position:activeMaterials(section).length,syncStatus:'pending',widgetOwned:true,createRequestId:normalized});
       render();
     }
-    pollCreateStatus(normalized,true);
+    if(pollLedger!==false)pollCreateStatus(normalized,true);
+    return record;
+  }
+
+  function completeOptimisticCreate(requestId,material,announce) {
+    const normalized=String(requestId||'').toLowerCase(),record=pendingCreatePolls.get(normalized);
+    if(record){if(record.timer)window.clearTimeout(record.timer);pendingCreatePolls.delete(normalized);state.materials=state.materials.filter((item)=>item.id!==record.pendingId);}
+    upsert(material);if(material){recentCompletedCreates.set(normalized,material);recentDrivePageIds.add(material.id);}
+    render();if(announce!==false)announceEmbedBridgeReady();
+  }
+
+  function failOptimisticCreate(requestId,message) {
+    const record=pendingCreatePolls.get(String(requestId||'').toLowerCase()),pending=record&&state.materials.find((item)=>item.id===record.pendingId);
+    if(pending){pending.syncStatus='error';pending.error=String(message||'Создание не завершилось. Повторите нажатие.').slice(0,500);render();}
+    if(record)scheduleCreateStatus(record);
   }
 
   function repairCreatedFileMarker(record,attempt) {
@@ -806,9 +860,7 @@
     try {
       const data=await call('apiGetCreateStatus',{taskPageId,section:record.section,createRequestId:record.requestId});
       if(data.status==='done'&&data.material){
-        pendingCreatePolls.delete(record.requestId);state.materials=state.materials.filter((item)=>item.id!==record.pendingId);upsert(data.material);
-        recentCompletedCreates.set(record.requestId,data.material);
-        recentDrivePageIds.add(data.material.id);render();announceEmbedBridgeReady();
+        completeOptimisticCreate(record.requestId,data.material,true);
         repairCreatedFileMarker(record,0);return;
       }
       const pending=state.materials.find((item)=>item.id===record.pendingId);
@@ -823,27 +875,31 @@
   }
 
   async function createGoogle(section,bridgeRequest) {
-    if(!state.authoritative){toast('Завершаю синхронизацию…');return;}
-    if(state.busy.has(`create:${section}`))return;
+    const reply=(payload)=>{if(bridgeRequest)replyToEmbedBridge(bridgeRequest.source,bridgeRequest.origin,Object.assign({type:'notion-widget-v20-primary-result',requestId:bridgeRequest.requestId},payload));};
+    if(!(state.actionReady===true||state.authoritative)){toast('Завершаю синхронизацию…');reply({ok:false,message:'Создание ещё подготавливается. Повторите нажатие.',retryable:true});return;}
+    if(state.busy.has(`create:${section}`)){reply({ok:false,message:'Создание этого файла уже выполняется.',retryable:true});return;}
     const popup=bridgeRequest?null:window.open('about:blank','_blank');
     if(popup)writeCourier(popup,'Создаю файл…');
     const operation=bridgeRequest?{value:bridgeRequest.requestId}:stableIdempotency('create-google',section);state.busy.add(`create:${section}`);render();
+    if(bridgeRequest)startOptimisticCreate(section,bridgeRequest.requestId,false);
     try {
       const data=await call('apiCreateGoogle',{taskPageId,section,idempotencyKey:operation.value});
-      if(!bridgeRequest)clearIdempotency(operation);upsert(data.material);render();
-      if(bridgeRequest){replyToEmbedBridge(bridgeRequest.source,bridgeRequest.origin,{type:'notion-widget-v20-primary-result',requestId:bridgeRequest.requestId,ok:true,openUrl:data.material&&data.material.openUrl||''});}
-      else if(data.material&&data.material.openUrl){if(popup&&!popup.closed){try{popup.opener=null;}catch(_error){}popup.location.replace(data.material.openUrl);}else window.open(data.material.openUrl,'_blank','noopener,noreferrer');}
-      else if(popup&&!popup.closed)popup.close();
+      if(bridgeRequest){completeOptimisticCreate(bridgeRequest.requestId,data.material,false);reply({ok:true,openUrl:data.material&&data.material.openUrl||''});announceEmbedBridgeReady();}
+      else {
+        clearIdempotency(operation);upsert(data.material);render();
+        if(data.material&&data.material.openUrl){if(popup&&!popup.closed){try{popup.opener=null;}catch(_error){}popup.location.replace(data.material.openUrl);}else window.open(data.material.openUrl,'_blank','noopener,noreferrer');}
+        else if(popup&&!popup.closed)popup.close();
+      }
       toast(data.duplicate?'Файл уже был создан':'Файл создан и сохранён как знание');
     } catch(error) {
-      if(bridgeRequest)replyToEmbedBridge(bridgeRequest.source,bridgeRequest.origin,{type:'notion-widget-v20-primary-result',requestId:bridgeRequest.requestId,ok:false,message:error.message,retryable:Boolean(error.retryable)});
+      if(bridgeRequest){failOptimisticCreate(bridgeRequest.requestId,error.message);reply({ok:false,message:error.message,retryable:Boolean(error.retryable)});}
       else {if(popup&&!popup.closed)popup.close();showFatal(error.message,Boolean(error.retryable));}
     }
     finally { state.busy.delete(`create:${section}`);render(); }
   }
 
   function openLinkModal(section) {
-    if(!state.authoritative){toast('Завершаю синхронизацию…');return;}
+    if(!(state.actionReady||state.authoritative)){toast('Завершаю синхронизацию…');return;}
     $('linkSection').value=section;$('linkUrl').value='';openModal('linkModal');setTimeout(()=>$('linkUrl').focus(),40);
   }
 
@@ -859,7 +915,7 @@
   }
 
   function chooseFiles(section) {
-    if(!state.authoritative){toast('Завершаю синхронизацию…');return;}
+    if(!(state.actionReady||state.authoritative)){toast('Завершаю синхронизацию…');return;}
     const input=$('fileInput');input.dataset.section=section;input.click();
   }
 
@@ -915,8 +971,8 @@
 
   function announceEmbedBridgeReady() {
     if(!isEmbedBridgeMode()||!state.bootstrapped)return;
-    const completedCreateRequestIds=state.materials.map((item)=>String(item&&item.createRequestId||'').toLowerCase()).filter((value,index,all)=>/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)&&all.indexOf(value)===index).slice(0,100);
-    postToEmbedAncestors({type:'notion-widget-v20-bridge-ready',instanceId:bridgeInstanceId,authoritative:state.authoritative,folderUrl:state.authoritative&&state.folderUrl||'',completedCreateRequestIds,geometry:primaryGeometry(),viewport:{width:window.innerWidth,height:window.innerHeight}});
+    const completedCreateRequestIds=state.materials.filter((item)=>item&&!String(item.id||'').startsWith('pending:')&&item.syncStatus!=='pending').map((item)=>String(item.createRequestId||'').toLowerCase()).filter((value,index,all)=>/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)&&all.indexOf(value)===index).slice(0,100);
+    postToEmbedAncestors({type:'notion-widget-v20-bridge-ready',instanceId:bridgeInstanceId,authoritative:state.authoritative,actionReady:state.actionReady===true||state.authoritative,folderUrl:(state.actionReady||state.authoritative)&&state.folderUrl||'',completedCreateRequestIds,geometry:primaryGeometry(),viewport:{width:window.innerWidth,height:window.innerHeight}});
   }
 
   function postEmbedBridgeGeometry() {
@@ -941,7 +997,7 @@
     if(data.type==='notion-widget-v20-create-started'&&['Docs','Sheets','Slides'].includes(data.section)&&/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(String(data.requestId||'').toLowerCase())){
       startOptimisticCreate(data.section,data.requestId);return;
     }
-    if(data.type==='notion-widget-v20-primary-action'&&SECTIONS.includes(data.section)&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(data.requestId||''))){
+    if(data.type==='notion-widget-v20-primary-action'&&SECTIONS.includes(data.section)&&/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(String(data.requestId||'').toLowerCase())){
       if(data.section==='Drive'){
         replyToEmbedBridge(event.source,event.origin,{type:'notion-widget-v20-primary-result',requestId:data.requestId,ok:Boolean(state.folderUrl),openUrl:state.folderUrl||'',message:state.folderUrl?'':'Папка задачи ещё создаётся'});
       } else {
@@ -998,10 +1054,16 @@
     const materialId=normalizeUuid(item&&item.id),record=materialId&&downloadGrants.get(materialId);
     const expiresAt=Date.parse(String(record&&record.expiresAt||'')),grant=String(record&&record.downloadGrant||'');
     if(!record||!/^[a-f0-9]{96}$/.test(grant)||!Number.isFinite(expiresAt)||expiresAt<=Date.now()+5000){
-      if(materialId)downloadGrants.delete(materialId);
       return '';
     }
     return grant;
+  }
+
+  function freshDownloadPackage(item) {
+    const materialId=normalizeUuid(item&&item.id),record=materialId&&downloadGrants.get(materialId);
+    const expiresAt=Date.parse(String(record&&record.packageExpiresAt||'')),value=String(record&&record.downloadPackage||'');
+    if(!record||!/^[A-Za-z0-9_-]{40,9000}$/.test(value)||!Number.isFinite(expiresAt)||expiresAt<=Date.now()+1000||expiresAt-Date.now()>60000)return '';
+    return value;
   }
 
   function downloadCardIsVisible(pageId) {
@@ -1017,16 +1079,19 @@
   function downloadGrantNeedsRefresh(item,includeMissing) {
     const materialId=normalizeUuid(item&&item.id),record=materialId&&downloadGrants.get(materialId);
     if(!materialId||!record)return Boolean(includeMissing&&materialId&&Number(downloadGrantRetryNotBefore.get(materialId)||0)<=Date.now());
-    const expiresAt=Date.parse(String(record.expiresAt||'')),grant=String(record.downloadGrant||'');
-    if(!/^[a-f0-9]{96}$/.test(grant)||!Number.isFinite(expiresAt)||expiresAt<=Date.now()+5000)return Boolean(includeMissing);
+    const grantExpiresAt=Date.parse(String(record.expiresAt||'')),packageExpiresAt=Date.parse(String(record.packageExpiresAt||''));
+    const grantValid=/^[a-f0-9]{96}$/.test(String(record.downloadGrant||''))&&Number.isFinite(grantExpiresAt)&&grantExpiresAt>Date.now()+5000;
+    const packageValid=/^[A-Za-z0-9_-]{40,9000}$/.test(String(record.downloadPackage||''))&&Number.isFinite(packageExpiresAt)&&packageExpiresAt>Date.now()+1000&&packageExpiresAt-Date.now()<=60000;
+    if(!packageValid)return Boolean(includeMissing||grantValid);
     const refreshNotBefore=Number(record.refreshNotBefore||0);
-    return expiresAt<=Date.now()+DOWNLOAD_GRANT_RENEW_LEAD_MS&&(!refreshNotBefore||refreshNotBefore<=Date.now());
+    return packageExpiresAt<=Date.now()+DOWNLOAD_GRANT_RENEW_LEAD_MS&&(!refreshNotBefore||refreshNotBefore<=Date.now());
   }
 
   function deferDownloadGrantRefresh(materialId,permanent) {
     const record=downloadGrants.get(materialId);
     if(!record){downloadGrantRetryNotBefore.set(materialId,permanent?Number.POSITIVE_INFINITY:Date.now()+DOWNLOAD_GRANT_RETRY_DELAY_MS);return;}
-    const now=Date.now(),expiresAt=Date.parse(String(record.expiresAt||''));
+    const now=Date.now(),grantExpiry=Date.parse(String(record.expiresAt||'')),packageExpiry=Date.parse(String(record.packageExpiresAt||''));
+    const expiresAt=Number.isFinite(packageExpiry)?packageExpiry:grantExpiry;
     record.refreshFailures=Number(record.refreshFailures||0)+1;
     if(!Number.isFinite(expiresAt)||permanent||record.refreshFailures>=2){record.refreshNotBefore=Number.isFinite(expiresAt)?expiresAt:now+DOWNLOAD_GRANT_RETRY_DELAY_MS;return;}
     const retryAt=Math.min(expiresAt-5500,now+DOWNLOAD_GRANT_RETRY_DELAY_MS*record.refreshFailures);
@@ -1035,16 +1100,16 @@
 
   function scheduleDownloadGrantRenewal() {
     window.clearTimeout(downloadGrantRenewTimer);downloadGrantRenewTimer=0;
-    if(!state.authoritative||document.visibilityState==='hidden')return;
+    if(!state.bootstrapped||document.visibilityState==='hidden')return;
     const now=Date.now();let nextAt=Number.POSITIVE_INFINITY;
     downloadGrants.forEach((record,pageId)=>{
       const item=state.materials.find((candidate)=>candidate.id===pageId);
       if(!canPrepareDownload(item)||!downloadCardIsVisible(pageId))return;
-      const expiresAt=Date.parse(String(record&&record.expiresAt||'')),grant=String(record&&record.downloadGrant||'');
-      if(!/^[a-f0-9]{96}$/.test(grant)||!Number.isFinite(expiresAt)||expiresAt<=now+5000)return;
+      const expiresAt=Date.parse(String(record&&record.packageExpiresAt||'')),downloadPackage=String(record&&record.downloadPackage||'');
+      if(!/^[A-Za-z0-9_-]{40,9000}$/.test(downloadPackage)||!Number.isFinite(expiresAt)||expiresAt<=now+1000)return;
       const refreshNotBefore=Number(record.refreshNotBefore||0);
       const candidate=Math.max(now+250,expiresAt-DOWNLOAD_GRANT_RENEW_LEAD_MS,refreshNotBefore||0);
-      if(candidate>=expiresAt-5000)return;
+      if(candidate>=expiresAt-1000)return;
       nextAt=Math.min(nextAt,candidate);
     });
     if(!Number.isFinite(nextAt))return;
@@ -1061,7 +1126,7 @@
 
   function primeDownloadGrant(pageId,generation) {
     const materialId=normalizeUuid(pageId),item=state.materials.find((candidate)=>candidate.id===materialId);
-    if(!materialId||generation!==downloadPrimeGeneration||!state.authoritative||!canPrepareDownload(item))return Promise.resolve();
+    if(!materialId||generation!==downloadPrimeGeneration||!state.bootstrapped||!canPrepareDownload(item))return Promise.resolve();
     const active=downloadGrantPrimeInFlight.get(materialId);
     if(active)return active.then(()=>{
       const current=state.materials.find((candidate)=>candidate.id===materialId);
@@ -1070,12 +1135,14 @@
     const request=(async()=>{
       try{
         const data=await call('apiPrepareDownload',{taskPageId,pageId:materialId});
-        if(generation!==downloadPrimeGeneration||!state.authoritative)return;
+        if(generation!==downloadPrimeGeneration||!state.bootstrapped)return;
         const current=state.materials.find((candidate)=>candidate.id===materialId);
         const expiresAt=Date.parse(String(data&&data.expiresAt||'')),grant=String(data&&data.downloadGrant||'');
+        const packageExpiresAt=Date.parse(String(data&&data.packageExpiresAt||'')),downloadPackage=String(data&&data.downloadPackage||'');
+        const packageValid=/^[A-Za-z0-9_-]{40,9000}$/.test(downloadPackage)&&Number.isFinite(packageExpiresAt)&&packageExpiresAt>Date.now()+1000&&packageExpiresAt-Date.now()<=60000;
         if(current&&canPrepareDownload(current)&&data&&data.mode==='grant'&&/^[a-f0-9]{96}$/.test(grant)&&Number.isFinite(expiresAt)&&expiresAt>Date.now()+5000){
           downloadGrantRetryNotBefore.delete(materialId);
-          downloadGrants.set(materialId,{downloadGrant:grant,expiresAt:new Date(expiresAt).toISOString(),refreshNotBefore:0,refreshFailures:0});refreshDownloadGrantLink(materialId);
+          downloadGrants.set(materialId,{downloadGrant:grant,expiresAt:new Date(expiresAt).toISOString(),downloadPackage:packageValid?downloadPackage:'',packageExpiresAt:packageValid?new Date(packageExpiresAt).toISOString():'',refreshNotBefore:0,refreshFailures:0});refreshDownloadGrantLink(materialId);
         }else deferDownloadGrantRefresh(materialId,true);
       }catch(_error){if(generation===downloadPrimeGeneration)deferDownloadGrantRefresh(materialId,false);}
     })().finally(()=>{
@@ -1086,7 +1153,7 @@
   }
 
   async function refreshVisibleDownloadGrants(includeMissing) {
-    if(!state.authoritative||document.visibilityState==='hidden')return;
+    if(!state.bootstrapped||document.visibilityState==='hidden')return;
     const candidates=state.materials.filter((item)=>canPrepareDownload(item)&&downloadCardIsVisible(item.id)&&downloadGrantNeedsRefresh(item,includeMissing))
       .map((item)=>normalizeUuid(item.id)).filter(Boolean);
     let cursor=0;
@@ -1116,17 +1183,21 @@
   }
 
   function downloadCourierHref(item) {
-    const materialId=normalizeUuid(item&&item.id),ticket=freshDownloadGrant(item)||strongDownloadTicket();
-    if(!state.authoritative||!canPrepareDownload(item)||!state.serviceUrl||!taskPageId||!materialId||!ticket||!/^[A-Za-z0-9._~-]{32,256}$/.test(accessToken))return '';
+    const materialId=normalizeUuid(item&&item.id);
+    if(!state.bootstrapped||!canPrepareDownload(item)||!taskPageId||!materialId)return '';
     try {
+      const courier=new URL(DOWNLOAD_COURIER_URL);
+      if(courier.protocol!=='https:'||courier.origin!=='https:\/\/ravilvaliev1999-spec.github.io'||courier.pathname!=='/notion-widgets/download-courier.html'||courier.search||courier.hash)return '';
+      const downloadPackage=freshDownloadPackage(item);
+      if(downloadPackage)return `${courier.href}#v3=${downloadPackage}`;
+      const ticket=freshDownloadGrant(item)||strongDownloadTicket();
+      if(!state.serviceUrl||!ticket||!/^[A-Za-z0-9._~-]{32,256}$/.test(accessToken))return '';
       const service=new URL(state.serviceUrl);
       if(service.protocol!=='https:'||service.hostname!=='script.google.com'||service.port||service.username||service.password||service.search||service.hash||!/^\/macros\/s\/[A-Za-z0-9_-]{20,}\/exec$/.test(service.pathname))return '';
       service.searchParams.set('task',taskPageId);
       service.searchParams.set('accessToken',accessToken);
       service.searchParams.set('downloadPageId',materialId);
       service.searchParams.set('downloadTicket',ticket);
-      const courier=new URL(DOWNLOAD_COURIER_URL);
-      if(courier.protocol!=='https:'||courier.origin!=='https:\/\/ravilvaliev1999-spec.github.io'||courier.pathname!=='/notion-widgets/download-courier.html'||courier.search||courier.hash)return '';
       return `${courier.href}#v1=${encodeCourierFragment(service.href)}`;
     } catch (_error) { return ''; }
   }
@@ -1193,7 +1264,7 @@
     const itemCard=event.target.closest('[data-item-id]');if(itemCard){if(itemCard.tagName==='A'){if(itemCard.dataset.directOpen==='true')recentDrivePageIds.add(itemCard.dataset.itemId);return;}const item=state.materials.find(material=>material.id===itemCard.dataset.itemId);if(item)openExact(item);return;}
     const service=event.target.closest('[data-service]');if(!service)return;const section=service.dataset.service;
     if(isEmbedBridgeMode())return;
-    if(!state.authoritative){toast('Завершаю синхронизацию…');return;}
+    if(!(state.actionReady||state.authoritative)){toast('Завершаю синхронизацию…');return;}
     if(section==='Drive'){if(state.folderUrl)window.open(state.folderUrl,'_blank','noopener,noreferrer');else toast('Папка задачи ещё создаётся');return;}
     createGoogle(section);
   }
