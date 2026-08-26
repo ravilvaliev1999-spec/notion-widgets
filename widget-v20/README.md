@@ -20,7 +20,7 @@
 
 Apps Script выполняется от имени владельца. Публичный iframe не зависит от Google cookies: каждый вызов требует случайный capability token, его SHA-256 хранится в Script Properties, а сам token привязан к единственному `AUTHORIZED_TASK_PAGE_ID`. Backend дополнительно проверяет data source, тип задачи, relation каждого знания и принадлежность Drive-файла корневой папке виджета. Пятиисекундный опрос использует короткоживущую HMAC-подпись серверно подтверждённой пары task/page/file и текущих метаданных, поэтому клиент не может подменить карточку или заставить backend бесконечно записывать в Notion.
 
-Секреты и URL развертывания не входят в репозиторий.
+Секреты не входят в репозиторий. Публичный URL production-развертывания зафиксирован только в статической embed-оболочке; capability token передаётся ей во фрагменте URL и не уходит в HTTP-запрос GitHub Pages.
 
 ## Файлы
 
@@ -32,6 +32,7 @@ Apps Script выполняется от имени владельца. Публ�
 - `appsscript.json` — V8, Drive v3 и web-app deployment.
 - `ScriptProperties.example.json` — перечень обязательных свойств без секретов.
 - `tests/` — исполняемые regression/security contracts.
+- `../apps-script-embed.html` и `../apps-script-embed.js` — credentialless-оболочка для браузеров с несколькими Google-аккаунтами и безопасный мост открытия только что созданного файла.
 
 ## Script Properties
 
@@ -54,7 +55,9 @@ Apps Script выполняется от имени владельца. Публ�
 2. Записать Script Properties.
 3. Выполнить `adminSetupRootFolder()`, затем `adminPreflight()` и `adminInstallSyncTrigger()`.
 4. Развернуть web app как `USER_DEPLOYING` с доступом `ANYONE_ANONYMOUS`.
-5. Встроить URL вида `.../exec?task=<TASK_UUID>&accessToken=<RANDOM_TOKEN>` только в авторизованную задачу Notion.
+5. Встроить в авторизованную задачу Notion URL вида `https://ravilvaliev1999-spec.github.io/notion-widgets/apps-script-embed.html#task=<TASK_UUID>&accessToken=<RANDOM_TOKEN>&release=<RELEASE>`.
+
+Оболочка изолирует публичный Apps Script iframe от Google multi-login cookies, принимает capability token только во фрагменте URL и валидирует `task`, `accessToken` и `release`. Штатный карандаш Apps Script напрямую открывает системный выбор файла — содержимое локального файла не пересылается через оболочку. Невидимый слой перехватывает только основное нажатие Docs/Sheets/Slides, синхронно резервирует вкладку и после ответа backend направляет её ровно на созданный файл.
 
 ## Проверка
 
@@ -62,7 +65,7 @@ Apps Script выполняется от имени владельца. Публ�
 node --test tests/*.test.mjs
 ```
 
-Текущий regression/security suite: 87 тестов.
+Текущий regression/security suite: 92 теста.
 
 Локальный безопасный preview:
 

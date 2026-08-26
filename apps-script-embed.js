@@ -1,0 +1,220 @@
+(() => {
+  'use strict';
+
+  const DEPLOYMENT_URL = 'https://script.google.com/macros/s/AKfycbxrGUXhfRsvqjUrLSDFyhmjl3bJjbx-XtOjicHh7E7dAUVJW6Qi2F_K889ckvOCzu7KiQ/exec';
+  const SECTIONS = ['Drive', 'Docs', 'Sheets', 'Slides'];
+  const widget = document.getElementById('widget');
+  const interactionGrid = document.getElementById('interactionGrid');
+  const fatal = document.getElementById('fatal');
+  const pendingActions = new Map();
+  const embedNonce = randomId().replace(/-/g, '');
+  let bridge = null;
+  let noticeTimer = 0;
+
+  function randomId() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+    const bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+
+  function parseRuntimeParams() {
+    if (location.hash.length <= 1) return null;
+    const source = new URLSearchParams(location.hash.slice(1));
+    const task = String(source.get('task') || source.get('taskPageId') || '').toLowerCase();
+    const accessToken = String(source.get('accessToken') || '');
+    const release = String(source.get('release') || '');
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(task)) return null;
+    if (!/^[A-Za-z0-9._~-]{32,256}$/.test(accessToken)) return null;
+    if (release && !/^[A-Za-z0-9._-]{1,80}$/.test(release)) return null;
+    const allowed = new URLSearchParams({ task, accessToken, embedNonce });
+    if (release) allowed.set('release', release);
+    return allowed;
+  }
+
+  function showFatal(message) {
+    fatal.textContent = message;
+    fatal.hidden = false;
+    interactionGrid.hidden = true;
+  }
+
+  function showNotice(message) {
+    window.clearTimeout(noticeTimer);
+    fatal.textContent = message;
+    fatal.hidden = false;
+    noticeTimer = window.setTimeout(() => {
+      fatal.hidden = true;
+      fatal.textContent = '';
+    }, 5000);
+  }
+
+  function isGoogleScriptOrigin(origin) {
+    try {
+      const url = new URL(origin);
+      return url.protocol === 'https:' && (url.hostname === 'script.google.com' || url.hostname.endsWith('.googleusercontent.com'));
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function isWidgetDescendant(source) {
+    const root = widget.contentWindow;
+    if (!root || !source) return false;
+    const visit = (target, depth) => {
+      if (target === source) return true;
+      if (depth >= 4) return false;
+      let length = 0;
+      try { length = Math.min(Number(target.length) || 0, 8); } catch (_error) { return false; }
+      for (let index = 0; index < length; index += 1) {
+        try { if (visit(target.frames[index], depth + 1)) return true; } catch (_error) {}
+      }
+      return false;
+    };
+    return visit(root, 0);
+  }
+
+  function isCurrentBridgeEvent(event) {
+    return Boolean(bridge && event.source === bridge.source && event.origin === bridge.origin);
+  }
+
+  function sendToBridge(message) {
+    if (!bridge) return false;
+    try {
+      bridge.source.postMessage(Object.assign({}, message, { embedNonce }), bridge.origin);
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function sendPending(record) {
+    if (!bridge || record.sentInstance === bridge.instanceId) return;
+    if (sendToBridge(record.message)) record.sentInstance = bridge.instanceId;
+  }
+
+  function sendAllPending() {
+    pendingActions.forEach(sendPending);
+  }
+
+  function setSectionDisabled(section, disabled) {
+    interactionGrid.querySelectorAll(`[data-section="${section}"]`).forEach((control) => { control.disabled = disabled; });
+  }
+
+  function allowedGoogleOpenUrl(value) {
+    try {
+      const url = new URL(String(value || ''));
+      return url.protocol === 'https:' && !url.port && !url.username && !url.password &&
+        (url.hostname === 'docs.google.com' || url.hostname === 'drive.google.com');
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function finishPrimaryAction(data) {
+    const record = pendingActions.get(String(data.requestId || ''));
+    if (!record) return;
+    window.clearTimeout(record.timeout);
+    pendingActions.delete(record.message.requestId);
+    setSectionDisabled(record.message.section, false);
+    if (data.ok && allowedGoogleOpenUrl(data.openUrl)) {
+      try {
+        record.popup.opener = null;
+        record.popup.location.replace(data.openUrl);
+      } catch (_error) {
+        try { record.popup.close(); } catch (_closeError) {}
+        showNotice('Файл создан. Нажмите его карточку, чтобы открыть.');
+      }
+      return;
+    }
+    try { record.popup.close(); } catch (_error) {}
+    showNotice(String(data.message || 'Не удалось выполнить действие. Повторите ещё раз.'));
+  }
+
+  function handleWidgetMessage(event) {
+    const data = event.data;
+    if (!data || data.embedNonce !== embedNonce || !isGoogleScriptOrigin(event.origin)) return;
+    if (data.type === 'notion-widget-v20-bridge-ready') {
+      if (!isWidgetDescendant(event.source) || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(data.instanceId || ''))) return;
+      bridge = { source: event.source, origin: event.origin, instanceId: data.instanceId };
+      interactionGrid.hidden = false;
+      fatal.hidden = true;
+      sendAllPending();
+      return;
+    }
+    if (!isCurrentBridgeEvent(event)) return;
+    if (data.type === 'notion-widget-v20-primary-result') finishPrimaryAction(data);
+  }
+
+  function writePlaceholder(popup, section) {
+    const label = section === 'Drive' ? 'Открываю папку…' : 'Создаю файл…';
+    try {
+      popup.document.open();
+      popup.document.write(`<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>${label}</title><body style="margin:0;background:#191919;color:#e6e6e4;font:14px system-ui;display:grid;place-items:center;min-height:100vh;text-align:center"><p role="status" style="margin:24px;max-width:340px">${label}</p></body></html>`);
+      popup.document.close();
+    } catch (_error) {}
+  }
+
+  function startPrimaryAction(section) {
+    const sectionBusy = Array.from(pendingActions.values()).some((record) => record.message.section === section);
+    if (!bridge || !SECTIONS.includes(section) || sectionBusy) return;
+    const popup = window.open('about:blank', '_blank');
+    if (!popup) {
+      showNotice('Браузер заблокировал новую вкладку. Разрешите всплывающие окна для Notion и повторите.');
+      return;
+    }
+    writePlaceholder(popup, section);
+    const requestId = randomId();
+    const message = { type: 'notion-widget-v20-primary-action', requestId, section };
+    const record = { message, popup, sentInstance: '', timeout: 0 };
+    record.timeout = window.setTimeout(() => {
+      if (!pendingActions.has(requestId)) return;
+      pendingActions.delete(requestId);
+      try { popup.close(); } catch (_error) {}
+      setSectionDisabled(section, false);
+      showNotice('Сервис отвечает слишком долго. Повторите действие.');
+    }, 120000);
+    pendingActions.set(requestId, record);
+    setSectionDisabled(section, true);
+    sendPending(record);
+  }
+
+  function installInteractionControls() {
+    interactionGrid.querySelectorAll('[data-slot]').forEach((slot) => {
+      const section = slot.dataset.slot;
+      if (!SECTIONS.includes(section)) return;
+
+      const primary = document.createElement('button');
+      primary.type = 'button';
+      primary.className = 'primary-control';
+      primary.dataset.section = section;
+      primary.setAttribute('aria-label', section === 'Drive' ? 'Открыть папку задачи' : `Создать новый файл ${section}`);
+      primary.addEventListener('click', () => startPrimaryAction(section));
+      primary.addEventListener('pointerenter', () => sendToBridge({ type: 'notion-widget-v20-primary-hover', section, active: true }));
+      primary.addEventListener('pointerleave', () => sendToBridge({ type: 'notion-widget-v20-primary-hover', section, active: false }));
+      slot.appendChild(primary);
+
+      const tail = document.createElement('button');
+      tail.type = 'button';
+      tail.className = 'primary-control-tail';
+      tail.dataset.section = section;
+      tail.tabIndex = -1;
+      tail.setAttribute('aria-hidden', 'true');
+      tail.addEventListener('click', () => startPrimaryAction(section));
+      tail.addEventListener('pointerenter', () => sendToBridge({ type: 'notion-widget-v20-primary-hover', section, active: true }));
+      tail.addEventListener('pointerleave', () => sendToBridge({ type: 'notion-widget-v20-primary-hover', section, active: false }));
+      slot.appendChild(tail);
+    });
+  }
+
+  const params = parseRuntimeParams();
+  if (!params) {
+    showFatal('Ссылка виджета неполная или повреждена. Секретный ключ должен находиться после символа #.');
+    return;
+  }
+  installInteractionControls();
+  window.addEventListener('message', handleWidgetMessage);
+  widget.src = `${DEPLOYMENT_URL}?${params.toString()}`;
+})();

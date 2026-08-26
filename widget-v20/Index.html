@@ -73,7 +73,7 @@
     min-width: 20px; text-align: center;
     transition: background-color 200ms ease;
   }
-  .btn:hover .count { background: rgba(255,255,255,.16); }
+  .btn:hover .count, .btn.bridge-hover .count { background: rgba(255,255,255,.16); }
 
   .chevron {
     flex: 0 0 auto; margin-left: 2px;
@@ -85,10 +85,10 @@
   .btn.blue   { background: var(--blue-bg);   color: var(--blue-text); }
   .btn.green  { background: var(--green-bg);  color: var(--green-text); }
   .btn.orange { background: var(--orange-bg); color: var(--orange-text); }
-  .btn.gray:hover   { background: var(--gray-bg-h);   border-color: var(--border-hover); box-shadow: 0 12px 32px -12px var(--gray-glow); }
-  .btn.blue:hover   { background: var(--blue-bg-h);   border-color: var(--border-hover); box-shadow: 0 12px 32px -12px var(--blue-glow); }
-  .btn.green:hover  { background: var(--green-bg-h);  border-color: var(--border-hover); box-shadow: 0 12px 32px -12px var(--green-glow); }
-  .btn.orange:hover { background: var(--orange-bg-h); border-color: var(--border-hover); box-shadow: 0 12px 32px -12px var(--orange-glow); }
+  .btn.gray:hover, .btn.gray.bridge-hover     { background: var(--gray-bg-h);   border-color: var(--border-hover); box-shadow: 0 12px 32px -12px var(--gray-glow); }
+  .btn.blue:hover, .btn.blue.bridge-hover     { background: var(--blue-bg-h);   border-color: var(--border-hover); box-shadow: 0 12px 32px -12px var(--blue-glow); }
+  .btn.green:hover, .btn.green.bridge-hover   { background: var(--green-bg-h);  border-color: var(--border-hover); box-shadow: 0 12px 32px -12px var(--green-glow); }
+  .btn.orange:hover, .btn.orange.bridge-hover { background: var(--orange-bg-h); border-color: var(--border-hover); box-shadow: 0 12px 32px -12px var(--orange-glow); }
 
   .files {
     display: flex; flex-direction: column; gap: 8px;
@@ -289,11 +289,14 @@
   const params = new URLSearchParams(window.location.search);
   let taskPageId = normalizeUuid(params.get('task') || params.get('taskPageId'));
   let accessToken = params.get('accessToken') || '';
+  let embedNonce = params.get('embedNonce') || '';
   const isLocal = location.protocol === 'file:' || ['localhost','127.0.0.1','::1'].includes(location.hostname);
   const isPublishedCanary = location.hostname.toLowerCase() === 'ravilvaliev1999-spec.github.io';
   const requestedMock = params.get('mock') === '1';
   const mockRequested = requestedMock && (isLocal || isPublishedCanary);
   const DOWNLOAD_COURIER_URL = 'https:\/\/ravilvaliev1999-spec.github.io/notion-widgets/download-courier.html';
+  const EMBED_BRIDGE_ORIGIN = 'https:\/\/ravilvaliev1999-spec.github.io';
+  const bridgeInstanceId = uid();
   const state = { task:null, folderUrl:null, serviceUrl:null, materials:[], busy:new Set(), syncing:false, drivePolling:false, claimRefreshNotBefore:0, bootstrapped:false, maxUploadBytes:8388608, dragId:null, mock:false };
   const retryUpload = new Map();
   const memoryIdempotency = new Map();
@@ -323,6 +326,7 @@
           const runtimeParams=location&&location.parameter||{};
           taskPageId=normalizeUuid(runtimeParams.task||runtimeParams.taskPageId||taskPageId);
           accessToken=String(runtimeParams.accessToken||accessToken||'');
+          embedNonce=String(runtimeParams.embedNonce||embedNonce||'');
           finish();
         });
       } catch(_error) { finish(); }
@@ -556,7 +560,7 @@
     if(!taskPageId){showFatal('В адресе виджета отсутствует корректный параметр task.');return;}
     try {
       const data=await call('apiBootstrap',{taskPageId});
-      state.task=data.task;state.folderUrl=data.folderUrl;state.serviceUrl=data.serviceUrl||null;state.materials=data.materials||[];state.maxUploadBytes=data.maxUploadBytes||state.maxUploadBytes;state.claimRefreshNotBefore=0;state.bootstrapped=true;render();
+      state.task=data.task;state.folderUrl=data.folderUrl;state.serviceUrl=data.serviceUrl||null;state.materials=data.materials||[];state.maxUploadBytes=data.maxUploadBytes||state.maxUploadBytes;state.claimRefreshNotBefore=0;state.bootstrapped=true;render();announceEmbedBridgeReady();
     } catch(error) { showFatal(error.message,Boolean(error.retryable)); }
   }
 
@@ -605,18 +609,22 @@
     finally { state.drivePolling=false; }
   }
 
-  async function createGoogle(section) {
+  async function createGoogle(section,bridgeRequest) {
     if(state.busy.has(`create:${section}`))return;
-    const popup=window.open('about:blank','_blank');
+    const popup=bridgeRequest?null:window.open('about:blank','_blank');
     if(popup)writeCourier(popup,'Создаю файл…');
-    const operation=stableIdempotency('create-google',section);state.busy.add(`create:${section}`);render();
+    const operation=bridgeRequest?{value:bridgeRequest.requestId}:stableIdempotency('create-google',section);state.busy.add(`create:${section}`);render();
     try {
       const data=await call('apiCreateGoogle',{taskPageId,section,idempotencyKey:operation.value});
-      clearIdempotency(operation);upsert(data.material);render();
-      if(data.material&&data.material.openUrl){if(popup&&!popup.closed){try{popup.opener=null;}catch(_error){}popup.location.replace(data.material.openUrl);}else window.open(data.material.openUrl,'_blank','noopener,noreferrer');}
+      if(!bridgeRequest)clearIdempotency(operation);upsert(data.material);render();
+      if(bridgeRequest){replyToEmbedBridge(bridgeRequest.source,bridgeRequest.origin,{type:'notion-widget-v20-primary-result',requestId:bridgeRequest.requestId,ok:true,openUrl:data.material&&data.material.openUrl||''});}
+      else if(data.material&&data.material.openUrl){if(popup&&!popup.closed){try{popup.opener=null;}catch(_error){}popup.location.replace(data.material.openUrl);}else window.open(data.material.openUrl,'_blank','noopener,noreferrer');}
       else if(popup&&!popup.closed)popup.close();
       toast(data.duplicate?'Файл уже был создан':'Файл создан и сохранён как знание');
-    } catch(error) { if(popup&&!popup.closed)popup.close();showFatal(error.message,Boolean(error.retryable)); }
+    } catch(error) {
+      if(bridgeRequest)replyToEmbedBridge(bridgeRequest.source,bridgeRequest.origin,{type:'notion-widget-v20-primary-result',requestId:bridgeRequest.requestId,ok:false,message:error.message,retryable:Boolean(error.retryable)});
+      else {if(popup&&!popup.closed)popup.close();showFatal(error.message,Boolean(error.retryable));}
+    }
     finally { state.busy.delete(`create:${section}`);render(); }
   }
 
@@ -637,6 +645,55 @@
 
   function chooseFiles(section) {
     const input=$('fileInput');input.dataset.section=section;input.click();
+  }
+
+  function isBoundedAncestor(source) {
+    let ancestor=window.parent;
+    for(let depth=0;depth<5;depth+=1){
+      if(source===ancestor)return true;
+      let next;
+      try{next=ancestor.parent;}catch(_error){return false;}
+      if(!next||next===ancestor)return false;
+      ancestor=next;
+    }
+    return false;
+  }
+
+  function validEmbedBridgeEvent(event,data) {
+    return event.origin===EMBED_BRIDGE_ORIGIN&&isBoundedAncestor(event.source)&&/^[0-9a-f]{32}$/.test(embedNonce)&&data&&data.embedNonce===embedNonce;
+  }
+
+  function replyToEmbedBridge(source,origin,message) {
+    try{source.postMessage(Object.assign({},message,{embedNonce}),origin);}catch(_error){}
+  }
+
+  function announceEmbedBridgeReady() {
+    if(!/^[0-9a-f]{32}$/.test(embedNonce)||!state.bootstrapped)return;
+    const message={type:'notion-widget-v20-bridge-ready',embedNonce,instanceId:bridgeInstanceId};
+    let ancestor=window.parent;
+    for(let depth=0;depth<5;depth+=1){
+      try{ancestor.postMessage(message,EMBED_BRIDGE_ORIGIN);}catch(_error){}
+      let next;
+      try{next=ancestor.parent;}catch(_error){return;}
+      if(!next||next===ancestor)return;
+      ancestor=next;
+    }
+  }
+
+  async function receiveEmbedBridgeMessage(event) {
+    const data=event.data;
+    if(!validEmbedBridgeEvent(event,data))return;
+    if(data.type==='notion-widget-v20-primary-hover'&&SECTIONS.includes(data.section)){
+      const card=document.querySelector(`.group-card[data-service="${data.section}"]`);if(card)card.classList.toggle('bridge-hover',data.active===true);return;
+    }
+    if(data.type==='notion-widget-v20-primary-action'&&SECTIONS.includes(data.section)&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(data.requestId||''))){
+      if(data.section==='Drive'){
+        replyToEmbedBridge(event.source,event.origin,{type:'notion-widget-v20-primary-result',requestId:data.requestId,ok:Boolean(state.folderUrl),openUrl:state.folderUrl||'',message:state.folderUrl?'':'Папка задачи ещё создаётся'});
+      } else {
+        createGoogle(data.section,{source:event.source,origin:event.origin,requestId:data.requestId});
+      }
+      return;
+    }
   }
 
   async function uploadFiles(files,forcedSection) {
@@ -772,6 +829,7 @@
 
   function bindEvents() {
     $('fileInput').addEventListener('change',(event)=>{const section=event.target.dataset.section||'';uploadFiles(event.target.files,section);event.target.value='';});
+    window.addEventListener('message',receiveEmbedBridgeMessage);
     $('linkForm').addEventListener('submit',addLink);$('editForm').addEventListener('submit',saveEdit);$('archiveButton').addEventListener('click',archiveCurrent);
     document.querySelectorAll('[data-close]').forEach(button=>button.addEventListener('click',()=>closeModal(button.dataset.close)));
     document.querySelectorAll('.modal-back').forEach(modal=>modal.addEventListener('click',(event)=>{if(event.target===modal)closeModal(modal.id);}));
