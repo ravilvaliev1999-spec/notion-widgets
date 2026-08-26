@@ -80,6 +80,26 @@
     return Boolean(bridge && event.source === bridge.source && event.origin === bridge.origin);
   }
 
+  function applyPrimaryGeometry(value) {
+    const rows = Array.isArray(value) ? value : [];
+    if (rows.length !== SECTIONS.length) return false;
+    const bySection = new Map(rows.map((row) => [row && row.section, row]));
+    for (const section of SECTIONS) {
+      const row = bySection.get(section);
+      const numbers = row && [row.left, row.top, row.width, row.height].map(Number);
+      if (!numbers || numbers.some((number) => !Number.isFinite(number) || Math.abs(number) > 100000) || numbers[2] < 40 || numbers[3] < 30) return false;
+    }
+    interactionGrid.querySelectorAll('[data-slot]').forEach((slot) => {
+      const row = bySection.get(slot.dataset.slot);
+      slot.style.left = `${Number(row.left)}px`;
+      slot.style.top = `${Number(row.top)}px`;
+      slot.style.width = `${Number(row.width)}px`;
+      slot.style.height = `${Number(row.height)}px`;
+    });
+    interactionGrid.hidden = false;
+    return true;
+  }
+
   function sendToBridge(message) {
     if (!bridge) return false;
     try {
@@ -139,12 +159,16 @@
     if (data.type === 'notion-widget-v20-bridge-ready') {
       if (!isWidgetDescendant(event.source) || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(data.instanceId || ''))) return;
       bridge = { source: event.source, origin: event.origin, instanceId: data.instanceId };
-      interactionGrid.hidden = false;
+      interactionGrid.hidden = !applyPrimaryGeometry(data.geometry);
       fatal.hidden = true;
       sendAllPending();
       return;
     }
     if (!isCurrentBridgeEvent(event)) return;
+    if (data.type === 'notion-widget-v20-primary-geometry') {
+      applyPrimaryGeometry(data.geometry);
+      return;
+    }
     if (data.type === 'notion-widget-v20-primary-result') finishPrimaryAction(data);
   }
 
@@ -158,24 +182,27 @@
   }
 
   function startPrimaryAction(section) {
-    const sectionBusy = Array.from(pendingActions.values()).some((record) => record.message.section === section);
-    if (!bridge || !SECTIONS.includes(section) || sectionBusy) return;
+    const existing = Array.from(pendingActions.values()).find((record) => record.message.section === section);
+    if (!bridge || !SECTIONS.includes(section) || (existing && !existing.timedOut)) return;
     const popup = window.open('about:blank', '_blank');
     if (!popup) {
       showNotice('Браузер заблокировал новую вкладку. Разрешите всплывающие окна для Notion и повторите.');
       return;
     }
     writePlaceholder(popup, section);
-    const requestId = randomId();
-    const message = { type: 'notion-widget-v20-primary-action', requestId, section };
-    const record = { message, popup, sentInstance: '', timeout: 0 };
+    const requestId = existing ? existing.message.requestId : randomId();
+    const message = existing ? existing.message : { type: 'notion-widget-v20-primary-action', requestId, section };
+    const record = existing || { message, popup, sentInstance: '', timeout: 0, timedOut: false };
+    record.popup = popup;
+    record.sentInstance = '';
+    record.timedOut = false;
     record.timeout = window.setTimeout(() => {
       if (!pendingActions.has(requestId)) return;
-      pendingActions.delete(requestId);
+      record.timedOut = true;
       try { popup.close(); } catch (_error) {}
       setSectionDisabled(section, false);
-      showNotice('Сервис отвечает слишком долго. Повторите действие.');
-    }, 120000);
+      showNotice('Ответ не получен. Повторите нажатие — тот же запрос продолжится без создания дубля.');
+    }, 410000);
     pendingActions.set(requestId, record);
     setSectionDisabled(section, true);
     sendPending(record);
@@ -185,27 +212,22 @@
     interactionGrid.querySelectorAll('[data-slot]').forEach((slot) => {
       const section = slot.dataset.slot;
       if (!SECTIONS.includes(section)) return;
-
-      const primary = document.createElement('button');
-      primary.type = 'button';
-      primary.className = 'primary-control';
-      primary.dataset.section = section;
-      primary.setAttribute('aria-label', section === 'Drive' ? 'Открыть папку задачи' : `Создать новый файл ${section}`);
-      primary.addEventListener('click', () => startPrimaryAction(section));
-      primary.addEventListener('pointerenter', () => sendToBridge({ type: 'notion-widget-v20-primary-hover', section, active: true }));
-      primary.addEventListener('pointerleave', () => sendToBridge({ type: 'notion-widget-v20-primary-hover', section, active: false }));
-      slot.appendChild(primary);
-
-      const tail = document.createElement('button');
-      tail.type = 'button';
-      tail.className = 'primary-control-tail';
-      tail.dataset.section = section;
-      tail.tabIndex = -1;
-      tail.setAttribute('aria-hidden', 'true');
-      tail.addEventListener('click', () => startPrimaryAction(section));
-      tail.addEventListener('pointerenter', () => sendToBridge({ type: 'notion-widget-v20-primary-hover', section, active: true }));
-      tail.addEventListener('pointerleave', () => sendToBridge({ type: 'notion-widget-v20-primary-hover', section, active: false }));
-      slot.appendChild(tail);
+      ['main', 'pencil-top', 'pencil-right', 'pencil-bottom'].forEach((region, index) => {
+        const control = document.createElement('button');
+        control.type = 'button';
+        control.className = `primary-control primary-control-${region}`;
+        control.dataset.section = section;
+        if (index === 0) {
+          control.setAttribute('aria-label', section === 'Drive' ? 'Открыть папку задачи' : `Создать новый файл ${section}`);
+        } else {
+          control.tabIndex = -1;
+          control.setAttribute('aria-hidden', 'true');
+        }
+        control.addEventListener('click', () => startPrimaryAction(section));
+        control.addEventListener('pointerenter', () => sendToBridge({ type: 'notion-widget-v20-primary-hover', section, active: true }));
+        control.addEventListener('pointerleave', () => sendToBridge({ type: 'notion-widget-v20-primary-hover', section, active: false }));
+        slot.appendChild(control);
+      });
     });
   }
 

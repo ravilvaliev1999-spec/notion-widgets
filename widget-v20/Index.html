@@ -306,6 +306,7 @@
   let orderSaveRunning = false;
   let queuedOrder = null;
   let backgroundRpcTail = Promise.resolve();
+  let geometryRaf = 0;
 
   function normalizeUuid(value) {
     const raw = String(value || '').toLowerCase().replace(/[^0-9a-f]/g, '');
@@ -537,7 +538,7 @@
       materials.forEach((item)=>files.appendChild(materialCard(item,materials.length)));
       const add=document.createElement('button');add.type='button';add.className='file-add';add.dataset.addLink=section;add.textContent='+ добавить ссылку';add.disabled=state.busy.has(`link:${section}`);add.setAttribute('aria-label',`Добавить ссылку в ${section}`);files.appendChild(add);
     });
-    postHeight();
+    postHeight();scheduleEmbedBridgeGeometry();
   }
 
   function materialCard(item,count) {
@@ -663,21 +664,52 @@
     return event.origin===EMBED_BRIDGE_ORIGIN&&isBoundedAncestor(event.source)&&/^[0-9a-f]{32}$/.test(embedNonce)&&data&&data.embedNonce===embedNonce;
   }
 
-  function replyToEmbedBridge(source,origin,message) {
-    try{source.postMessage(Object.assign({},message,{embedNonce}),origin);}catch(_error){}
+  function isEmbedBridgeMode() {
+    return /^[0-9a-f]{32}$/.test(embedNonce);
   }
 
-  function announceEmbedBridgeReady() {
-    if(!/^[0-9a-f]{32}$/.test(embedNonce)||!state.bootstrapped)return;
-    const message={type:'notion-widget-v20-bridge-ready',embedNonce,instanceId:bridgeInstanceId};
+  function configureEmbedPrimaryCards() {
+    if(!isEmbedBridgeMode())return;
+    document.querySelectorAll('.group-card[data-service]').forEach((card)=>{card.tabIndex=-1;card.dataset.bridgePrimary='true';});
+  }
+
+  function primaryGeometry() {
+    if(!isEmbedBridgeMode())return [];
+    return SECTIONS.map((section)=>{
+      const card=document.querySelector(`.group-card[data-service="${section}"]`);if(!card)return null;
+      const rect=card.getBoundingClientRect();
+      return {section,left:rect.left,top:rect.top,width:rect.width,height:rect.height};
+    }).filter(Boolean);
+  }
+
+  function postToEmbedAncestors(message) {
     let ancestor=window.parent;
     for(let depth=0;depth<5;depth+=1){
-      try{ancestor.postMessage(message,EMBED_BRIDGE_ORIGIN);}catch(_error){}
+      try{ancestor.postMessage(Object.assign({},message,{embedNonce}),EMBED_BRIDGE_ORIGIN);}catch(_error){}
       let next;
       try{next=ancestor.parent;}catch(_error){return;}
       if(!next||next===ancestor)return;
       ancestor=next;
     }
+  }
+
+  function replyToEmbedBridge(source,origin,message) {
+    try{source.postMessage(Object.assign({},message,{embedNonce}),origin);}catch(_error){}
+  }
+
+  function announceEmbedBridgeReady() {
+    if(!isEmbedBridgeMode()||!state.bootstrapped)return;
+    postToEmbedAncestors({type:'notion-widget-v20-bridge-ready',instanceId:bridgeInstanceId,geometry:primaryGeometry()});
+  }
+
+  function postEmbedBridgeGeometry() {
+    if(!isEmbedBridgeMode()||!state.bootstrapped)return;
+    postToEmbedAncestors({type:'notion-widget-v20-primary-geometry',geometry:primaryGeometry()});
+  }
+
+  function scheduleEmbedBridgeGeometry() {
+    if(geometryRaf||!isEmbedBridgeMode())return;
+    geometryRaf=requestAnimationFrame(()=>{geometryRaf=0;postEmbedBridgeGeometry();});
   }
 
   async function receiveEmbedBridgeMessage(event) {
@@ -805,6 +837,7 @@
     const edit=event.target.closest('[data-edit-id]');if(edit){event.preventDefault();event.stopPropagation();openEdit(edit.dataset.editId);return;}
     const itemCard=event.target.closest('[data-item-id]');if(itemCard){if(itemCard.dataset.downloadCourier==='true')return;const item=state.materials.find(material=>material.id===itemCard.dataset.itemId);if(item)openExact(item);return;}
     const service=event.target.closest('[data-service]');if(!service)return;const section=service.dataset.service;
+    if(isEmbedBridgeMode())return;
     if(section==='Drive'){if(state.folderUrl)window.open(state.folderUrl,'_blank','noopener,noreferrer');else toast('Папка задачи ещё создаётся');return;}
     createGoogle(section);
   }
@@ -835,12 +868,14 @@
     document.querySelectorAll('.modal-back').forEach(modal=>modal.addEventListener('click',(event)=>{if(event.target===modal)closeModal(modal.id);}));
     document.addEventListener('keydown',(event)=>{if(event.key==='Escape')document.querySelectorAll('.modal-back.open').forEach(modal=>closeModal(modal.id));});
     window.addEventListener('focus',pollDriveMetadata);
+    window.addEventListener('resize',scheduleEmbedBridgeGeometry);
+    window.addEventListener('scroll',scheduleEmbedBridgeGeometry,{passive:true});
     document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')pollDriveMetadata();});
     window.setInterval(()=>{if(document.visibilityState==='visible')pollDriveMetadata();},5000);
-    if(window.ResizeObserver)new ResizeObserver(postHeight).observe(document.body);
+    if(window.ResizeObserver)new ResizeObserver(()=>{postHeight();scheduleEmbedBridgeGeometry();}).observe(document.body);
   }
 
-  buildGrid();bindEvents();render();resolveRuntimeLocation().then(bootstrap).catch((error)=>showFatal(error.message,Boolean(error.retryable)));
+  buildGrid();configureEmbedPrimaryCards();bindEvents();render();resolveRuntimeLocation().then(()=>{configureEmbedPrimaryCards();return bootstrap();}).catch((error)=>showFatal(error.message,Boolean(error.retryable)));
   if(state.mock)window.__widgetV20Mock={state,refresh,rename(pageId,name){const item=state.materials.find(material=>material.id===pageId);if(item){item.name=name;render();}}};
 })();
 </script>

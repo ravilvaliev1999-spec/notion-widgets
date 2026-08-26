@@ -41,12 +41,21 @@ test('wrapper binds one authenticated child channel without relaying local file 
 
 test('credentialless create uses a synchronous wrapper-owned popup', () => {
   assert.match(wrapper, /class="interaction-slot" data-slot="Docs"/);
+  assert.match(wrapper, /primary-control-main \{ inset: 0 28px 0 0/);
+  assert.match(wrapper, /primary-control-pencil-top \{ top: 0; right: 0; width: 28px; height: 6px/);
+  assert.match(wrapper, /primary-control-pencil-right \{ top: 6px; right: 0; width: 6px; height: 22px/);
+  assert.match(wrapper, /primary-control-pencil-bottom \{ top: 28px; right: 0; bottom: 0; width: 28px/);
   assert.match(wrapperJs, /const popup = window\.open\('about:blank', '_blank'\)/);
   assert.match(wrapperJs, /type: 'notion-widget-v20-primary-action'/);
   assert.match(wrapperJs, /record\.popup\.location\.replace\(data\.openUrl\)/);
+  assert.match(wrapperJs, /existing \? existing\.message\.requestId : randomId\(\)/);
+  assert.match(wrapperJs, /410000/);
   assert.match(frontend, /data\.type==='notion-widget-v20-primary-action'/);
   assert.match(frontend, /createGoogle\(data\.section,\{source:event\.source,origin:event\.origin,requestId:data\.requestId\}\)/);
   assert.match(frontend, /type:'notion-widget-v20-primary-result'/);
+  assert.match(frontend, /if\(isEmbedBridgeMode\(\)\)return;/);
+  assert.match(frontend, /card\.tabIndex=-1/);
+  assert.match(frontend, /type:'notion-widget-v20-primary-geometry'/);
 });
 
 test('wrapper runtime opens the placeholder before sending one authenticated create request', () => {
@@ -55,6 +64,7 @@ test('wrapper runtime opens the placeholder before sending one authenticated cre
       this.children = [];
       this.dataset = {};
       this.listeners = {};
+      this.style = {};
       this.hidden = false;
       this.disabled = false;
       this.textContent = '';
@@ -126,11 +136,19 @@ test('wrapper runtime opens the placeholder before sending one authenticated cre
   windowListeners.message({
     source: bridgeSource,
     origin,
-    data: { type: 'notion-widget-v20-bridge-ready', embedNonce, instanceId: '33333333-3333-4333-8333-333333333333' }
+    data: {
+      type: 'notion-widget-v20-bridge-ready',
+      embedNonce,
+      instanceId: '33333333-3333-4333-8333-333333333333',
+      geometry: ['Drive', 'Docs', 'Sheets', 'Slides'].map((section, index) => ({ section, left: index * 220, top: 0, width: 208, height: 70 }))
+    }
   });
   assert.equal(interactionGrid.hidden, false);
+  const docsSlot = slots.find((slot) => slot.dataset.slot === 'Docs');
+  assert.equal(docsSlot.style.left, '220px');
+  assert.equal(docsSlot.style.height, '70px');
 
-  const docsPrimary = slots.find((slot) => slot.dataset.slot === 'Docs').children[0];
+  const docsPrimary = docsSlot.children[0];
   docsPrimary.listeners.click();
   assert.equal(events[0][0], 'open');
   assert.equal(events[1][0], 'post');
