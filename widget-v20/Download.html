@@ -99,19 +99,20 @@
       return (name||'Файл').slice(0,180);
     }
 
-    function trustedHostedUrl(value){
+    function trustedDirectUrl(value){
       try{
         const url=new URL(String(value||''));
         const host=url.hostname.toLowerCase();
-        const trusted=host==='secure.notion-static.com'||host==='file.notion.so'||/^prod-files-secure\.s3(?:\.[a-z0-9-]+)?\.amazonaws\.com$/.test(host);
-        if(url.protocol!=='https:'||url.port||url.username||url.password||url.hash||!trusted)return '';
+        const notionTrusted=host==='secure.notion-static.com'||host==='file.notion.so'||/^prod-files-secure\.s3(?:\.[a-z0-9-]+)?\.amazonaws\.com$/.test(host);
+        const entries=Array.from(url.searchParams.entries()),driveTrusted=host==='drive.google.com'&&url.pathname==='/uc'&&entries.length===3&&new Set(entries.map(([key])=>key)).size===3&&url.searchParams.get('export')==='download'&&/^[A-Za-z0-9_-]{10,200}$/.test(url.searchParams.get('id')||'')&&/^[^\s@]{1,64}@[^\s@]{1,189}$/.test(url.searchParams.get('authuser')||'')&&entries.every(([key])=>['export','authuser','id'].includes(key));
+        if(url.protocol!=='https:'||url.port||url.username||url.password||url.hash||!(notionTrusted||driveTrusted))return '';
         return url.href;
       }catch(_error){return '';}
     }
 
     function validatedDirect(data){
       if(!data||data.mode!=='direct')return null;
-      const url=trustedHostedUrl(data.url),expiry=Date.parse(String(data.expiresAt||''));
+      const url=trustedDirectUrl(data.url),expiry=Date.parse(String(data.expiresAt||''));
       if(!url||!Number.isFinite(expiry)||expiry<=Date.now()+30000)return null;
       return {url,name:safeDownloadName(data.name),expiresAt:new Date(expiry).toISOString()};
     }

@@ -42,6 +42,7 @@ function loadBackend(activeEmail = '') {
     Array,
     isFinite,
     encodeURIComponent,
+    decodeURIComponent,
     console: { log() {} },
     WidgetV19Core: core,
     Session: { getActiveUser: () => ({ getEmail: () => activeEmail }) },
@@ -185,7 +186,11 @@ test('web app routes download and create requests to dedicated couriers', () => 
   assert.match(doGet, /createSection:\s*String\(params\.createSection/);
   assert.match(doGet, /createRequestId:\s*String\(params\.createRequestId/);
   assert.match(doGet, /output = createTemplate\.evaluate\(\)/);
-  assert.match(doGet, /createHtmlOutputFromFile\('Index'\)/);
+  assert.match(doGet, /createTemplateFromFile\('Index'\)/);
+  assert.match(doGet, /initialBootstrapJson = 'null'/);
+  assert.match(doGet, /w20BootstrapFromRegistry_\(initialInput, initialCfg, null\)/);
+  assert.match(doGet, /indexTemplate\.initialBootstrapJson = JSON\.stringify\(initialBootstrap\)/);
+  assert.doesNotMatch(doGet, /initialBootstrapJson\s*=\s*JSON\.stringify\([^\n]*accessToken/);
   assert.match(doGet, /XFrameOptionsMode\.ALLOWALL/);
   assert.match(doGet, /function doPost\(event\)/);
   assert.match(doGet, /w20CreatePostFields_\(event\)/);
@@ -449,8 +454,7 @@ test('repeated Docs creation with one request id executes the document creation 
   const lock = { tryLock: () => true, waitLock() {}, releaseLock() {} };
   backend.PropertiesService = { getScriptProperties: () => props };
   backend.LockService = { getScriptLock: () => lock };
-  let uuidIndex = 0;
-  backend.Utilities.getUuid = () => `attempt-${uuidIndex += 1}`;
+  backend.Utilities.getUuid = () => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   const taskId = '3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
   const requestId = '11111111-1111-4111-8111-111111111111';
   const canonical = backend.w19CanonicalIdempotency_(taskId, 'create-google-Docs', requestId);
@@ -482,8 +486,7 @@ test('fresh Google creation uses exactly one Drive CREATE and one Notion CREATE 
     getScriptLock: () => scriptLock,
     getUserLock: () => { userLockCalls += 1; throw new Error('hot path must not acquire UserLock'); }
   };
-  let uuidIndex = 0;
-  backend.Utilities.getUuid = () => `attempt-${uuidIndex += 1}`;
+  backend.Utilities.getUuid = () => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   backend.Utilities.formatDate = () => '2026-08-26 21:00';
   const replacement=backend.w20RegistryReplaceTaskResult_(taskId,[{
     id:existingPageId,name:'Существующий документ',section:'Docs',format:'Google Docs',provider:'Google Drive',
@@ -519,6 +522,13 @@ test('fresh Google creation uses exactly one Drive CREATE and one Notion CREATE 
     notionCreates += 1;
     assert.equal(method,'post');
     assert.equal(requestPath,'/v1/pages');
+    const canonical=backend.w19CanonicalIdempotency_(taskId,'create-google-Docs',requestId);
+    const duringCreate=JSON.parse(props.getProperty(backend.w19IdempotencyLedgerKey_(canonical)));
+    assert.equal(duringCreate.status,'pending');
+    assert.equal(duringCreate.driveReady.openUrl,'https://docs.google.com/document/d/CreatedGoogleDoc123/edit');
+    assert.equal(duringCreate.driveReady.googleFileId,'CreatedGoogleDoc123');
+    assert.ok(Number(duringCreate.driveReadyAt)>0);
+    assert.doesNotMatch(JSON.stringify(duringCreate),/create-google-Docs|3c62d62739a180a1aac7ec19ffc9ef8e/);
     notionBody=body;
     return {id:createdPageId,url:'https://www.notion.so/created',properties:body.properties,created_time:'2026-08-26T18:00:00.000Z',last_edited_time:'2026-08-26T18:00:00.000Z'};
   };
@@ -551,6 +561,25 @@ test('fresh Google creation uses exactly one Drive CREATE and one Notion CREATE 
   props.setProperty(backend.w19IdempotencyLedgerKey_(pendingCanonical),JSON.stringify({status:'pending',at:Date.now(),attemptId:'server-only'}));
   const pending=backend.apiGetCreateStatus({taskPageId:taskId,section:'Docs',createRequestId:pendingRequestId});
   assert.deepEqual(JSON.parse(JSON.stringify(pending.data)),{status:'pending',retryable:true});
+
+  const readyRequestId='33333333-3333-4333-8333-333333333333';
+  const readyCanonical=backend.w19CanonicalIdempotency_(taskId,'create-google-Docs',readyRequestId);
+  const readyAttemptId='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  props.setProperty(backend.w19IdempotencyLedgerKey_(readyCanonical),JSON.stringify({
+    status:'pending',at:Date.now(),attemptId:readyAttemptId,driveReadyAt:Date.now(),
+    driveReady:{openUrl:'https://docs.google.com/document/d/DriveReadyDocument123/edit',googleFileId:'DriveReadyDocument123',section:'Docs',format:'Google Docs',provider:'Google Drive',archived:false}
+  }));
+  const ledgerBeforeStaleWrite=props.getProperty(backend.w19IdempotencyLedgerKey_(readyCanonical));
+  assert.equal(backend.w20WriteCreateDriveReady_(readyCanonical,'cccccccc-cccc-4ccc-8ccc-cccccccccccc',{
+    id:'StaleGoogleDocument123',webViewLink:'https://docs.google.com/document/d/StaleGoogleDocument123/edit'
+  },'Docs'),false);
+  assert.equal(props.getProperty(backend.w19IdempotencyLedgerKey_(readyCanonical)),ledgerBeforeStaleWrite);
+  assert.equal(backend.w20WriteCreateDriveReady_(readyCanonical,readyAttemptId,{
+    id:'DriveReadyDocument123',webViewLink:'https://docs.google.com/document/d/DriveReadyDocument123/edit'
+  },'Docs'),true);
+  const ready=backend.apiGetCreateStatus({taskPageId:taskId,section:'Docs',createRequestId:readyRequestId});
+  assert.deepEqual(JSON.parse(JSON.stringify(ready.data)),{status:'drive_ready',openUrl:'https://docs.google.com/document/d/DriveReadyDocument123/edit'});
+  assert.doesNotMatch(JSON.stringify(ready),/create-google-Docs|33333333-3333-4333-8333-333333333333|DriveReadyDocument123"\s*,\s*"section/);
 });
 
 test('create context warming verifies the task folder once without a Notion request', () => {
@@ -1042,6 +1071,34 @@ test('download authorization cache stores only short-lived server-derived owners
   assert.equal(backend.w20GetCachedDownloadMaterial_('3c62d627-39a1-80a1-aac7-ec19ffc9ef8f', pageId, cfg), null);
   now += writes[0].ttl * 1000 + 1;
   assert.equal(backend.w20GetCachedDownloadMaterial_(taskId, pageId, cfg), null);
+});
+
+test('registry-seeded download coordinates never outlive the action proof', () => {
+  const backend=loadBackend();
+  const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const pageId='3c72d627-39a1-81e5-a840-ecb1c98cc5c5';
+  const dataSourceId='3822d627-39a1-8018-a2dc-000b95bf5722';
+  const now=1_800_000_000_000;
+  const proofExpiry=now+5_100;
+  const writes=[];
+  backend.Date={now:()=>now,parse:globalThis.Date.parse};
+  backend.CacheService={getScriptCache:()=>({
+    putAll:(entries,ttl)=>writes.push({entries,ttl}),
+    put:(key,value,ttl)=>writes.push({entries:{[key]:value},ttl})
+  })};
+  const cfg={dataSourceId,deniedPageIds:{}};
+  const material={
+    id:pageId,provider:'Google Drive',googleFileId:'1OwnedBinaryFile123',folderId:'1OwnedTaskFolder123',
+    widgetOwnedBinary:true,archived:false,syncStatus:'synced'
+  };
+  assert.equal(backend.w20CacheDownloadRegistryMaterials_(taskId,[material],cfg,new Date(proofExpiry).toISOString()),1);
+  assert.equal(writes.length,1);
+  assert.ok(writes[0].ttl>0&&writes[0].ttl<=5);
+  const cached=JSON.parse(Object.values(writes[0].entries)[0]);
+  assert.equal(cached.expiresAt,proofExpiry);
+  assert.doesNotMatch(JSON.stringify(cached),/accessToken|notionToken|downloadUrl|attachmentUrl|sourceUrl/i);
+  assert.equal(backend.w20CacheDownloadRegistryMaterials_(taskId,[material],cfg,new Date(now-1).toISOString()),0);
+  assert.equal(writes.length,1);
 });
 
 test('download cache refuses archived, cross-task, cross-source, denied and Google-native records', () => {
@@ -1726,84 +1783,70 @@ test('download API is restricted to widget-owned binary files below the configur
   assert.match(guard, /size > cfg\.maxUploadBytes/);
 });
 
-test('prepare download revalidates Notion and Drive before issuing an opaque hosted-download grant', () => {
+test('prepare download revalidates server ownership before issuing an account-bound Drive grant', () => {
   const backend = loadBackend();
   const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e',pageId='3c72d627-39a1-81e1-971f-c6b30665ce55';
   const dataSourceId='3822d627-39a1-8018-a2dc-000b95bf5722';
-  const signed='https://prod-files-secure.s3.us-west-2.amazonaws.com/space/file/report.xlsx?X-Amz-Signature=abc';
   const cache=new Map();
   backend.CacheService={getScriptCache:()=>({put:(key,value)=>cache.set(key,value),get:(key)=>cache.get(key)||null,remove:(key)=>cache.delete(key)})};
-  backend.UrlFetchApp={fetch:(url,options)=>{
-    assert.equal(url,signed);
-    assert.equal(options.headers.Range,'bytes=0-0');
-    return {getResponseCode:()=>206,getAllHeaders:()=>({'Content-Disposition':"attachment; filename*=UTF-8''report.xlsx"})};
-  }};
-  const cfg={authorizedTaskPageId:taskId,dataSourceId,notionToken:'test-notion-hmac-secret',deniedPageIds:{}};
+  backend.UrlFetchApp={fetch:()=>{throw new Error('CDN fetch is forbidden on the fast Drive path');}};
+  const cfg={authorizedTaskPageId:taskId,dataSourceId,notionToken:'test-notion-hmac-secret',allowedEmail:'owner@example.com',deniedPageIds:{}};
   backend.w19AuthorizedConfig_=()=>cfg;
   backend.w19AssertMaterialForTask_=(receivedPage,receivedTask)=>({id:receivedPage,taskId:receivedTask});
   backend.w19MaterialFromPage_=()=>({
     id:pageId,name:'report.xlsx',downloadName:'report.xlsx',attachmentName:'report.xlsx',
-    downloadUrl:signed,attachmentUrl:signed,attachmentExpiry:'2099-01-01T00:00:00.000Z',
-    hostedAttachment:true,attachmentType:'file',widgetOwnedBinary:true,mimeType:'application/octet-stream',size:123
+    widgetOwnedBinary:true,mimeType:'application/octet-stream',size:123
   });
+  backend.w20CacheDownloadMaterials_=()=>1;
   let guardCalls=0;
   backend.w19AssertOwnedBinary_=()=>{guardCalls+=1;return {id:'DRIVEFILE123',name:'report.xlsx',mimeType:'application/octet-stream',size:'123'};};
+  const expectedDriveUrl='https://drive.google.com/uc?export=download&authuser=owner%40example.com&id=DRIVEFILE123';
+  assert.equal(backend.w20DriveDownloadUrl_('DRIVEFILE123',cfg.allowedEmail),expectedDriveUrl);
+  assert.equal(backend.w20TrustedDirectDownloadUrl_(expectedDriveUrl),expectedDriveUrl);
+  const probeDirect={mode:'direct',url:expectedDriveUrl,name:'report.xlsx',mimeType:'application/octet-stream',size:123,expiresAt:new Date(Date.now()+180_000).toISOString()};
+  assert.ok(backend.w20DownloadGrantDirect_(probeDirect));
+  const probeIssue=backend.w20IssueDownloadGrant_(taskId,pageId,probeDirect,cfg,0);
+  assert.equal(probeIssue.mode,'grant',JSON.stringify(probeIssue));
   const result=backend.apiPrepareDownload({taskPageId:taskId,pageId});
   assert.equal(result.ok,true);
-  assert.equal(result.data.mode,'grant');
+  assert.equal(result.data.mode,'grant',JSON.stringify(result.data));
   assert.match(result.data.downloadGrant,/^[a-f0-9]{96}$/);
-  assert.match(result.data.downloadPackage,/^[A-Za-z0-9_-]{40,9000}$/);
-  const fastPackage=JSON.parse(Buffer.from(result.data.downloadPackage,'base64url').toString('utf8'));
-  assert.deepEqual(Object.keys(fastPackage).sort(),['expiresAt','name','url']);
-  assert.equal(fastPackage.url,signed);
-  assert.equal(fastPackage.name,'report.xlsx');
-  assert.equal(fastPackage.expiresAt,result.data.packageExpiresAt);
-  assert.ok(Date.parse(fastPackage.expiresAt)>Date.now());
-  assert.ok(Date.parse(fastPackage.expiresAt)-Date.now()<=60_000);
-  assert.equal(JSON.stringify(fastPackage).includes('accessToken'),false);
-  assert.equal(JSON.stringify(fastPackage).includes('script.google.com'),false);
+  assert.equal(result.data.downloadPackage,undefined,'a permanent Drive URL must stay behind the HMAC grant exchange');
+  assert.equal(result.data.packageExpiresAt,undefined);
+  assert.equal(backend.w20FastDownloadPackage_(probeDirect,Date.now()),null);
   assert.equal(result.data.url,undefined,'the priming client must never receive the direct hosted URL');
-  assert.equal(backend.w20GetDownloadGrant_(taskId,pageId,result.data.downloadGrant,cfg).url,signed);
+  assert.equal(backend.w20GetDownloadGrant_(taskId,pageId,result.data.downloadGrant,cfg).url,expectedDriveUrl);
   assert.equal(guardCalls,1);
-  backend.w19MaterialFromPage_=()=>({
-    name:'report.xlsx',downloadName:'report.xlsx',attachmentName:'report.xlsx',
-    downloadUrl:'https://evil.example/report.xlsx',attachmentUrl:'https://evil.example/report.xlsx',attachmentExpiry:'2099-01-01T00:00:00.000Z',
-    hostedAttachment:true,attachmentType:'file',widgetOwnedBinary:true
-  });
+  cfg.allowedEmail='invalid-account';
   const rejected=backend.apiPrepareDownload({taskPageId:taskId,pageId});
   assert.equal(rejected.ok,true);
   assert.equal(rejected.data.mode,'proxy');
+  assert.equal(rejected.data.proxyReason,'metadata');
   assert.equal(guardCalls,2);
 });
 
-test('prepare download keeps a direct hosted path only when attachment disposition has the exact renamed filename', () => {
+test('prepare download uses the current Drive filename and never probes the Notion CDN', () => {
   const backend = loadBackend();
   const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e',pageId='3c72d627-39a1-81e1-971f-c6b30665ce55';
   const dataSourceId='3822d627-39a1-8018-a2dc-000b95bf5722';
-  const signed='https://prod-files-secure.s3.us-west-2.amazonaws.com/space/file/report.xlsx?X-Amz-Signature=abc';
   const cache=new Map();
   backend.CacheService={getScriptCache:()=>({put:(key,value)=>cache.set(key,value),get:(key)=>cache.get(key)||null,remove:(key)=>cache.delete(key)})};
-  let disposition="attachment; filename*=UTF-8''%D0%9D%D0%BE%D0%B2%D0%BE%D0%B5%20%D0%B8%D0%BC%D1%8F.xlsx";
-  backend.UrlFetchApp={fetch:()=>({getResponseCode:()=>206,getAllHeaders:()=>({'content-disposition':disposition})})};
-  const cfg={authorizedTaskPageId:taskId,dataSourceId,notionToken:'test-notion-hmac-secret',deniedPageIds:{}};
+  backend.UrlFetchApp={fetch:()=>{throw new Error('unexpected CDN request');}};
+  const cfg={authorizedTaskPageId:taskId,dataSourceId,notionToken:'test-notion-hmac-secret',allowedEmail:'owner+widget@example.com',deniedPageIds:{}};
   backend.w19AuthorizedConfig_=()=>cfg;
   backend.w19AssertMaterialForTask_=()=>({id:pageId});
   backend.w19MaterialFromPage_=()=>({
     id:pageId,name:'Новое имя.xlsx',downloadName:'Новое имя.xlsx',attachmentName:'Старое имя.xlsx',
-    downloadUrl:signed,attachmentUrl:signed,attachmentExpiry:'2099-01-01T00:00:00.000Z',
-    hostedAttachment:true,attachmentType:'file',widgetOwnedBinary:true,mimeType:'application/octet-stream',size:123
+    widgetOwnedBinary:true,mimeType:'application/octet-stream',size:123
   });
+  backend.w20CacheDownloadMaterials_=()=>1;
   backend.w19AssertOwnedBinary_=()=>({id:'DRIVEFILE123',name:'Новое имя.xlsx',mimeType:'application/octet-stream',size:'123'});
   const result=backend.apiPrepareDownload({taskPageId:taskId,pageId});
   assert.equal(result.ok,true);
-  assert.equal(result.data.mode,'grant');
+  assert.equal(result.data.mode,'grant',JSON.stringify(result.data));
   const direct=backend.w20GetDownloadGrant_(taskId,pageId,result.data.downloadGrant,cfg);
   assert.equal(direct.name,'Новое имя.xlsx');
-  assert.equal(direct.url,signed);
-  disposition="inline; filename*=UTF-8''%D0%9D%D0%BE%D0%B2%D0%BE%D0%B5%20%D0%B8%D0%BC%D1%8F.xlsx";
-  assert.equal(backend.apiPrepareDownload({taskPageId:taskId,pageId}).data.mode,'proxy');
-  disposition="attachment; filename*=UTF-8''%D0%A1%D1%82%D0%B0%D1%80%D0%BE%D0%B5%20%D0%B8%D0%BC%D1%8F.xlsx";
-  assert.equal(backend.apiPrepareDownload({taskPageId:taskId,pageId}).data.mode,'proxy');
+  assert.equal(direct.url,'https://drive.google.com/uc?export=download&authuser=owner%2Bwidget%40example.com&id=DRIVEFILE123');
 });
 
 test('download grants are HMAC-bound to task and page, expire in 60 seconds and are revoked with the material cache', () => {

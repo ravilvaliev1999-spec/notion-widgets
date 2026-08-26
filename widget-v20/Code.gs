@@ -16,6 +16,7 @@ var W20_DOWNLOAD_GRANT_EPOCH_PREFIX = 'w20:download-grant-epoch:';
 var W20_DOWNLOAD_GRANT_TTL_SECONDS = 60;
 var W20_DOWNLOAD_GRANT_SCHEMA = 2;
 var W20_FAST_DOWNLOAD_PACKAGE_TTL_SECONDS = 60;
+var W20_DRIVE_DIRECT_SOURCE_TTL_SECONDS = 180;
 var W20_DRIVE_POLL_CLAIM_TTL_SECONDS = 60;
 var W19_IDEMPOTENCY_PENDING_TTL_MS = 7 * 60 * 1000;
 var W19_NOTION_RATE_CACHE_KEY = 'w20:notion:last-request-at';
@@ -124,7 +125,19 @@ function doGet(event) {
     createTemplate.precomputedResultJson = 'null';
     output = createTemplate.evaluate();
   } else {
-    output = HtmlService.createHtmlOutputFromFile('Index');
+    var indexTemplate = HtmlService.createTemplateFromFile('Index');
+    indexTemplate.initialBootstrapJson = 'null';
+    try {
+      var initialTaskId = WidgetV19Core.normalizeUuid(params.task || params.taskPageId);
+      var initialInput = {
+        taskPageId: initialTaskId,
+        accessToken: String(params.accessToken || '').slice(0, 300)
+      };
+      var initialCfg = w19AuthorizedConfig_(initialInput);
+      var initialBootstrap = w20BootstrapFromRegistry_(initialInput, initialCfg, null);
+      if (initialBootstrap) indexTemplate.initialBootstrapJson = JSON.stringify(initialBootstrap);
+    } catch (_initialBootstrapError) {}
+    output = indexTemplate.evaluate();
   }
   return output
     .setTitle(isDownloadCourier ? 'Скачивание файла' : (isCreateCourier ? 'Создание файла' : 'Файлы задачи'))
@@ -211,6 +224,51 @@ function w20SafeCreateMaterialOpenUrl_(material) {
   if (!url || !fileId || WidgetV19Core.extractGoogleFileId(url) !== fileId ||
       material.provider !== 'Google Drive' || material.format !== expectedFormat || material.archived) return '';
   return url;
+}
+
+function w20CreateDriveReadyData_(driveFile, section) {
+  var fileId = w20SafeDriveId_(driveFile && driveFile.id);
+  var normalizedSection = String(section || '');
+  var format = normalizedSection === 'Docs' ? 'Google Docs' : (normalizedSection === 'Sheets' ? 'Google Sheets' : (normalizedSection === 'Slides' ? 'Google Slides' : ''));
+  if (!fileId || !format) return null;
+  var material = {
+    openUrl: driveFile && driveFile.webViewLink || WidgetV19Core.makeDriveOpenUrl(fileId, format),
+    googleFileId: fileId,
+    section: normalizedSection,
+    format: format,
+    provider: 'Google Drive',
+    archived: false
+  };
+  return w20SafeCreateMaterialOpenUrl_(material) ? material : null;
+}
+
+function w20WriteCreateDriveReady_(canonicalKey, attemptId, driveFile, section) {
+  var ready = w20CreateDriveReadyData_(driveFile, section);
+  var ledgerKey = w19IdempotencyLedgerKey_(canonicalKey);
+  var expectedAttemptId = String(attemptId || '').toLowerCase();
+  if (!ready || !ledgerKey || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(expectedAttemptId)) return false;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(3000)) return false;
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var current = w19ReadLedger_(props, ledgerKey);
+    if (!current || current.status !== 'pending' || String(current.attemptId || '').toLowerCase() !== expectedAttemptId) return false;
+    current.driveReady = ready;
+    current.driveReadyAt = Date.now();
+    props.setProperty(ledgerKey, JSON.stringify(current));
+    return true;
+  } catch (_driveReadyError) {
+    return false;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function w20CreateDriveReadyUrl_(ledger) {
+  var readyAt = Number(ledger && ledger.driveReadyAt || 0);
+  if (!ledger || ledger.status !== 'pending' || !isFinite(readyAt) || readyAt <= 0 ||
+      Date.now() - readyAt > W19_IDEMPOTENCY_PENDING_TTL_MS) return '';
+  return w20SafeCreateMaterialOpenUrl_(ledger.driveReady);
 }
 
 function w20SafeCreatePostResult_(requestId, response) {
@@ -386,9 +444,9 @@ function apiCreateGoogle(input) {
     var outcome = w19WithIdempotency_(idem, function (idempotencyState) {
       if (!(idempotencyState && idempotencyState.recovery)) {
         var slot = w20RegistryClaimCreateSlot_(taskId, section, cfg.rootFolderId);
-        if (slot) return w20CreateGoogleHot_(taskId, section, name, idem, slot, cfg);
+        if (slot) return w20CreateGoogleHot_(taskId, section, name, idem, slot, cfg, idempotencyState.attemptId);
       }
-      return w20CreateGoogleRecovery_(taskId, section, name, idem, cfg);
+      return w20CreateGoogleRecovery_(taskId, section, name, idem, cfg, idempotencyState.attemptId);
     });
     if (outcome && outcome.completed && !outcome.material) {
       var completedMaterial = w20RegistryFindCreateRequest_(taskId, section, requestId);
@@ -421,7 +479,11 @@ function apiGetCreateStatus(input) {
     }
     if (material) return { status: 'done', material: material };
     if (!ledger) return { status: 'missing' };
-    if (ledger.status === 'pending') return { status: 'pending', retryable: true };
+    if (ledger.status === 'pending') {
+      var driveReadyUrl = w20CreateDriveReadyUrl_(ledger);
+      if (driveReadyUrl) return { status: 'drive_ready', openUrl: driveReadyUrl };
+      return { status: 'pending', retryable: true };
+    }
     if (ledger.status === 'failed') return { status: 'failed', retryable: true };
     return { status: ledger.status === 'done' ? 'done' : 'missing' };
   });
@@ -510,15 +572,16 @@ function w20TaskFromRegistryMeta_(taskId, meta) {
   };
 }
 
-function w20CreateGoogleHot_(taskId, section, name, idem, slot, cfg) {
+function w20CreateGoogleHot_(taskId, section, name, idem, slot, cfg, attemptId) {
   var task = w20TaskFromRegistryMeta_(taskId, slot.taskMeta);
   var idemHash = w19Hash_(idem).slice(0, 40);
   var driveFile = w19CreateGoogleFile_(task, slot.taskMeta.folderId, section, name, idemHash);
+  w20WriteCreateDriveReady_(idem, attemptId, driveFile, section);
   var page = w20CreateGoogleNotionPage_(task, driveFile, slot.taskMeta.folderId, section, name, slot.position, idem, cfg);
   return { material: w19MaterialFromPage_(page), duplicate: false };
 }
 
-function w20CreateGoogleRecovery_(taskId, section, name, idem, cfg) {
+function w20CreateGoogleRecovery_(taskId, section, name, idem, cfg, attemptId) {
   w19AssertSchema_(cfg);
   var task = w19AssertTaskPage_(taskId, cfg);
   var taskValidatedAt = new Date().toISOString();
@@ -557,6 +620,7 @@ function w20CreateGoogleRecovery_(taskId, section, name, idem, cfg) {
       }
     }
 
+    w20WriteCreateDriveReady_(idem, attemptId, driveFile, section);
     var page = w20CreateGoogleNotionPage_(task, driveFile, folder.id, section, name,
       w19NextPosition_(task.id, section, cfg), idem, cfg);
     w19MarkDriveNotionPage_(driveFile, task.id, idemHash, page.id, 'active');
@@ -938,28 +1002,28 @@ function apiPrepareDownload(input) {
     if (!materialId) throw new W19Error_('MATERIAL_ID_REQUIRED', 'Не указан материал.', false);
     var grantEpoch = w20DownloadGrantEpoch_(taskId, materialId);
     if (grantEpoch === null) throw new W19Error_('BUSY', 'Не удалось проверить состояние скачивания. Повторите через несколько секунд.', true);
-    var page = w19AssertMaterialForTask_(materialId, taskId, cfg);
-    var material = w19MaterialFromPage_(page);
+    var page = null;
+    var material = w20GetCachedDownloadMaterial_(taskId, materialId, cfg);
+    if (!material) {
+      page = w19AssertMaterialForTask_(materialId, taskId, cfg);
+      material = w19MaterialFromPage_(page);
+      w20CacheDownloadMaterials_(taskId, [page], cfg);
+    }
     var task = { id: taskId, name: 'Задача' };
     var drive = w19AssertOwnedBinary_(material, task, cfg);
-    var directUrl = w20TrustedHostedDownloadUrl_(material.downloadUrl);
-    var expiryAt = Date.parse(String(material.attachmentExpiry || ''));
-    var expectedName = WidgetV19Core.cleanName(material.downloadName || material.name, 'Файл');
-    if (!material.hostedAttachment || material.attachmentType !== 'file' ||
-        directUrl !== String(material.attachmentUrl || '') ||
-        !isFinite(expiryAt) || expiryAt <= Date.now() + 60000) {
-      return { mode: 'proxy' };
-    }
+    var directUrl = w20DriveDownloadUrl_(drive.id, cfg.allowedEmail);
+    if (!directUrl) return { mode: 'proxy', proxyReason: 'metadata' };
     var direct = {
       mode: 'direct',
       url: directUrl,
-      name: WidgetV19Core.cleanName(drive.name || expectedName, 'Файл'),
+      name: WidgetV19Core.cleanName(drive.name || material.downloadName || material.name, 'Файл'),
       mimeType: WidgetV19Core.cleanMime(drive.mimeType || material.mimeType),
       size: drive.size ? Number(drive.size) : material.size,
-      expiresAt: new Date(expiryAt).toISOString()
+      expiresAt: new Date(Date.now() + W20_DRIVE_DIRECT_SOURCE_TTL_SECONDS * 1000).toISOString()
     };
-    if (!w20HostedDownloadDispositionMatches_(directUrl, direct.name)) return { mode: 'proxy' };
-    return w20IssueDownloadGrant_(taskId, materialId, direct, cfg, grantEpoch);
+    var issued = w20IssueDownloadGrant_(taskId, materialId, direct, cfg, grantEpoch);
+    if (issued && issued.mode === 'proxy') issued.proxyReason = 'grant';
+    return issued;
   });
 }
 
@@ -1826,6 +1890,46 @@ function w20CacheDownloadMaterials_(taskId, pages, cfg) {
   }
 }
 
+function w20CacheDownloadRegistryMaterials_(taskId, materials, cfg, trustedUntil) {
+  var task = WidgetV19Core.normalizeUuid(taskId);
+  var dataSourceId = WidgetV19Core.normalizeUuid(cfg && cfg.dataSourceId);
+  var proofExpiry = Date.parse(String(trustedUntil || ''));
+  var now = Date.now();
+  var expiresAt = Math.min(now + W20_DOWNLOAD_MATERIAL_CACHE_TTL_SECONDS * 1000, proofExpiry);
+  var cacheTtlSeconds = Math.floor((expiresAt - now) / 1000);
+  if (!task || !dataSourceId || !isFinite(proofExpiry) || cacheTtlSeconds <= 0) return 0;
+  var entries = {};
+  (Array.isArray(materials) ? materials : []).forEach(function (material) {
+    var pageId = WidgetV19Core.normalizeUuid(material && material.id);
+    var googleFileId = w20SafeDriveId_(material && material.googleFileId);
+    var folderId = w20SafeDriveId_(material && material.folderId);
+    var key = w20DownloadMaterialCacheKey_(task, pageId);
+    if (!pageId || !googleFileId || !folderId || !key ||
+        (cfg.deniedPageIds && cfg.deniedPageIds[pageId]) || !material.widgetOwnedBinary ||
+        material.provider !== 'Google Drive' || material.archived ||
+        material.syncStatus === 'deleting' || material.syncStatus === 'deleted') return;
+    entries[key] = JSON.stringify({
+      schema: W20_DOWNLOAD_MATERIAL_CACHE_SCHEMA,
+      taskId: WidgetV19Core.compactUuid(task),
+      pageId: WidgetV19Core.compactUuid(pageId),
+      dataSourceId: WidgetV19Core.compactUuid(dataSourceId),
+      googleFileId: googleFileId,
+      folderId: folderId,
+      expiresAt: expiresAt
+    });
+  });
+  var keys = Object.keys(entries);
+  if (!keys.length) return 0;
+  try {
+    var cache = CacheService.getScriptCache();
+    if (typeof cache.putAll === 'function') cache.putAll(entries, cacheTtlSeconds);
+    else keys.forEach(function (key) { cache.put(key, entries[key], cacheTtlSeconds); });
+    return keys.length;
+  } catch (_registryDownloadCacheError) {
+    return 0;
+  }
+}
+
 function w20GetCachedDownloadMaterial_(taskId, pageId, cfg) {
   var task = WidgetV19Core.normalizeUuid(taskId);
   var page = WidgetV19Core.normalizeUuid(pageId);
@@ -2122,6 +2226,27 @@ function w20TrustedHostedDownloadUrl_(value) {
   return notionHost || notionS3Host ? raw : '';
 }
 
+function w20DriveDownloadUrl_(fileId, email) {
+  var id = w20SafeDriveId_(fileId);
+  var account = String(email || '').trim().toLowerCase();
+  if (!id || account.length > 254 || !/^[^\s@]{1,64}@[^\s@]{1,189}$/.test(account)) return '';
+  return 'https://drive.google.com/uc?export=download&authuser=' + encodeURIComponent(account) + '&id=' + encodeURIComponent(id);
+}
+
+function w20TrustedDirectDownloadUrl_(value) {
+  var raw = String(value || '').trim();
+  var hosted = w20TrustedHostedDownloadUrl_(raw);
+  if (hosted) return hosted;
+  var match = /^https:\/\/drive\.google\.com\/uc\?export=download&authuser=([^&#]{3,760})&id=([A-Za-z0-9_-]{10,200})$/.exec(raw);
+  if (!match) return '';
+  try {
+    var account = decodeURIComponent(match[1]);
+    return w20DriveDownloadUrl_(match[2], account) === raw ? raw : '';
+  } catch (_decodeDriveUrlError) {
+    return '';
+  }
+}
+
 function w20DownloadDispositionFilename_(value) {
   var header = String(value || '').trim();
   if (!/^attachment(?:\s*;|$)/i.test(header)) return '';
@@ -2139,39 +2264,6 @@ function w20DownloadDispositionFilename_(value) {
   return plain ? WidgetV19Core.cleanName(String(plain[1] || '').trim(), '') : '';
 }
 
-function w20HostedDownloadDispositionMatches_(url, expectedName) {
-  var trustedUrl = w20TrustedHostedDownloadUrl_(url);
-  var expected = WidgetV19Core.cleanName(expectedName, '');
-  if (!trustedUrl || !expected) return false;
-  try {
-    var response = UrlFetchApp.fetch(trustedUrl, {
-      method: 'get',
-      headers: { Range: 'bytes=0-0' },
-      escaping: false,
-      followRedirects: true,
-      muteHttpExceptions: true,
-      validateHttpsCertificates: true
-    });
-    var code = Number(response.getResponseCode());
-    if (code !== 200 && code !== 206) return false;
-    var headers = response.getAllHeaders ? response.getAllHeaders() : response.getHeaders();
-    var disposition = '';
-    Object.keys(headers || {}).some(function (key) {
-      if (String(key).toLowerCase() !== 'content-disposition') return false;
-      var raw = headers[key];
-      disposition = Array.isArray(raw) ? String(raw[0] || '') : String(raw || '');
-      return true;
-    });
-    var actual = w20DownloadDispositionFilename_(disposition);
-    if (!actual) return false;
-    if (typeof actual.normalize === 'function') actual = actual.normalize('NFC');
-    if (typeof expected.normalize === 'function') expected = expected.normalize('NFC');
-    return actual === expected;
-  } catch (_fetchError) {
-    return false;
-  }
-}
-
 function w20DownloadGrantCacheKey_(taskId, pageId) {
   var task = WidgetV19Core.compactUuid(taskId);
   var page = WidgetV19Core.compactUuid(pageId);
@@ -2181,7 +2273,7 @@ function w20DownloadGrantCacheKey_(taskId, pageId) {
 
 function w20DownloadGrantDirect_(value) {
   var source = value || {};
-  var url = w20TrustedHostedDownloadUrl_(source.url);
+  var url = w20TrustedDirectDownloadUrl_(source.url);
   var directExpiry = Date.parse(String(source.expiresAt || ''));
   var rawSize = source.size;
   var size = rawSize === null || rawSize === undefined || rawSize === '' ? null : Number(rawSize);
@@ -2230,7 +2322,7 @@ function w20FastDownloadName_(value) {
 function w20FastDownloadPackage_(direct, now) {
   var source = w20DownloadGrantDirect_(direct);
   var issuedAt = Math.floor(Number(now));
-  if (!source || !isFinite(issuedAt) || issuedAt <= 0) return null;
+  if (!source || w20TrustedHostedDownloadUrl_(source.url) !== source.url || !isFinite(issuedAt) || issuedAt <= 0) return null;
   var expiresAt = issuedAt + W20_FAST_DOWNLOAD_PACKAGE_TTL_SECONDS * 1000;
   if (Date.parse(source.expiresAt) <= expiresAt + 30000) return null;
   var payload = {
@@ -2543,7 +2635,7 @@ function w19WithIdempotency_(canonicalKey, fn) {
   }
 
   try {
-    var data = fn({ recovery: recovery, previousStatus: previousStatus });
+    var data = fn({ recovery: recovery, previousStatus: previousStatus, attemptId: attemptId });
     lock.waitLock(15000);
     try {
       var currentDone = w19ReadLedger_(props, ledgerKey);

@@ -633,6 +633,7 @@ function w20BootstrapFromRegistry_(input, cfg, reason) {
   var task = { id: taskId, name: meta && meta.taskName || 'Задача' };
   var folderReady = w20RegistryFolderMetaFresh_(meta, cfg.rootFolderId);
   var actionProof = w20RegistryActionProof_(meta, registry, cfg.rootFolderId);
+  if (actionProof.ready) w20CacheDownloadRegistryMaterials_(taskId, stored, cfg, actionProof.trustedUntil);
   return {
     version: W19_VERSION,
     task: task,

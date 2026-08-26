@@ -5,6 +5,7 @@
 <meta name="robots" content="noindex,nofollow" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <meta name="color-scheme" content="dark" />
+<meta id="initialBootstrap" data-bootstrap="<?= initialBootstrapJson ?>" />
 <title>Google · Files Hub</title>
 <style>
   :root {
@@ -300,6 +301,8 @@
   const DRIVE_POLL_MIN_GAP_MS = 12000;
   const DOWNLOAD_GRANT_RENEW_LEAD_MS = 15000;
   const DOWNLOAD_GRANT_RETRY_DELAY_MS = 5000;
+  const ACTION_READY_RENEW_LEAD_MS = 30000;
+  const ACTION_READY_RETRY_DELAYS_MS = [750,1500,3000,7000,15000];
   const bridgeInstanceId = uid();
   const state = { task:null, folderUrl:null, serviceUrl:null, materials:[], busy:new Set(), syncing:false, drivePolling:false, urgentDrivePolling:false, lastDrivePollAt:0, claimRefreshNotBefore:0, bootstrapped:false, authoritative:false, actionReady:false, fullySynced:false, trustedUntil:0, maxUploadBytes:8388608, dragId:null, mock:false };
   const retryUpload = new Map();
@@ -327,6 +330,13 @@
   let downloadPrimeGeneration = 0;
   let downloadGrantRenewTimer = 0;
   let actionReadyExpiryTimer = 0;
+  let actionReadyRefreshTimer = 0;
+  let actionReadyRefreshPromise = null;
+  let actionReadyRefreshAttempt = 0;
+  let actionReadyRefreshDeferredForBusy = false;
+  let runtimeLocationResolved = false;
+  let deferInitialDownloadPrimeUntilAuthoritative = false;
+  let returnRefreshPromise = null;
   let cachedRefreshTimer = 0;
   let cachedRefreshAttempt = 0;
 
@@ -474,13 +484,14 @@
     items.forEach(mockPollClaim);
     const ok=(data)=>Promise.resolve({ok:true,data});
     const fail=(code,message,retryable=false)=>Promise.resolve({ok:false,error:{code,message,retryable}});
+    const mockActionProof=()=>({authoritative:true,actionReady:true,trustedUntil:new Date(Date.now()+120000).toISOString()});
     return { call(method,payload) {
-      if (method==='apiBootstrap') return ok({version:'v20-mock',task:{id:payload.taskPageId,name:'Виджет файлов — задача'},folderUrl:'https:\/\/drive.google.com/drive/folders/mockfolder123',serviceUrl:null,maxUploadBytes:8388608,materials:items.filter(x=>!x.archived),cached:false,authoritative:true});
+      if (method==='apiBootstrap') return ok(Object.assign({version:'v20-mock',task:{id:payload.taskPageId,name:'Виджет файлов — задача'},folderUrl:'https:\/\/drive.google.com/drive/folders/mockfolder123',serviceUrl:null,maxUploadBytes:8388608,materials:items.filter(x=>!x.archived),cached:false},mockActionProof()));
       if (method==='apiPollDriveMetadata') {
         const requested=new Set((payload.materials||[]).map(row=>`${row.pageId}:${row.googleFileId}`));
         return ok({materials:items.filter(item=>requested.has(`${item.id}:${item.googleFileId}`)).map(item=>({pageId:item.id,googleFileId:item.googleFileId,name:item.name,section:item.section,format:item.format,openUrl:item.openUrl,mimeType:item.mimeType||'',size:item.size??null,driveMd5:item.driveMd5||'',downloadName:item.name,normalizedUrl:item.openUrl||'',drivePollClaim:item.drivePollClaim})),polledAt:new Date().toISOString()});
       }
-      if (method==='apiSyncTask') return ok({materials:items.filter(x=>!x.archived),syncedAt:new Date().toISOString()});
+      if (method==='apiSyncTask') return ok(Object.assign({materials:items.filter(x=>!x.archived),syncedAt:new Date().toISOString()},mockActionProof()));
       if (method==='apiCreateGoogle') { const format=payload.section==='Docs'?'Google Docs':payload.section==='Sheets'?'Google Sheets':'Google Slides'; const googleFileId=`mock-${uid().replace(/-/g,'')}`; const path=payload.section==='Docs'?'document':payload.section==='Sheets'?'spreadsheets':'presentation'; const item={id:uid(),name:payload.name||`Новый ${format}`,section:payload.section,format,provider:'Google Drive',openUrl:`https:\/\/docs.google.com/${path}/d/${googleFileId}/edit`,canDownload:false,googleFileId,folderId:'mockfolder123',widgetOwned:true,position:mockNextPosition(items,payload.section),syncStatus:'synced',updatedAt:now}; items.push(item); return ok({material:item,duplicate:false}); }
       if (method==='apiAddLink') { const normalized=mockNormalizeUrl(payload.url);if(!normalized)return fail('INVALID_URL','Нужна корректная HTTPS-ссылка.'); const meta=mockLinkMeta(normalized,payload.section); const existing=items.find(x=>(meta.googleFileId&&x.googleFileId===meta.googleFileId)||x.openUrl===normalized); if(existing){if(existing.syncStatus==='deleted')return fail('MATERIAL_DELETED','Эта ссылка относится к физически удалённому материалу и не может быть восстановлена.');if(existing.archived){const nextPosition=mockNextPosition(items,existing.section);existing.archived=false;existing.syncStatus='synced';existing.position=nextPosition;return ok({material:existing,duplicate:true,restored:true});}return ok({material:existing,duplicate:true});} const fallback=meta.format==='Google Docs'?'Документ по ссылке':meta.format==='Google Sheets'?'Таблица по ссылке':meta.format==='Google Slides'?'Презентация по ссылке':new URL(normalized).hostname; const item={id:uid(),name:payload.name||fallback,section:meta.section,format:meta.format,provider:meta.provider,openUrl:normalized,canDownload:false,googleFileId:meta.googleFileId,widgetOwned:false,position:mockNextPosition(items,meta.section),syncStatus:'synced',archived:false,updatedAt:new Date().toISOString()}; items.push(item); return ok({material:item,duplicate:false}); }
       if (method==='apiUpload') { const section=payload.section||classify(payload.name,payload.mimeType,''); const item={id:uid(),name:payload.name,section,format:section==='Docs'?'Word':section==='Sheets'?'Excel':section==='Slides'?'PowerPoint':'Other File',provider:'Google Drive',openUrl:'https:\/\/drive.google.com/',downloadUrl:'https:\/\/drive.google.com/',canDownload:true,googleFileId:`mock-${uid().replace(/-/g,'')}`,folderId:'mockfolder123',widgetOwned:true,mimeType:payload.mimeType,size:Math.floor(payload.dataBase64.length*3/4),position:mockNextPosition(items,section),syncStatus:'synced',updatedAt:new Date().toISOString(),_mockBase64:payload.dataBase64}; items.push(item); return ok({material:item,duplicate:false}); }
@@ -550,7 +561,7 @@
   }
 
   function render() {
-    const actionReady=state.actionReady||state.authoritative;
+    const actionReady=state.actionReady;
     SECTIONS.forEach((section)=>{
       const col=document.querySelector(`.col[data-section="${section}"]`);
       if(!col)return;
@@ -565,19 +576,62 @@
       materials.forEach((item)=>files.appendChild(materialCard(item,materials.length)));
       const add=document.createElement('button');add.type='button';add.className='file-add';add.dataset.addLink=section;add.textContent='+ добавить ссылку';add.disabled=!actionReady||state.busy.has(`link:${section}`);add.setAttribute('aria-label',`Добавить ссылку в ${section}`);files.appendChild(add);
     });
-    postHeight();scheduleEmbedBridgeGeometry();scheduleDownloadGrantRenewal();
+    postHeight();scheduleEmbedBridgeGeometry();scheduleDownloadGrantRenewal();resumeDeferredActionProofRefresh();
+  }
+
+  function scheduleActionProofRefresh(delay) {
+    window.clearTimeout(actionReadyRefreshTimer);
+    actionReadyRefreshTimer=window.setTimeout(()=>{actionReadyRefreshTimer=0;refreshActionProof();},Math.max(0,Number(delay)||0));
+  }
+
+  function actionProofIsFresh(data) {
+    const trustedUntil=Date.parse(String(data&&data.trustedUntil||''));
+    return Boolean(data&&data.cached===false&&data.authoritative===true&&data.actionReady===true&&Number.isFinite(trustedUntil)&&trustedUntil>Date.now()+1000);
+  }
+
+  function scheduleActionProofRetry() {
+    if(state.busy.size){actionReadyRefreshDeferredForBusy=true;return false;}
+    if(actionReadyRefreshAttempt>=ACTION_READY_RETRY_DELAYS_MS.length)return false;
+    const delay=ACTION_READY_RETRY_DELAYS_MS[actionReadyRefreshAttempt];actionReadyRefreshAttempt+=1;scheduleActionProofRefresh(delay);return true;
+  }
+
+  function resumeDeferredActionProofRefresh() {
+    if(!actionReadyRefreshDeferredForBusy||state.busy.size)return;
+    actionReadyRefreshDeferredForBusy=false;scheduleActionProofRefresh(0);
   }
 
   function scheduleActionReadyExpiry() {
-    window.clearTimeout(actionReadyExpiryTimer);actionReadyExpiryTimer=0;
-    if(state.authoritative||!state.actionReady||!Number.isFinite(state.trustedUntil)||state.trustedUntil<=0)return;
+    window.clearTimeout(actionReadyExpiryTimer);actionReadyExpiryTimer=0;window.clearTimeout(actionReadyRefreshTimer);actionReadyRefreshTimer=0;
+    if(!state.actionReady||!Number.isFinite(state.trustedUntil)||state.trustedUntil<=0)return;
     const remaining=state.trustedUntil-Date.now();
     if(remaining<=0){state.actionReady=false;render();announceEmbedBridgeReady();return;}
+    if(state.authoritative){
+      const refreshDelay=remaining>ACTION_READY_RENEW_LEAD_MS?remaining-ACTION_READY_RENEW_LEAD_MS:250;
+      scheduleActionProofRefresh(refreshDelay);
+    }
     actionReadyExpiryTimer=window.setTimeout(()=>{
       actionReadyExpiryTimer=0;
-      if(state.authoritative||!state.actionReady||Date.now()<state.trustedUntil)return;
+      if(!state.actionReady||Date.now()<state.trustedUntil)return;
       state.actionReady=false;render();announceEmbedBridgeReady();
     },Math.min(remaining+25,2147483000));
+  }
+
+  function refreshActionProof() {
+    if(actionReadyRefreshPromise||!taskPageId||!state.bootstrapped)return actionReadyRefreshPromise||Promise.resolve(false);
+    if(document.visibilityState!=='visible')return Promise.resolve(false);
+    if(state.busy.size){actionReadyRefreshDeferredForBusy=true;return Promise.resolve(false);}
+    actionReadyRefreshPromise=(async()=>{
+      try{
+        const fresh=await callBackground('apiBootstrap',{taskPageId,forceRefresh:true});
+        if(state.busy.size){actionReadyRefreshDeferredForBusy=true;return false;}
+        const proofReady=actionProofIsFresh(fresh);
+        if(fresh&&fresh.cached===false&&fresh.authoritative===true)applyBootstrapData(fresh,true,{deferActionProofRetry:true});
+        if(proofReady){actionReadyRefreshAttempt=0;return true;}
+      }catch(_error){}
+      scheduleActionProofRetry();
+      return false;
+    })().finally(()=>{actionReadyRefreshPromise=null;});
+    return actionReadyRefreshPromise;
   }
 
   function materialCard(item,count) {
@@ -602,7 +656,7 @@
     return [item&&item.id,item&&item.googleFileId,item&&item.folderId,item&&item.name,item&&item.downloadName,item&&item.mimeType,item&&item.size,item&&item.driveMd5,item&&item.updatedAt].map((value)=>String(value??'')).join('|');
   }
 
-  function applyBootstrapData(data,authoritative) {
+  function applyBootstrapData(data,authoritative,options) {
     const previousDownloadFingerprints=new Map(state.materials.filter(canPrepareDownload).map((item)=>[item.id,downloadMaterialFingerprint(item)]));
     state.task=data.task||state.task;
     if(data.folderUrl)state.folderUrl=data.folderUrl;
@@ -628,9 +682,21 @@
     state.fullySynced=state.authoritative;
     const trustedUntil=Date.parse(String(data&&data.trustedUntil||''));
     state.trustedUntil=Number.isFinite(trustedUntil)?trustedUntil:0;
-    state.actionReady=state.authoritative||Boolean(data&&data.actionReady===true&&state.trustedUntil>Date.now());
+    state.actionReady=Boolean(runtimeLocationResolved&&data&&data.actionReady===true&&state.trustedUntil>Date.now());
+    if(state.actionReady)actionReadyRefreshAttempt=0;
+    if(state.authoritative)deferInitialDownloadPrimeUntilAuthoritative=false;
     downloadPrimeGeneration+=1;downloadGrants.forEach((_record,pageId)=>{const current=state.materials.find((item)=>item.id===pageId);if(!canPrepareDownload(current)||previousDownloadFingerprints.get(pageId)!==downloadMaterialFingerprint(current))downloadGrants.delete(pageId);});downloadGrantRetryNotBefore.clear();window.clearTimeout(downloadGrantRenewTimer);downloadGrantRenewTimer=0;
-    scheduleActionReadyExpiry();render();announceEmbedBridgeReady();scheduleDownloadGrantPrime(downloadPrimeGeneration);
+    scheduleActionReadyExpiry();
+    if(runtimeLocationResolved&&state.authoritative&&!state.actionReady&&!(options&&options.deferActionProofRetry))scheduleActionProofRetry();
+    render();announceEmbedBridgeReady();if(!(options&&options.skipDownloadPrime)&&!deferInitialDownloadPrimeUntilAuthoritative)scheduleDownloadGrantPrime(downloadPrimeGeneration);
+  }
+
+  function readInitialBootstrap() {
+    const meta=$('initialBootstrap');let data=null;
+    try{data=JSON.parse(String(meta&&meta.dataset&&meta.dataset.bootstrap||'null'));}catch(_error){return null;}
+    const initialTask=normalizeUuid(data&&data.task&&data.task.id);
+    if(!data||data.cached!==true||data.authoritative!==false||!initialTask||!Array.isArray(data.materials))return null;
+    return data;
   }
 
   function scheduleCachedRefresh(delay) {
@@ -647,7 +713,7 @@
         const staleError=new Error('Не удалось подтвердить актуальность данных.');staleError.retryable=true;throw staleError;
       }
       cachedRefreshAttempt=0;applyBootstrapData(fresh,true);
-      call('apiWarmCreateContext',{taskPageId}).catch(()=>{});
+      if(!state.actionReady)call('apiWarmCreateContext',{taskPageId}).catch(()=>{});
       window.setTimeout(()=>pollDriveMetadata(false),2500);
     } catch(error) {
       const delays=[2000,5000,15000,30000,60000];
@@ -665,7 +731,7 @@
       const data=await call('apiBootstrap',{taskPageId});
       applyBootstrapData(data,!data.cached&&data.authoritative===true);
       if(data.cached)scheduleCachedRefresh(0);
-      call('apiWarmCreateContext',{taskPageId}).catch(()=>{});
+      if(!state.actionReady)call('apiWarmCreateContext',{taskPageId}).catch(()=>{});
       if(!data.cached)window.setTimeout(()=>pollDriveMetadata(false),2500);
     } catch(error) { showFatal(error.message,Boolean(error.retryable)); }
   }
@@ -874,16 +940,26 @@
     await Promise.all(Array.from(pendingCreatePolls.keys()).map((requestId)=>pollCreateStatus(requestId,urgent)));
   }
 
+  async function createGoogleWithRecovery(payload) {
+    const delays=[0,900,2400];let lastError=null;
+    for(const delay of delays){
+      if(delay)await new Promise((resolve)=>window.setTimeout(resolve,delay));
+      try{return await call('apiCreateGoogle',payload);}
+      catch(error){lastError=error;if(!error.retryable)throw error;}
+    }
+    throw lastError||new Error('Файл не удалось завершить.');
+  }
+
   async function createGoogle(section,bridgeRequest) {
     const reply=(payload)=>{if(bridgeRequest)replyToEmbedBridge(bridgeRequest.source,bridgeRequest.origin,Object.assign({type:'notion-widget-v20-primary-result',requestId:bridgeRequest.requestId},payload));};
-    if(!(state.actionReady===true||state.authoritative)){toast('Завершаю синхронизацию…');reply({ok:false,message:'Создание ещё подготавливается. Повторите нажатие.',retryable:true});return;}
+    if(state.actionReady!==true){toast('Завершаю синхронизацию…');reply({ok:false,message:'Создание ещё подготавливается. Повторите нажатие.',retryable:true});return;}
     if(state.busy.has(`create:${section}`)){reply({ok:false,message:'Создание этого файла уже выполняется.',retryable:true});return;}
     const popup=bridgeRequest?null:window.open('about:blank','_blank');
     if(popup)writeCourier(popup,'Создаю файл…');
     const operation=bridgeRequest?{value:bridgeRequest.requestId}:stableIdempotency('create-google',section);state.busy.add(`create:${section}`);render();
     if(bridgeRequest)startOptimisticCreate(section,bridgeRequest.requestId,false);
     try {
-      const data=await call('apiCreateGoogle',{taskPageId,section,idempotencyKey:operation.value});
+      const data=await createGoogleWithRecovery({taskPageId,section,idempotencyKey:operation.value});
       if(bridgeRequest){completeOptimisticCreate(bridgeRequest.requestId,data.material,false);reply({ok:true,openUrl:data.material&&data.material.openUrl||''});announceEmbedBridgeReady();}
       else {
         clearIdempotency(operation);upsert(data.material);render();
@@ -899,7 +975,7 @@
   }
 
   function openLinkModal(section) {
-    if(!(state.actionReady||state.authoritative)){toast('Завершаю синхронизацию…');return;}
+    if(!state.actionReady){toast('Завершаю синхронизацию…');return;}
     $('linkSection').value=section;$('linkUrl').value='';openModal('linkModal');setTimeout(()=>$('linkUrl').focus(),40);
   }
 
@@ -915,7 +991,7 @@
   }
 
   function chooseFiles(section) {
-    if(!(state.actionReady||state.authoritative)){toast('Завершаю синхронизацию…');return;}
+    if(!state.actionReady){toast('Завершаю синхронизацию…');return;}
     const input=$('fileInput');input.dataset.section=section;input.click();
   }
 
@@ -970,13 +1046,13 @@
   }
 
   function announceEmbedBridgeReady() {
-    if(!isEmbedBridgeMode()||!state.bootstrapped)return;
+    if(!runtimeLocationResolved||!isEmbedBridgeMode()||!state.bootstrapped)return;
     const completedCreateRequestIds=state.materials.filter((item)=>item&&!String(item.id||'').startsWith('pending:')&&item.syncStatus!=='pending').map((item)=>String(item.createRequestId||'').toLowerCase()).filter((value,index,all)=>/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)&&all.indexOf(value)===index).slice(0,100);
-    postToEmbedAncestors({type:'notion-widget-v20-bridge-ready',instanceId:bridgeInstanceId,authoritative:state.authoritative,actionReady:state.actionReady===true||state.authoritative,folderUrl:(state.actionReady||state.authoritative)&&state.folderUrl||'',completedCreateRequestIds,geometry:primaryGeometry(),viewport:{width:window.innerWidth,height:window.innerHeight}});
+    postToEmbedAncestors({type:'notion-widget-v20-bridge-ready',instanceId:bridgeInstanceId,authoritative:state.authoritative,actionReady:state.actionReady===true,folderUrl:state.actionReady&&state.folderUrl||'',completedCreateRequestIds,geometry:primaryGeometry(),viewport:{width:window.innerWidth,height:window.innerHeight}});
   }
 
   function postEmbedBridgeGeometry() {
-    if(!isEmbedBridgeMode()||!state.bootstrapped)return;
+    if(!runtimeLocationResolved||!isEmbedBridgeMode()||!state.bootstrapped)return;
     postToEmbedAncestors({type:'notion-widget-v20-primary-geometry',geometry:primaryGeometry(),viewport:{width:window.innerWidth,height:window.innerHeight}});
   }
 
@@ -1137,6 +1213,8 @@
         const data=await call('apiPrepareDownload',{taskPageId,pageId:materialId});
         if(generation!==downloadPrimeGeneration||!state.bootstrapped)return;
         const current=state.materials.find((candidate)=>candidate.id===materialId);
+        const card=document.querySelector(`[data-item-id="${materialId}"]`),proxyReason=String(data&&data.proxyReason||'');
+        if(card){card.dataset.downloadPath=data&&data.mode==='grant'?'grant':'proxy';if(/^(?:metadata|untrusted|name|http|header|filename|mismatch|fetch|grant)$/.test(proxyReason))card.dataset.downloadReason=proxyReason;else delete card.dataset.downloadReason;}
         const expiresAt=Date.parse(String(data&&data.expiresAt||'')),grant=String(data&&data.downloadGrant||'');
         const packageExpiresAt=Date.parse(String(data&&data.packageExpiresAt||'')),downloadPackage=String(data&&data.downloadPackage||'');
         const packageValid=/^[A-Za-z0-9_-]{40,9000}$/.test(downloadPackage)&&Number.isFinite(packageExpiresAt)&&packageExpiresAt>Date.now()+1000&&packageExpiresAt-Date.now()<=60000;
@@ -1264,7 +1342,7 @@
     const itemCard=event.target.closest('[data-item-id]');if(itemCard){if(itemCard.tagName==='A'){if(itemCard.dataset.directOpen==='true')recentDrivePageIds.add(itemCard.dataset.itemId);return;}const item=state.materials.find(material=>material.id===itemCard.dataset.itemId);if(item)openExact(item);return;}
     const service=event.target.closest('[data-service]');if(!service)return;const section=service.dataset.service;
     if(isEmbedBridgeMode())return;
-    if(!(state.actionReady||state.authoritative)){toast('Завершаю синхронизацию…');return;}
+    if(!state.actionReady){toast('Завершаю синхронизацию…');return;}
     if(section==='Drive'){if(state.folderUrl)window.open(state.folderUrl,'_blank','noopener,noreferrer');else toast('Папка задачи ещё создаётся');return;}
     createGoogle(section);
   }
@@ -1305,22 +1383,46 @@
     document.querySelectorAll('.modal-back').forEach(modal=>modal.addEventListener('click',(event)=>{if(event.target===modal)closeModal(modal.id);}));
     document.addEventListener('keydown',(event)=>{if(event.key==='Escape')document.querySelectorAll('.modal-back.open').forEach(modal=>closeModal(modal.id));});
     const refreshOnReturn=()=>{
-      if(!state.authoritative)return;
-      const now=Date.now();if(now-lastReturnRefreshAt<8000){refreshAfterReturn(false);return;}
-      clearTimeout(returnRefreshTimer);returnRefreshTimer=setTimeout(()=>{lastReturnRefreshAt=Date.now();refreshAfterReturn(true);},250);
+      if(!state.authoritative)return Promise.resolve(false);
+      if(returnRefreshPromise)return returnRefreshPromise;
+      const now=Date.now();
+      if(now-lastReturnRefreshAt<8000)return refreshAfterReturn(false).then(()=>true,()=>false);
+      returnRefreshPromise=new Promise((resolve)=>{
+        clearTimeout(returnRefreshTimer);returnRefreshTimer=setTimeout(()=>{
+          lastReturnRefreshAt=Date.now();
+          Promise.resolve(refreshAfterReturn(true)).then(()=>resolve(true),()=>resolve(false)).finally(()=>{returnRefreshPromise=null;});
+        },250);
+      });
+      return returnRefreshPromise;
     };
     window.addEventListener('focus',refreshOnReturn);
     window.addEventListener('resize',scheduleEmbedBridgeGeometry);
     window.addEventListener('resize',scheduleDownloadGrantRenewal);
     window.addEventListener('scroll',scheduleEmbedBridgeGeometry,{passive:true});
     window.addEventListener('scroll',scheduleDownloadGrantRenewal,{passive:true});
-    document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')refreshOnReturn();else scheduleDownloadGrantRenewal();});
+    document.addEventListener('visibilitychange',()=>{
+      if(document.visibilityState==='visible'){
+        Promise.resolve(refreshOnReturn()).finally(()=>{
+          if(state.bootstrapped&&(!state.actionReady||state.trustedUntil-Date.now()<=ACTION_READY_RENEW_LEAD_MS))scheduleActionProofRefresh(0);
+        });
+      }else scheduleDownloadGrantRenewal();
+    });
     const pollInterval=DRIVE_POLL_INTERVAL_MS+Math.floor(Math.random()*5000);
     window.setInterval(()=>{if(document.visibilityState==='visible')pollDriveMetadata(false);},pollInterval);
     if(window.ResizeObserver)new ResizeObserver(()=>{postHeight();scheduleEmbedBridgeGeometry();}).observe(document.body);
   }
 
-  buildGrid();configureEmbedPrimaryCards();bindEvents();render();resolveRuntimeLocation().then(()=>{configureEmbedPrimaryCards();return bootstrap();}).catch((error)=>showFatal(error.message,Boolean(error.retryable)));
+  const initialBootstrap=readInitialBootstrap();
+  buildGrid();configureEmbedPrimaryCards();bindEvents();render();
+  if(initialBootstrap){deferInitialDownloadPrimeUntilAuthoritative=true;taskPageId=normalizeUuid(initialBootstrap.task.id)||taskPageId;applyBootstrapData(initialBootstrap,false,{skipDownloadPrime:true});}
+  resolveRuntimeLocation().then(()=>{
+    runtimeLocationResolved=true;
+    configureEmbedPrimaryCards();
+    if(!initialBootstrap)return bootstrap();
+    applyBootstrapData(initialBootstrap,false,{skipDownloadPrime:true});
+    if(initialBootstrap.cached)scheduleCachedRefresh(0);
+    if(!state.actionReady)call('apiWarmCreateContext',{taskPageId}).catch(()=>{});
+  }).catch((error)=>showFatal(error.message,Boolean(error.retryable)));
   if(state.mock)window.__widgetV20Mock={state,refresh,rename(pageId,name){const item=state.materials.find(material=>material.id===pageId);if(item){item.name=name;render();}}};
 })();
 </script>
