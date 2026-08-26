@@ -14,7 +14,7 @@ const wrapperJs = fs.readFileSync(path.join(root, 'apps-script-embed.js'), 'utf8
 test('public wrapper isolates Apps Script from multi-login cookies', () => {
   assert.match(wrapper, /<iframe[^>]+id="widget"[^>]+credentialless|<iframe[^>]+credentialless[^>]+id="widget"/);
   assert.match(wrapper, /referrerpolicy="no-referrer"/);
-  assert.match(wrapper, /script src="apps-script-embed\.js"/);
+  assert.match(wrapper, /script src="apps-script-embed\.js\?v=34"/);
 });
 
 test('wrapper forwards only validated task runtime parameters', () => {
