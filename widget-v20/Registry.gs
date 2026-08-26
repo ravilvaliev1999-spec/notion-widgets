@@ -2,6 +2,8 @@
 
 var W20_REGISTRY_PREFIX = 'w20:material-registry:';
 var W20_REGISTRY_SCHEMA = 1;
+var W20_REGISTRY_META_PREFIX = 'w20:bootstrap-meta:';
+var W20_REGISTRY_META_SCHEMA = 1;
 
 function w20RegistryTaskPrefix_(taskId) {
   var compactTask = WidgetV19Core.compactUuid(taskId);
@@ -12,6 +14,11 @@ function w20RegistryKey_(taskId, pageId) {
   var prefix = w20RegistryTaskPrefix_(taskId);
   var compactPage = WidgetV19Core.compactUuid(pageId);
   return prefix && compactPage ? prefix + compactPage : '';
+}
+
+function w20RegistryMetaKey_(taskId) {
+  var compactTask = WidgetV19Core.compactUuid(taskId);
+  return compactTask ? W20_REGISTRY_META_PREFIX + compactTask : '';
 }
 
 function w20RegistryHttps_(value) {
@@ -138,21 +145,92 @@ function w20RegistryReadTask_(taskId, cfg) {
   });
 }
 
+function w20RegistryUniqueFolderId_(materials) {
+  var found = {};
+  (Array.isArray(materials) ? materials : []).forEach(function (material) {
+    var folderId = w20SafeDriveId_(material && material.folderId);
+    if (folderId && material && material.widgetOwned) found[folderId] = true;
+  });
+  var ids = Object.keys(found);
+  return ids.length === 1 ? ids[0] : '';
+}
+
+function w20RegistryWriteTaskMeta_(taskId, meta) {
+  var task = WidgetV19Core.normalizeUuid(taskId);
+  var key = w20RegistryMetaKey_(task);
+  if (!task || !key) return false;
+  var safe = {
+    schema: W20_REGISTRY_META_SCHEMA,
+    taskId: WidgetV19Core.compactUuid(task),
+    taskName: WidgetV19Core.cleanName(meta && meta.taskName, 'Задача'),
+    folderId: w20SafeDriveId_(meta && meta.folderId) || '',
+    updatedAt: new Date().toISOString()
+  };
+  try {
+    PropertiesService.getScriptProperties().setProperty(key, JSON.stringify(safe));
+    return true;
+  } catch (_err) { return false; }
+}
+
+function w20RegistryReadTaskMeta_(taskId) {
+  var task = WidgetV19Core.normalizeUuid(taskId);
+  var key = w20RegistryMetaKey_(task);
+  if (!task || !key) return null;
+  var raw;
+  try { raw = PropertiesService.getScriptProperties().getProperty(key); }
+  catch (_err) { return null; }
+  var parsed;
+  try { parsed = raw ? JSON.parse(raw) : null; } catch (_err) { parsed = null; }
+  if (!parsed || parsed.schema !== W20_REGISTRY_META_SCHEMA ||
+      parsed.taskId !== WidgetV19Core.compactUuid(task)) return null;
+  return {
+    taskName: WidgetV19Core.cleanName(parsed.taskName, 'Задача'),
+    folderId: w20SafeDriveId_(parsed.folderId) || '',
+    updatedAt: String(parsed.updatedAt || '').slice(0, 100)
+  };
+}
+
+function w20RegistryFolderId_(taskId, materials) {
+  var live = w20RegistryUniqueFolderId_(materials);
+  if (live) return live;
+  var meta = w20RegistryReadTaskMeta_(taskId);
+  if (meta && meta.folderId) return meta.folderId;
+  return w20RegistryUniqueFolderId_(w20RegistryReadTask_(taskId, null));
+}
+
 function w20BootstrapFromRegistry_(input, cfg, reason) {
   var taskId = WidgetV19Core.normalizeUuid(input && input.taskPageId);
   if (!taskId || taskId !== cfg.authorizedTaskPageId || (cfg.deniedPageIds && cfg.deniedPageIds[taskId])) {
     throw new W19Error_('WRITE_BARRIER', 'Эта задача не разрешена для резервного запуска.', false);
   }
-  var task = { id: taskId, name: 'Задача' };
-  var folder = w19WithMutationLock_(function () { return w19EnsureTaskFolder_(task, cfg); });
+  var stored = w20RegistryReadTask_(taskId, null);
+  var meta = w20RegistryReadTaskMeta_(taskId);
+  if (!meta && !stored.length) return null;
+  var task = { id: taskId, name: meta && meta.taskName || 'Задача' };
+  var materials = stored.map(function (material) {
+    return {
+      id: material.id,
+      name: material.name,
+      section: material.section,
+      format: material.format,
+      provider: material.provider,
+      position: material.position,
+      syncStatus: 'synced',
+      archived: false,
+      provisional: true
+    };
+  });
   return {
     version: W19_VERSION,
     task: task,
-    folderUrl: 'https://drive.google.com/drive/folders/' + encodeURIComponent(folder.id),
+    folderUrl: null,
     serviceUrl: ScriptApp.getService().getUrl(),
     maxUploadBytes: cfg.maxUploadBytes,
-    materials: w20RegistryReadTask_(taskId, cfg),
-    degraded: true,
-    degradedReason: String(reason && reason.code || 'NOTION_UNAVAILABLE')
+    materials: materials,
+    cached: true,
+    authoritative: false,
+    refreshRequired: true,
+    degraded: Boolean(reason),
+    degradedReason: reason ? String(reason.code || 'NOTION_UNAVAILABLE') : null
   };
 }

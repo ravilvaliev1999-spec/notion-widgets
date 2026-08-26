@@ -154,7 +154,7 @@ test('every public data API authenticates the same input payload', () => {
   assert.doesNotMatch(backendSource, /w19Audit_\([^\n]+accessToken/);
 });
 
-test('web app routes download requests to a dedicated top-level courier', () => {
+test('web app routes download and create requests to dedicated couriers', () => {
   const doGet = backendSource.slice(backendSource.indexOf('function doGet'), backendSource.indexOf('/* ========================= Public client API'));
   assert.match(doGet, /event && event\.parameter/);
   assert.match(doGet, /params\.downloadPageId \|\| params\.downloadTicket/);
@@ -163,6 +163,11 @@ test('web app routes download requests to a dedicated top-level courier', () => 
   assert.match(doGet, /task:\s*String\(params\.task \|\| params\.taskPageId/);
   assert.match(doGet, /downloadPageId:\s*String\(params\.downloadPageId/);
   assert.match(doGet, /output = template\.evaluate\(\)/);
+  assert.match(doGet, /params\.createSection \|\| params\.createRequestId/);
+  assert.match(doGet, /createTemplateFromFile\('Create'\)/);
+  assert.match(doGet, /createSection:\s*String\(params\.createSection/);
+  assert.match(doGet, /createRequestId:\s*String\(params\.createRequestId/);
+  assert.match(doGet, /output = createTemplate\.evaluate\(\)/);
   assert.match(doGet, /createHtmlOutputFromFile\('Index'\)/);
   assert.match(doGet, /XFrameOptionsMode\.ALLOWALL/);
 });
@@ -179,16 +184,106 @@ test('bootstrap falls back to the durable registry only for transient Notion tra
   backend.w19AuthorizedConfig_ = () => cfg;
   backend.w19AssertSchema_ = () => { throw new backend.W19Error_('GOOGLE_URLFETCH_QUOTA', 'quota', true); };
   backend.w20BootstrapFromRegistry_ = (_input, receivedCfg, reason) => ({ degraded: true, code: reason.code, sameCfg: receivedCfg === cfg });
-  const fallback = backend.apiBootstrap({ taskPageId: cfg.authorizedTaskPageId });
+  const fallback = backend.apiBootstrap({ taskPageId: cfg.authorizedTaskPageId, forceRefresh: true });
   assert.equal(fallback.ok, true);
   assert.equal(fallback.data.degraded, true);
   assert.equal(fallback.data.code, 'GOOGLE_URLFETCH_QUOTA');
   assert.equal(fallback.data.sameCfg, true);
 
   backend.w19AssertSchema_ = () => { throw new backend.W19Error_('NOTION_FORBIDDEN', 'forbidden', false); };
-  const forbidden = backend.apiBootstrap({ taskPageId: cfg.authorizedTaskPageId });
+  const forbidden = backend.apiBootstrap({ taskPageId: cfg.authorizedTaskPageId, forceRefresh: true });
   assert.equal(forbidden.ok, false);
   assert.equal(forbidden.error.code, 'NOTION_FORBIDDEN');
+});
+
+test('cached bootstrap paints safe registry cards without Notion or Drive calls', () => {
+  const backend = loadBackend();
+  const taskId = '3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const pageId = '3c72d627-39a1-8120-bd0a-f969e6846945';
+  const values = {};
+  const props = {
+    getProperties: () => ({...values}),
+    getProperty: (key) => values[key] || null,
+    setProperty: (key,value) => { values[key]=String(value); },
+    setProperties: (next) => { Object.assign(values,next); },
+    deleteProperty: (key) => { delete values[key]; }
+  };
+  backend.PropertiesService = { getScriptProperties: () => props };
+  backend.ScriptApp = { getService: () => ({ getUrl: () => 'https://script.google.com/macros/s/abcdefghijklmnopqrstuvwxyz0123456789_-AB/exec' }) };
+  backend.w20RegistryReplaceTask_(taskId,[{
+    id:pageId,name:'Быстрая карточка',section:'Docs',format:'Google Docs',provider:'Google Drive',
+    openUrl:'https://docs.google.com/document/d/NativeGoogleDoc123/edit',googleFileId:'NativeGoogleDoc123',folderId:'TaskFolder12345',widgetOwned:true,position:0,syncStatus:'synced'
+  }]);
+  backend.w20RegistryWriteTaskMeta_(taskId,{taskName:'Задача',folderId:'TaskFolder12345'});
+  backend.w19AuthorizedConfig_ = () => ({authorizedTaskPageId:taskId,deniedPageIds:{},maxUploadBytes:8388608});
+  for (const name of ['w19AssertSchema_','w19AssertTaskPage_','w19QueryTaskMaterials_','w19EnsureTaskFolder_']) backend[name]=()=>{throw new Error(`${name} must not run`);};
+  const result=backend.apiBootstrap({taskPageId:taskId});
+  assert.equal(result.ok,true);
+  assert.equal(result.data.cached,true);
+  assert.equal(result.data.authoritative,false);
+  assert.equal(result.data.materials.length,1);
+  assert.equal(result.data.materials[0].name,'Быстрая карточка');
+  assert.equal(result.data.materials[0].openUrl,undefined);
+  assert.equal(result.data.materials[0].googleFileId,undefined);
+  assert.equal(result.data.folderUrl,null);
+});
+
+test('interactive bootstrap and list refresh defer per-file Drive metadata sync', () => {
+  const bootstrap = backendSource.slice(backendSource.indexOf('function apiBootstrap'), backendSource.indexOf('function apiCreateGoogle'));
+  const sync = backendSource.slice(backendSource.indexOf('function apiSyncTask'), backendSource.indexOf('/* ========================= Admin-only setup'));
+  assert.doesNotMatch(bootstrap,/w19SyncPageList_/);
+  assert.doesNotMatch(sync,/w19SyncPageList_/);
+  assert.match(bootstrap,/input && input\.forceRefresh === true/);
+});
+
+test('client materials expose only the create request id, never the canonical idempotency key', () => {
+  const backend = loadBackend();
+  const taskId = '3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const requestId = '11111111-1111-4111-8111-111111111111';
+  backend.w20IssueDrivePollClaim_ = () => 'claim';
+  const material = backend.w20MaterialForClient_({
+    id: '3c72d627-39a1-4120-8d0a-f969e6846945',
+    provider: 'Google Drive',
+    googleFileId: 'NativeGoogleDoc123',
+    format: 'Google Docs',
+    section: 'Docs',
+    archived: false,
+    syncStatus: 'synced',
+    idempotency: `${backend.WidgetV19Core.compactUuid(taskId)}|create-google-Docs|${requestId}`
+  }, taskId, {});
+  assert.equal(material.createRequestId, requestId);
+  assert.equal(material.idempotency, undefined);
+  assert.doesNotMatch(JSON.stringify(material), /create-google-Docs|3c62d62739a180a1aac7ec19ffc9ef8e/);
+  const physicalDelete = backendSource.slice(backendSource.indexOf('function apiDeletePhysical'), backendSource.indexOf('function apiPrepareDownload'));
+  const archiveState = backendSource.slice(backendSource.indexOf('function w19SetArchiveState_'), backendSource.indexOf('function w19Audit_'));
+  assert.doesNotMatch(physicalDelete, /return \{ material: material,/);
+  assert.doesNotMatch(physicalDelete, /return \{ material: w19MaterialFromPage_\(updated\),/);
+  assert.match(physicalDelete, /w20MaterialForClient_\(material, task\.id, cfg\)/);
+  assert.match(physicalDelete, /w20MaterialForClient_\(w19MaterialFromPage_\(updated\), task\.id, cfg\)/);
+  assert.doesNotMatch(archiveState, /return \{ material: material,/);
+  assert.match(archiveState, /w20MaterialForClient_\(material, task\.id, cfg\)/);
+});
+
+test('repeated Docs creation with one request id executes the document creation once', () => {
+  const backend = loadBackend();
+  const values = {};
+  const props = {
+    getProperty: (key) => values[key] || null,
+    setProperty: (key, value) => { values[key] = String(value); }
+  };
+  const lock = { tryLock: () => true, waitLock() {}, releaseLock() {} };
+  backend.PropertiesService = { getScriptProperties: () => props };
+  backend.LockService = { getScriptLock: () => lock };
+  let uuidIndex = 0;
+  backend.Utilities.getUuid = () => `attempt-${uuidIndex += 1}`;
+  const taskId = '3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const requestId = '11111111-1111-4111-8111-111111111111';
+  const canonical = backend.w19CanonicalIdempotency_(taskId, 'create-google-Docs', requestId);
+  let documentsCreated = 0;
+  const create = () => backend.w19WithIdempotency_(canonical, () => ({ documentId: `doc-${documentsCreated += 1}` }));
+  assert.equal(create().documentId, 'doc-1');
+  assert.equal(create().documentId, 'doc-1');
+  assert.equal(documentsCreated, 1);
 });
 
 test('scheduled sync rejects browser calls that are neither owner nor the installed trigger', () => {

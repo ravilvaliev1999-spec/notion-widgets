@@ -299,7 +299,7 @@
   const DRIVE_POLL_INTERVAL_MS = 15000;
   const DRIVE_POLL_MIN_GAP_MS = 12000;
   const bridgeInstanceId = uid();
-  const state = { task:null, folderUrl:null, serviceUrl:null, materials:[], busy:new Set(), syncing:false, drivePolling:false, lastDrivePollAt:0, claimRefreshNotBefore:0, bootstrapped:false, maxUploadBytes:8388608, dragId:null, mock:false };
+  const state = { task:null, folderUrl:null, serviceUrl:null, materials:[], busy:new Set(), syncing:false, drivePolling:false, lastDrivePollAt:0, claimRefreshNotBefore:0, bootstrapped:false, authoritative:false, maxUploadBytes:8388608, dragId:null, mock:false };
   const retryUpload = new Map();
   const memoryIdempotency = new Map();
   const $ = (id) => document.getElementById(id);
@@ -309,6 +309,8 @@
   let queuedOrder = null;
   let backgroundRpcTail = Promise.resolve();
   let geometryRaf = 0;
+  let returnRefreshTimer = 0;
+  let lastReturnRefreshAt = 0;
 
   function normalizeUuid(value) {
     const raw = String(value || '').toLowerCase().replace(/[^0-9a-f]/g, '');
@@ -455,7 +457,7 @@
     const ok=(data)=>Promise.resolve({ok:true,data});
     const fail=(code,message,retryable=false)=>Promise.resolve({ok:false,error:{code,message,retryable}});
     return { call(method,payload) {
-      if (method==='apiBootstrap') return ok({version:'v20-mock',task:{id:payload.taskPageId,name:'Виджет файлов — задача'},folderUrl:'https:\/\/drive.google.com/drive/folders/mockfolder123',serviceUrl:null,maxUploadBytes:8388608,materials:items.filter(x=>!x.archived)});
+      if (method==='apiBootstrap') return ok({version:'v20-mock',task:{id:payload.taskPageId,name:'Виджет файлов — задача'},folderUrl:'https:\/\/drive.google.com/drive/folders/mockfolder123',serviceUrl:null,maxUploadBytes:8388608,materials:items.filter(x=>!x.archived),cached:false,authoritative:true});
       if (method==='apiPollDriveMetadata') {
         const requested=new Set((payload.materials||[]).map(row=>`${row.pageId}:${row.googleFileId}`));
         return ok({materials:items.filter(item=>requested.has(`${item.id}:${item.googleFileId}`)).map(item=>({pageId:item.id,googleFileId:item.googleFileId,name:item.name,section:item.section,format:item.format,openUrl:item.openUrl,mimeType:item.mimeType||'',size:item.size??null,driveMd5:item.driveMd5||'',downloadName:item.name,normalizedUrl:item.openUrl||'',drivePollClaim:item.drivePollClaim})),polledAt:new Date().toISOString()});
@@ -534,11 +536,13 @@
       const materials=activeMaterials(section);
       const primary=col.querySelector('.group-card');
       primary.querySelector('.count').textContent=materials.length;
-      primary.classList.toggle('busy',state.busy.has(`create:${section}`));
-      primary.setAttribute('aria-busy',String(state.busy.has(`create:${section}`)));
+      primary.classList.toggle('busy',state.busy.has(`create:${section}`)||!state.authoritative);
+      primary.setAttribute('aria-busy',String(state.busy.has(`create:${section}`)||!state.authoritative));
+      primary.setAttribute('aria-disabled',String(!state.authoritative));
+      const uploadButton=primary.querySelector('[data-upload-section]');if(uploadButton)uploadButton.disabled=!state.authoritative;
       const files=$(`files-${section}`);files.textContent='';
       materials.forEach((item)=>files.appendChild(materialCard(item,materials.length)));
-      const add=document.createElement('button');add.type='button';add.className='file-add';add.dataset.addLink=section;add.textContent='+ добавить ссылку';add.disabled=state.busy.has(`link:${section}`);add.setAttribute('aria-label',`Добавить ссылку в ${section}`);files.appendChild(add);
+      const add=document.createElement('button');add.type='button';add.className='file-add';add.dataset.addLink=section;add.textContent='+ добавить ссылку';add.disabled=!state.authoritative||state.busy.has(`link:${section}`);add.setAttribute('aria-label',`Добавить ссылку в ${section}`);files.appendChild(add);
     });
     postHeight();scheduleEmbedBridgeGeometry();
   }
@@ -546,8 +550,10 @@
   function materialCard(item,count) {
     const section=sectionFor(item),group=GROUPS[section];
     const courierHref=downloadCourierHref(item);
-    const card=document.createElement(courierHref?'a':'article');card.className=`btn ${group.cls} item-card`;card.dataset.itemId=item.id;card.tabIndex=0;card.draggable=!String(item.id).startsWith('pending:');
+    const directHref=materialOpenHref(item);
+    const card=document.createElement(courierHref||directHref?'a':'article');card.className=`btn ${group.cls} item-card`;card.dataset.itemId=item.id;card.tabIndex=0;card.draggable=state.authoritative&&!String(item.id).startsWith('pending:');
     if(courierHref){card.href=courierHref;card.target='_blank';card.rel='noopener noreferrer';card.referrerPolicy='no-referrer';card.dataset.downloadCourier='true';card.classList.add('download-ready');}
+    else if(directHref){card.href=directHref;card.target='_blank';card.rel='noopener noreferrer';card.referrerPolicy='no-referrer';card.dataset.directOpen='true';}
     else card.setAttribute('role','link');
     if(item.syncStatus==='pending')card.classList.add('pending');if(item.error)card.classList.add('error');
     const action=canPrepareDownload(item)?'Скачать':(item.openUrl?'Открыть':'Повторить');
@@ -555,7 +561,20 @@
     card.setAttribute('aria-busy',String(item.syncStatus==='pending'));
     card.innerHTML=cardMarkup(section,item.name||'Без названия',count,'Изменить материал',`data-edit-id="${escapeHtml(item.id)}"`);
     card.querySelector('.title').textContent=item.name||'Без названия';
+    const editButton=card.querySelector('[data-edit-id]');if(editButton)editButton.disabled=!state.authoritative;
     return card;
+  }
+
+  function applyBootstrapData(data,authoritative) {
+    state.task=data.task||state.task;
+    if(data.folderUrl)state.folderUrl=data.folderUrl;
+    if(data.serviceUrl)state.serviceUrl=data.serviceUrl;
+    state.materials=Array.isArray(data.materials)?data.materials:[];
+    state.maxUploadBytes=data.maxUploadBytes||state.maxUploadBytes;
+    state.claimRefreshNotBefore=0;
+    state.bootstrapped=true;
+    state.authoritative=Boolean(authoritative);
+    render();announceEmbedBridgeReady();
   }
 
   async function bootstrap() {
@@ -563,14 +582,25 @@
     if(!taskPageId){showFatal('В адресе виджета отсутствует корректный параметр task.');return;}
     try {
       const data=await call('apiBootstrap',{taskPageId});
-      state.task=data.task;state.folderUrl=data.folderUrl;state.serviceUrl=data.serviceUrl||null;state.materials=data.materials||[];state.maxUploadBytes=data.maxUploadBytes||state.maxUploadBytes;state.claimRefreshNotBefore=0;state.bootstrapped=true;render();announceEmbedBridgeReady();
+      applyBootstrapData(data,!data.cached&&data.authoritative!==false);
+      if(data.cached){
+        try {
+          const fresh=await call('apiBootstrap',{taskPageId,forceRefresh:true});
+          if(fresh.cached||fresh.authoritative!==true){const staleError=new Error('Не удалось подтвердить актуальность данных.');staleError.retryable=true;throw staleError;}
+          applyBootstrapData(fresh,true);
+        } catch(error) {
+          showFatal(`Карточки показаны из последнего снимка. ${error.message}`,Boolean(error.retryable));
+          return;
+        }
+      }
+      pollDriveMetadata(true);
     } catch(error) { showFatal(error.message,Boolean(error.retryable)); }
   }
 
   async function refresh(silent) {
     if(!taskPageId||!state.bootstrapped||state.syncing)return;
     state.syncing=true;
-    try { const data=await callBackground('apiSyncTask',{taskPageId});state.materials=data.materials||[];state.claimRefreshNotBefore=0;render();if(!silent)toast('Названия обновлены'); }
+    try { const data=await callBackground('apiSyncTask',{taskPageId});applyBootstrapData(data,true);if(!silent)toast('Список обновлён'); }
     catch(error) { if(!silent)showFatal(error.message,Boolean(error.retryable)); }
     finally { state.syncing=false; }
   }
@@ -615,6 +645,7 @@
   }
 
   async function createGoogle(section,bridgeRequest) {
+    if(!state.authoritative){toast('Завершаю синхронизацию…');return;}
     if(state.busy.has(`create:${section}`))return;
     const popup=bridgeRequest?null:window.open('about:blank','_blank');
     if(popup)writeCourier(popup,'Создаю файл…');
@@ -634,6 +665,7 @@
   }
 
   function openLinkModal(section) {
+    if(!state.authoritative){toast('Завершаю синхронизацию…');return;}
     $('linkSection').value=section;$('linkUrl').value='';openModal('linkModal');setTimeout(()=>$('linkUrl').focus(),40);
   }
 
@@ -649,6 +681,7 @@
   }
 
   function chooseFiles(section) {
+    if(!state.authoritative){toast('Завершаю синхронизацию…');return;}
     const input=$('fileInput');input.dataset.section=section;input.click();
   }
 
@@ -704,7 +737,8 @@
 
   function announceEmbedBridgeReady() {
     if(!isEmbedBridgeMode()||!state.bootstrapped)return;
-    postToEmbedAncestors({type:'notion-widget-v20-bridge-ready',instanceId:bridgeInstanceId,geometry:primaryGeometry(),viewport:{width:window.innerWidth,height:window.innerHeight}});
+    const completedCreateRequestIds=state.materials.map((item)=>String(item&&item.createRequestId||'').toLowerCase()).filter((value,index,all)=>/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)&&all.indexOf(value)===index).slice(0,100);
+    postToEmbedAncestors({type:'notion-widget-v20-bridge-ready',instanceId:bridgeInstanceId,authoritative:state.authoritative,folderUrl:state.authoritative&&state.folderUrl||'',completedCreateRequestIds,geometry:primaryGeometry(),viewport:{width:window.innerWidth,height:window.innerHeight}});
   }
 
   function postEmbedBridgeGeometry() {
@@ -781,7 +815,7 @@
 
   function downloadCourierHref(item) {
     const materialId=normalizeUuid(item&&item.id),ticket=strongDownloadTicket();
-    if(!state.bootstrapped||!canPrepareDownload(item)||!state.serviceUrl||!taskPageId||!materialId||!ticket||!/^[A-Za-z0-9._~-]{32,256}$/.test(accessToken))return '';
+    if(!state.authoritative||!canPrepareDownload(item)||!state.serviceUrl||!taskPageId||!materialId||!ticket||!/^[A-Za-z0-9._~-]{32,256}$/.test(accessToken))return '';
     try {
       const service=new URL(state.serviceUrl);
       if(service.protocol!=='https:'||service.hostname!=='script.google.com'||service.port||service.username||service.password||service.search||service.hash||!/^\/macros\/s\/[A-Za-z0-9_-]{20,}\/exec$/.test(service.pathname))return '';
@@ -799,7 +833,17 @@
     return Boolean(item&&item.canDownload&&item.widgetOwned&&!item.archived&&!String(item.id||'').startsWith('pending:'));
   }
 
+  function materialOpenHref(item) {
+    if(!state.authoritative||!item||!item.openUrl||canPrepareDownload(item))return '';
+    try {
+      const url=new URL(String(item.openUrl));
+      if(url.protocol!=='https:'||url.port||url.username||url.password)return '';
+      return url.href;
+    } catch (_error) { return ''; }
+  }
+
   function openExact(item) {
+    if(!state.authoritative){toast('Завершаю синхронизацию…');return;}
     if(item.widgetOwnedBinary&&!item.canDownload){toast('Прямое скачивание этого файла пока недоступно. Обновите виджет и повторите попытку.');return;}
     if(canPrepareDownload(item)){toast('Сервис скачивания временно недоступен. Обновите виджет.');return;}
     if(item.openUrl){window.open(item.openUrl,'_blank','noopener,noreferrer');return;}
@@ -808,6 +852,7 @@
   }
 
   function openEdit(id) {
+    if(!state.authoritative){toast('Завершаю синхронизацию…');return;}
     const item=state.materials.find(material=>material.id===id);if(!item||String(id).startsWith('pending:'))return;
     $('editId').value=item.id;$('editName').value=item.name||'';$('editSection').value=sectionFor(item);$('editUrl').value=item.openUrl||'';
     const external=item.provider==='External URL';$('editUrl').hidden=!external;$('editUrlLabel').hidden=!external;openModal('editModal');setTimeout(()=>$('editName').focus(),40);
@@ -843,9 +888,10 @@
     const upload=event.target.closest('[data-upload-section]');if(upload){event.preventDefault();event.stopPropagation();chooseFiles(upload.dataset.uploadSection);return;}
     const add=event.target.closest('[data-add-link]');if(add){openLinkModal(add.dataset.addLink);return;}
     const edit=event.target.closest('[data-edit-id]');if(edit){event.preventDefault();event.stopPropagation();openEdit(edit.dataset.editId);return;}
-    const itemCard=event.target.closest('[data-item-id]');if(itemCard){if(itemCard.dataset.downloadCourier==='true')return;const item=state.materials.find(material=>material.id===itemCard.dataset.itemId);if(item)openExact(item);return;}
+    const itemCard=event.target.closest('[data-item-id]');if(itemCard){if(itemCard.tagName==='A')return;const item=state.materials.find(material=>material.id===itemCard.dataset.itemId);if(item)openExact(item);return;}
     const service=event.target.closest('[data-service]');if(!service)return;const section=service.dataset.service;
     if(isEmbedBridgeMode())return;
+    if(!state.authoritative){toast('Завершаю синхронизацию…');return;}
     if(section==='Drive'){if(state.folderUrl)window.open(state.folderUrl,'_blank','noopener,noreferrer');else toast('Папка задачи ещё создаётся');return;}
     createGoogle(section);
   }
@@ -875,10 +921,15 @@
     document.querySelectorAll('[data-close]').forEach(button=>button.addEventListener('click',()=>closeModal(button.dataset.close)));
     document.querySelectorAll('.modal-back').forEach(modal=>modal.addEventListener('click',(event)=>{if(event.target===modal)closeModal(modal.id);}));
     document.addEventListener('keydown',(event)=>{if(event.key==='Escape')document.querySelectorAll('.modal-back.open').forEach(modal=>closeModal(modal.id));});
-    window.addEventListener('focus',()=>pollDriveMetadata(true));
+    const refreshOnReturn=()=>{
+      if(!state.authoritative)return;
+      const now=Date.now();if(now-lastReturnRefreshAt<8000){pollDriveMetadata(true);return;}
+      clearTimeout(returnRefreshTimer);returnRefreshTimer=setTimeout(async()=>{lastReturnRefreshAt=Date.now();await refresh(true);pollDriveMetadata(true);},250);
+    };
+    window.addEventListener('focus',refreshOnReturn);
     window.addEventListener('resize',scheduleEmbedBridgeGeometry);
     window.addEventListener('scroll',scheduleEmbedBridgeGeometry,{passive:true});
-    document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')pollDriveMetadata(true);});
+    document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')refreshOnReturn();});
     const pollInterval=DRIVE_POLL_INTERVAL_MS+Math.floor(Math.random()*5000);
     window.setInterval(()=>{if(document.visibilityState==='visible')pollDriveMetadata(false);},pollInterval);
     if(window.ResizeObserver)new ResizeObserver(()=>{postHeight();scheduleEmbedBridgeGeometry();}).observe(document.body);
