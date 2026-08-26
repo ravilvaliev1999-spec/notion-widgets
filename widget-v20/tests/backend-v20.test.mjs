@@ -10,6 +10,7 @@ const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const coreSource = fs.readFileSync(path.join(root, 'Core.js'), 'utf8');
 const backendSource = fs.readFileSync(path.join(root, 'Code.gs'), 'utf8');
 const registrySource = fs.readFileSync(path.join(root, 'Registry.gs'), 'utf8');
+const creatorSource = fs.readFileSync(path.join(root, 'Create.html'), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'appsscript.json'), 'utf8'));
 
 function loadCore() {
@@ -53,6 +54,7 @@ function loadBackend(activeEmail = '') {
       DigestAlgorithm: { SHA_256: 'SHA_256' },
       getUuid: () => crypto.randomUUID(),
       newBlob: (value) => ({ getBytes: () => [...Buffer.from(String(value), 'utf8')] }),
+      base64EncodeWebSafe: (bytes) => Buffer.from(bytes).toString('base64url'),
       computeDigest: (_algorithm, bytes) => [...crypto.createHash('sha256').update(Buffer.from(bytes)).digest()],
       computeHmacSha256Signature: (value, key) => [...crypto.createHmac('sha256', String(key)).update(String(value)).digest()]
     }
@@ -191,6 +193,30 @@ test('web app routes download and create requests to dedicated couriers', () => 
   assert.match(doGet, /template\.precomputedResultJson = JSON\.stringify\(result\)/);
 });
 
+test('create GET rendezvous renders exactly four runtime values without executing creation', () => {
+  const backend=loadBackend();
+  const task='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e',requestId='12345678-1234-4abc-8def-1234567890ab',accessToken='a'.repeat(64);
+  const rendered=[];
+  const output={setTitle(){return this;},setXFrameOptionsMode(){return this;},addMetaTag(){return this;}};
+  backend.HtmlService={
+    XFrameOptionsMode:{ALLOWALL:'ALLOWALL'},
+    createTemplateFromFile(name){
+      assert.equal(name,'Create');
+      const template={evaluate(){rendered.push({runtime:template.runtimeParamsJson,result:template.precomputedResultJson});return output;}};
+      return template;
+    },
+    createHtmlOutputFromFile(){throw new Error('create GET must not render Index');}
+  };
+  backend.apiCreateGoogle=()=>{throw new Error('doGet must not execute creation');};
+  assert.equal(backend.doGet({parameter:{task,accessToken,createSection:'Docs',createRequestId:requestId}}),output);
+  const runtime=JSON.parse(rendered[0].runtime);
+  assert.deepEqual(Object.keys(runtime).sort(),['accessToken','createRequestId','createSection','task']);
+  assert.deepEqual(runtime,{task,accessToken,createSection:'Docs',createRequestId:requestId});
+  assert.equal(rendered[0].result,'null');
+  assert.match(creatorSource,/apiGetCreateStatus\(input\)/);
+  assert.doesNotMatch(creatorSource,/\.apiCreateGoogle\(/);
+});
+
 test('create POST accepts exactly four form fields, executes once and embeds only a safe precomputed result', () => {
   const backend = loadBackend();
   const task='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e',requestId='12345678-1234-4abc-8def-1234567890ab';
@@ -288,22 +314,93 @@ test('cached bootstrap paints safe registry cards without Notion or Drive calls'
   };
   backend.PropertiesService = { getScriptProperties: () => props };
   backend.ScriptApp = { getService: () => ({ getUrl: () => 'https://script.google.com/macros/s/abcdefghijklmnopqrstuvwxyz0123456789_-AB/exec' }) };
-  backend.w20RegistryReplaceTask_(taskId,[{
+  const replacement=backend.w20RegistryReplaceTaskResult_(taskId,[{
     id:pageId,name:'Быстрая карточка',section:'Docs',format:'Google Docs',provider:'Google Drive',
     openUrl:'https://docs.google.com/document/d/NativeGoogleDoc123/edit',googleFileId:'NativeGoogleDoc123',folderId:'TaskFolder12345',widgetOwned:true,position:0,syncStatus:'synced'
   }]);
-  backend.w20RegistryWriteTaskMeta_(taskId,{taskName:'Задача',folderId:'TaskFolder12345'});
-  backend.w19AuthorizedConfig_ = () => ({authorizedTaskPageId:taskId,deniedPageIds:{},maxUploadBytes:8388608});
+  assert.equal(replacement.ok,true);
+  const validatedAt=new Date().toISOString();
+  backend.w20RegistryWriteTaskMeta_(taskId,{
+    taskName:'Задача',folderId:'TaskFolder12345',rootFolderId:'RootFolder12345',folderVerified:true,
+    folderValidatedAt:validatedAt,taskValidatedAt:validatedAt,snapshotValidatedAt:validatedAt,
+    snapshotActiveCount:replacement.activeCount
+  });
+  backend.w19AuthorizedConfig_ = () => ({authorizedTaskPageId:taskId,deniedPageIds:{},rootFolderId:'RootFolder12345',maxUploadBytes:8388608,notionToken:'server-only'});
   for (const name of ['w19AssertSchema_','w19AssertTaskPage_','w19QueryTaskMaterials_','w19EnsureTaskFolder_']) backend[name]=()=>{throw new Error(`${name} must not run`);};
   const result=backend.apiBootstrap({taskPageId:taskId});
   assert.equal(result.ok,true,JSON.stringify(result));
   assert.equal(result.data.cached,true);
   assert.equal(result.data.authoritative,false);
+  assert.equal(result.data.actionReady,true);
+  assert.equal(result.data.fullySynced,false);
+  assert.equal(typeof result.data.trustedUntil,'string');
   assert.equal(result.data.materials.length,1);
   assert.equal(result.data.materials[0].name,'Быстрая карточка');
-  assert.equal(result.data.materials[0].openUrl,undefined);
-  assert.equal(result.data.materials[0].googleFileId,undefined);
-  assert.equal(result.data.folderUrl,null);
+  assert.equal(result.data.materials[0].openUrl,'https://docs.google.com/document/d/NativeGoogleDoc123/edit');
+  assert.equal(result.data.materials[0].googleFileId,'NativeGoogleDoc123');
+  assert.equal(result.data.folderUrl,'https://drive.google.com/drive/folders/TaskFolder12345');
+});
+
+test('cached action proof expires after two minutes and fails closed on a registry count mismatch', () => {
+  const backend=loadBackend();
+  const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const pageId='3c72d627-39a1-8120-bd0a-f969e6846945';
+  const values={};
+  const props={
+    getProperties:()=>({...values}),
+    getProperty:(key)=>Object.prototype.hasOwnProperty.call(values,key)?values[key]:null,
+    setProperty:(key,value)=>{values[key]=String(value);},
+    setProperties:(next)=>{Object.assign(values,next);},
+    deleteProperty:(key)=>{delete values[key];}
+  };
+  backend.PropertiesService={getScriptProperties:()=>props};
+  backend.ScriptApp={getService:()=>({getUrl:()=> 'https://script.google.com/macros/s/abcdefghijklmnopqrstuvwxyz0123456789_-AB/exec'})};
+  const replacement=backend.w20RegistryReplaceTaskResult_(taskId,[{
+    id:pageId,name:'Документ',section:'Docs',format:'Google Docs',provider:'Google Drive',
+    openUrl:'https://docs.google.com/document/d/NativeGoogleDoc123/edit',googleFileId:'NativeGoogleDoc123',
+    folderId:'TaskFolder12345',position:0,syncStatus:'synced'
+  }]);
+  assert.equal(replacement.ok,true);
+  const folderValidatedAt=new Date().toISOString();
+  const staleAt=new Date(Date.now()-121000).toISOString();
+  backend.w20RegistryWriteTaskMeta_(taskId,{
+    taskName:'Задача',folderId:'TaskFolder12345',rootFolderId:'RootFolder12345',folderVerified:true,
+    folderValidatedAt,taskValidatedAt:staleAt,snapshotValidatedAt:staleAt,snapshotActiveCount:replacement.activeCount
+  });
+  const cfg={authorizedTaskPageId:taskId,deniedPageIds:{},rootFolderId:'RootFolder12345',maxUploadBytes:8388608,notionToken:'server-only'};
+  const stale=backend.w20BootstrapFromRegistry_({taskPageId:taskId},cfg,null);
+  assert.equal(stale.actionReady,false);
+  assert.equal(stale.trustedUntil,null);
+  assert.equal(stale.folderUrl,'https://drive.google.com/drive/folders/TaskFolder12345');
+  assert.equal(stale.materials[0].openUrl,'https://docs.google.com/document/d/NativeGoogleDoc123/edit');
+  assert.equal(backend.w20RegistryClaimCreateSlot_(taskId,'Docs','RootFolder12345'),null);
+
+  const freshAt=new Date().toISOString();
+  backend.w20RegistryWriteTaskMeta_(taskId,{
+    taskValidatedAt:freshAt,snapshotValidatedAt:freshAt,snapshotActiveCount:replacement.activeCount
+  });
+  assert.equal(backend.w20BootstrapFromRegistry_({taskPageId:taskId},cfg,null).actionReady,true);
+  assert.equal(backend.w20RegistryUpsert_(taskId,{
+    id:'3c72d627-39a1-81e5-a840-ecb1c98cc5c5',name:'Параллельно созданный',section:'Docs',format:'Google Docs',provider:'Google Drive',
+    openUrl:'https://docs.google.com/document/d/SecondGoogleDoc123/edit',googleFileId:'SecondGoogleDoc123',
+    folderId:'TaskFolder12345',position:1,syncStatus:'synced'
+  }),true);
+  assert.equal(backend.w20BootstrapFromRegistry_({taskPageId:taskId},cfg,null).actionReady,true);
+  assert.equal(backend.w20RegistryClaimCreateSlot_(taskId,'Docs','DifferentRootFolder123'),null);
+  const secondKey=backend.w20RegistryKey_(taskId,'3c72d627-39a1-81e5-a840-ecb1c98cc5c5');
+  const wrongFolder=JSON.parse(values[secondKey]);
+  wrongFolder.folderId='AnotherTaskFolder123';
+  values[secondKey]=JSON.stringify(wrongFolder);
+  assert.equal(backend.w20BootstrapFromRegistry_({taskPageId:taskId},cfg,null).actionReady,false);
+  wrongFolder.folderId='TaskFolder12345';
+  values[secondKey]=JSON.stringify(wrongFolder);
+  assert.equal(backend.w20BootstrapFromRegistry_({taskPageId:taskId},cfg,null).actionReady,true);
+  const metaKey=backend.w20RegistryMetaKey_(taskId);
+  const inconsistent=JSON.parse(values[metaKey]);
+  inconsistent.snapshotActiveCount+=1;
+  values[metaKey]=JSON.stringify(inconsistent);
+  assert.equal(backend.w20BootstrapFromRegistry_({taskPageId:taskId},cfg,null).actionReady,false);
+  assert.equal(backend.w20RegistryClaimCreateSlot_(taskId,'Docs','RootFolder12345'),null);
 });
 
 test('interactive bootstrap and list refresh defer per-file Drive metadata sync', () => {
@@ -388,14 +485,17 @@ test('fresh Google creation uses exactly one Drive CREATE and one Notion CREATE 
   let uuidIndex = 0;
   backend.Utilities.getUuid = () => `attempt-${uuidIndex += 1}`;
   backend.Utilities.formatDate = () => '2026-08-26 21:00';
-  backend.w20RegistryReplaceTask_(taskId,[{
+  const replacement=backend.w20RegistryReplaceTaskResult_(taskId,[{
     id:existingPageId,name:'Существующий документ',section:'Docs',format:'Google Docs',provider:'Google Drive',
     openUrl:'https://docs.google.com/document/d/ExistingGoogleDoc123/edit',googleFileId:'ExistingGoogleDoc123',
     folderId:'TaskFolder12345',widgetOwned:true,position:7,syncStatus:'synced'
   }]);
+  assert.equal(replacement.ok,true);
+  const validatedAt=new Date().toISOString();
   backend.w20RegistryWriteTaskMeta_(taskId,{
     taskName:'Задача',folderId:'TaskFolder12345',rootFolderId:'RootFolder12345',folderVerified:true,
-    folderValidatedAt:new Date().toISOString(),
+    folderValidatedAt:validatedAt,taskValidatedAt:validatedAt,snapshotValidatedAt:validatedAt,
+    snapshotActiveCount:replacement.activeCount,
     context:{path:'Основная / Задача',ancestorIds:'ancestor',depth:2,sphereIds:[],directionIds:[],projectIds:[]}
   });
   const cfg={authorizedTaskPageId:taskId,deniedPageIds:{},dataSourceId:'3822d627-39a1-8018-a2dc-000b95bf5722',notionToken:'server-only',rootFolderId:'RootFolder12345'};
@@ -467,8 +567,12 @@ test('create context warming verifies the task folder once without a Notion requ
   const lock={tryLock:()=>true,waitLock(){},releaseLock(){}};
   backend.PropertiesService={getScriptProperties:()=>props};
   backend.LockService={getScriptLock:()=>lock,getUserLock:()=>lock};
+  const replacement=backend.w20RegistryReplaceTaskResult_(taskId,[]);
+  assert.equal(replacement.ok,true);
+  const validatedAt=new Date().toISOString();
   backend.w20RegistryWriteTaskMeta_(taskId,{
     taskName:'Задача',folderId:'UntrustedFolder123',rootFolderId:'RootFolder12345',folderVerified:false,
+    taskValidatedAt:validatedAt,snapshotValidatedAt:validatedAt,snapshotActiveCount:replacement.activeCount,
     context:{path:'Основная / Задача',ancestorIds:'ancestor',depth:2}
   });
   assert.equal(backend.w20RegistryClaimCreateSlot_(taskId,'Docs','RootFolder12345'),null);
@@ -490,6 +594,8 @@ test('create context warming verifies the task folder once without a Notion requ
   const meta=backend.w20RegistryReadFreshTaskMeta_(taskId);
   assert.equal(meta.folderId,'VerifiedFolder123');
   assert.equal(meta.folderVerified,true);
+  assert.equal(meta.taskValidatedAt,validatedAt);
+  assert.equal(meta.snapshotValidatedAt,validatedAt);
 
   const cached=backend.apiWarmCreateContext({taskPageId:taskId});
   assert.deepEqual(JSON.parse(JSON.stringify(cached)),{ok:true,data:{ready:true,cached:true}});
@@ -1243,7 +1349,36 @@ test('durable fallback registry keeps only safe server-derived card metadata and
   assert.equal(values.get('NOTION_TOKEN'), 'must-remain-unread');
 });
 
-test('registry tombstones block stale upserts and snapshots until an explicit restore', () => {
+test('structured registry reads and replacements distinguish a valid empty snapshot from storage failure', () => {
+  const backend=loadBackend();
+  const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const values={};
+  const props={
+    getProperty:(key)=>Object.prototype.hasOwnProperty.call(values,key)?values[key]:null,
+    getProperties:()=>({...values}),
+    setProperty:(key,value)=>{values[key]=String(value);},
+    setProperties:(next)=>{Object.assign(values,next);},
+    deleteProperty:(key)=>{delete values[key];}
+  };
+  backend.PropertiesService={getScriptProperties:()=>props};
+  const emptyRead=backend.w20RegistryReadTaskResult_(taskId,null);
+  assert.equal(emptyRead.ok,true);
+  assert.equal(emptyRead.integrityOk,true);
+  assert.equal(emptyRead.activeCount,0);
+  const emptyReplace=backend.w20RegistryReplaceTaskResult_(taskId,[]);
+  assert.equal(emptyReplace.ok,true);
+  assert.equal(emptyReplace.activeCount,0);
+
+  backend.PropertiesService={getScriptProperties:()=>({getProperties:()=>{throw new Error('storage unavailable');}})};
+  const failedRead=backend.w20RegistryReadTaskResult_(taskId,null);
+  assert.equal(failedRead.ok,false);
+  assert.equal(failedRead.error,'STORAGE_ERROR');
+  const failedReplace=backend.w20RegistryReplaceTaskResult_(taskId,[]);
+  assert.equal(failedReplace.ok,false);
+  assert.equal(failedReplace.error,'STORAGE_ERROR');
+});
+
+test('registry tombstone grace protects recent removals from snapshots and scheduled upserts, then expires', () => {
   const backend = loadBackend();
   const taskId = '3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
   const pageId = '3c72d627-39a1-81e5-a840-ecb1c98cc5c5';
@@ -1271,22 +1406,38 @@ test('registry tombstones block stale upserts and snapshots until an explicit re
   };
 
   assert.equal(backend.w20RegistryUpsert_(taskId, material), true);
-  const snapshotStartedAt = Date.now();
   assert.equal(backend.w20RegistryRemove_(taskId, pageId), true);
   const key = backend.w20RegistryKey_(taskId, pageId);
   assert.equal(JSON.parse(values.get(key)).recordType, 'tombstone');
   assert.equal(backend.w20RegistryReadTask_(taskId, null).length, 0);
 
-  assert.equal(backend.w20RegistryUpsert_(taskId, { ...material, name: 'Поздний stale upsert' }), false);
-  assert.equal(backend.w20RegistryReplaceTask_(taskId, [{ ...material, name: 'Stale snapshot' }], snapshotStartedAt), 0);
+  assert.equal(backend.W20_REGISTRY_TOMBSTONE_GRACE_MS, 15 * 60 * 1000);
+  const recentTombstone = JSON.parse(values.get(key));
+  recentTombstone.removedAt = new Date(Date.now() - 5000).toISOString();
+  recentTombstone.registryStoredAt = recentTombstone.removedAt;
+  values.set(key, JSON.stringify(recentTombstone));
+  const snapshotStartedAt = Date.now();
+  assert.ok(Date.parse(recentTombstone.removedAt) < snapshotStartedAt);
+  assert.equal(backend.w20RegistryReplaceTask_(taskId, [{ ...material, name: 'Snapshot still contains removed card' }], snapshotStartedAt), 0);
   assert.equal(JSON.parse(values.get(key)).recordType, 'tombstone');
   assert.equal(backend.w20RegistryReadTask_(taskId, null).length, 0);
+  assert.equal(backend.w20RegistryUpsert_(taskId, { ...material, name: 'Запоздалый scheduled upsert' }), false);
+  assert.equal(JSON.parse(values.get(key)).recordType, 'tombstone');
 
-  assert.equal(backend.w20RegistryRestore_(taskId, { ...material, name: 'Восстановленная карточка' }), true);
+  const oldTombstone = JSON.parse(values.get(key));
+  oldTombstone.removedAt = new Date(Date.now() - (15 * 60 * 1000 + 5000)).toISOString();
+  oldTombstone.registryStoredAt = oldTombstone.removedAt;
+  values.set(key, JSON.stringify(oldTombstone));
+  const freshSnapshotStartedAt = Date.now();
+  assert.equal(backend.w20RegistryReplaceTask_(taskId, [{ ...material, name: 'Свежая authoritative карточка' }], freshSnapshotStartedAt), 1);
   const restored = backend.w20RegistryReadTask_(taskId, null);
   assert.equal(restored.length, 1);
-  assert.equal(restored[0].name, 'Восстановленная карточка');
+  assert.equal(restored[0].name, 'Свежая authoritative карточка');
   assert.equal(JSON.parse(values.get(key)).recordType, undefined);
+
+  assert.equal(backend.w20RegistryRemove_(taskId, pageId), true);
+  assert.equal(backend.w20RegistryRestore_(taskId, { ...material, name: 'Восстановленная явно карточка' }), true);
+  assert.equal(backend.w20RegistryReadTask_(taskId, null)[0].name, 'Восстановленная явно карточка');
 
   const addLink = backendSource.slice(backendSource.indexOf('function apiAddLink'), backendSource.indexOf('function apiUpload'));
   const archiveState = backendSource.slice(backendSource.indexOf('function w19SetArchiveState_'), backendSource.indexOf('function w19Audit_'));
@@ -1295,7 +1446,7 @@ test('registry tombstones block stale upserts and snapshots until an explicit re
   assert.match(archiveState, /w20RegistryRestore_\(task\.id, updatedMaterial\)/);
 });
 
-test('authoritative bootstrap and sync return the tombstone-aware merged registry', () => {
+test('authoritative bootstrap and sync retain recent tombstones while merging concurrent registry updates', () => {
   for (const apiName of ['apiBootstrap', 'apiSyncTask']) {
     const backend = loadBackend();
     const taskId = '3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
@@ -1336,6 +1487,11 @@ test('authoritative bootstrap and sync return the tombstone-aware merged registr
       position: 1
     };
     assert.equal(backend.w20RegistryRemove_(taskId, stalePageId), true);
+    const staleKey = backend.w20RegistryKey_(taskId, stalePageId);
+    const oldTombstone = JSON.parse(values.get(staleKey));
+    oldTombstone.removedAt = new Date(Date.now() - 5000).toISOString();
+    oldTombstone.registryStoredAt = oldTombstone.removedAt;
+    values.set(staleKey, JSON.stringify(oldTombstone));
     backend.w19AuthorizedConfig_ = () => ({
       authorizedTaskPageId: taskId,
       deniedPageIds: {},
@@ -1345,6 +1501,7 @@ test('authoritative bootstrap and sync return the tombstone-aware merged registr
     });
     backend.w19AssertSchema_ = () => ({ ok: true });
     backend.w19AssertTaskPage_ = () => ({ id: taskId, name: 'Задача', page: { properties: {} } });
+    backend.w19EnsureTaskFolder_ = () => ({ id: 'OwnedTaskFolder123' });
     backend.w20CacheDownloadMaterials_ = () => 0;
     backend.w19MaterialFromPage_ = (page) => page;
     backend.w19QueryTaskMaterials_ = () => {
@@ -1356,6 +1513,68 @@ test('authoritative bootstrap and sync return the tombstone-aware merged registr
     assert.equal(response.ok, true, `${apiName}: ${JSON.stringify(response)}`);
     assert.deepEqual(Array.from(response.data.materials, (item) => item.id), [concurrentPageId]);
     assert.equal(backend.w20RegistryReadTask_(taskId, null).some((item) => item.id === stalePageId), false);
+    assert.equal(JSON.parse(values.get(staleKey)).recordType, 'tombstone');
+    assert.equal(backend.w20RegistryUpsert_(taskId, { ...stale, name: 'Запоздалый scheduled upsert' }), false);
+  }
+});
+
+test('authoritative bootstrap and sync fail action proof closed when task meta is not durably confirmed', () => {
+  for (const apiName of ['apiBootstrap', 'apiSyncTask']) {
+    for (const metaWriteMode of ['failed', 'unconfirmed']) {
+      const backend = loadBackend();
+      const taskId = '3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+      const pageId = '3c72d627-39a1-8120-bd0a-f969e6846945';
+      const values = new Map();
+      backend.PropertiesService = {
+        getScriptProperties: () => ({
+          getProperty: (key) => values.get(key) ?? null,
+          getProperties: () => Object.fromEntries(values),
+          setProperty: (key, value) => values.set(key, String(value)),
+          setProperties: (entries) => Object.entries(entries).forEach(([key, value]) => values.set(key, String(value))),
+          deleteProperty: (key) => values.delete(key)
+        })
+      };
+      backend.ScriptApp = { getService: () => ({ getUrl: () => 'https://script.google.com/macros/s/abcdefghijklmnopqrstuvwxyz0123456789_-AB/exec' }) };
+      backend.w19AuthorizedConfig_ = () => ({
+        authorizedTaskPageId: taskId,
+        deniedPageIds: {},
+        rootFolderId: 'OwnedRootFolder123',
+        maxUploadBytes: 8 * 1024 * 1024,
+        notionToken: 'test-notion-hmac-secret'
+      });
+      backend.w19AssertSchema_ = () => ({ ok: true });
+      backend.w19AssertTaskPage_ = () => ({ id: taskId, name: 'Задача', page: { properties: {} } });
+      backend.w19EnsureTaskFolder_ = () => ({ id: 'OwnedTaskFolder123' });
+      backend.w20CacheDownloadMaterials_ = () => 0;
+      backend.w19MaterialFromPage_ = (page) => page;
+      backend.w19QueryTaskMaterials_ = () => [{
+        id: pageId,
+        name: 'Документ',
+        section: 'Docs',
+        format: 'Google Docs',
+        provider: 'Google Drive',
+        openUrl: 'https://docs.google.com/document/d/ConfirmedGoogleDoc123/edit',
+        googleFileId: 'ConfirmedGoogleDoc123',
+        folderId: 'OwnedTaskFolder123',
+        position: 0,
+        syncStatus: 'synced'
+      }];
+
+      let writes = 0;
+      backend.w20RegistryWriteTaskMeta_ = () => {
+        writes += 1;
+        return metaWriteMode === 'unconfirmed';
+      };
+      if (metaWriteMode === 'unconfirmed') backend.w20RegistryReadTaskMeta_ = () => null;
+
+      const response = backend[apiName]({ taskPageId: taskId, forceRefresh: true });
+      assert.equal(response.ok, true, `${apiName}/${metaWriteMode}: ${JSON.stringify(response)}`);
+      assert.equal(writes, 1, `${apiName}/${metaWriteMode}: meta write must be attempted exactly once`);
+      assert.equal(response.data.authoritative, true, `${apiName}/${metaWriteMode}: live response remains authoritative`);
+      assert.equal(response.data.fullySynced, true, `${apiName}/${metaWriteMode}: live response remains fully synced`);
+      assert.equal(response.data.actionReady, false, `${apiName}/${metaWriteMode}: hot action proof must fail closed`);
+      assert.equal(response.data.trustedUntil, null, `${apiName}/${metaWriteMode}: failed proof must not expose a trust deadline`);
+    }
   }
 });
 
@@ -1453,11 +1672,17 @@ test('hot and queried material paths share one atomic per-section position alloc
     };
     backend.PropertiesService={getScriptProperties:()=>props};
     backend.LockService={getScriptLock:()=>({tryLock:()=>true,releaseLock(){}})};
-    backend.w20RegistryReplaceTask_(taskId,[{
+    const replacement=backend.w20RegistryReplaceTaskResult_(taskId,[{
       id:'3c72d627-39a1-8120-bd0a-f969e6846945',name:'Существующий',section:'Docs',format:'Google Docs',provider:'Google Drive',
       openUrl:'https://docs.google.com/document/d/ExistingGoogleDoc123/edit',googleFileId:'ExistingGoogleDoc123',folderId:'TaskFolder12345',widgetOwned:true,position:7,syncStatus:'synced'
     }]);
-    backend.w20RegistryWriteTaskMeta_(taskId,{taskName:'Задача',folderId:'TaskFolder12345',rootFolderId:'RootFolder12345',folderVerified:true,folderValidatedAt:new Date().toISOString()});
+    assert.equal(replacement.ok,true);
+    const validatedAt=new Date().toISOString();
+    backend.w20RegistryWriteTaskMeta_(taskId,{
+      taskName:'Задача',folderId:'TaskFolder12345',rootFolderId:'RootFolder12345',folderVerified:true,
+      folderValidatedAt:validatedAt,taskValidatedAt:validatedAt,snapshotValidatedAt:validatedAt,
+      snapshotActiveCount:replacement.activeCount
+    });
     return {backend,taskId};
   }
 
@@ -1527,6 +1752,16 @@ test('prepare download revalidates Notion and Drive before issuing an opaque hos
   assert.equal(result.ok,true);
   assert.equal(result.data.mode,'grant');
   assert.match(result.data.downloadGrant,/^[a-f0-9]{96}$/);
+  assert.match(result.data.downloadPackage,/^[A-Za-z0-9_-]{40,9000}$/);
+  const fastPackage=JSON.parse(Buffer.from(result.data.downloadPackage,'base64url').toString('utf8'));
+  assert.deepEqual(Object.keys(fastPackage).sort(),['expiresAt','name','url']);
+  assert.equal(fastPackage.url,signed);
+  assert.equal(fastPackage.name,'report.xlsx');
+  assert.equal(fastPackage.expiresAt,result.data.packageExpiresAt);
+  assert.ok(Date.parse(fastPackage.expiresAt)>Date.now());
+  assert.ok(Date.parse(fastPackage.expiresAt)-Date.now()<=60_000);
+  assert.equal(JSON.stringify(fastPackage).includes('accessToken'),false);
+  assert.equal(JSON.stringify(fastPackage).includes('script.google.com'),false);
   assert.equal(result.data.url,undefined,'the priming client must never receive the direct hosted URL');
   assert.equal(backend.w20GetDownloadGrant_(taskId,pageId,result.data.downloadGrant,cfg).url,signed);
   assert.equal(guardCalls,1);
@@ -1595,12 +1830,23 @@ test('download grants are HMAC-bound to task and page, expire in 60 seconds and 
   const issued=backend.w20IssueDownloadGrant_(taskId,pageId,direct,cfg);
   assert.equal(issued.mode,'grant');
   assert.match(issued.downloadGrant,/^[a-f0-9]{96}$/);
+  assert.match(issued.downloadPackage,/^[A-Za-z0-9_-]{40,9000}$/);
+  const fastPackage=JSON.parse(Buffer.from(issued.downloadPackage,'base64url').toString('utf8'));
+  assert.deepEqual(Object.keys(fastPackage).sort(),['expiresAt','name','url']);
+  assert.equal(fastPackage.url,direct.url);
+  assert.equal(fastPackage.name,direct.name);
+  assert.equal(fastPackage.expiresAt,issued.packageExpiresAt);
+  assert.equal(Date.parse(fastPackage.expiresAt)-now,60_000);
   assert.equal(writes[0].ttl,60);
   assert.equal(Date.parse(issued.expiresAt)-now,60_000);
   const overlapping=backend.w20IssueDownloadGrant_(taskId,pageId,direct,cfg);
   assert.equal(overlapping.downloadGrant,issued.downloadGrant,'overlapping prime must reuse the still-valid grant');
   assert.equal(writes.length,1,'overlapping prime must not overwrite the cache entry');
   assert.equal(backend.w20GetDownloadGrant_(taskId,pageId,issued.downloadGrant,cfg).url,direct.url);
+  const expiringDirect={...direct,expiresAt:new RealDate(now+90_000).toISOString()};
+  const expiring=backend.w20IssueDownloadGrant_(taskId,otherPage,expiringDirect,cfg);
+  assert.equal(expiring.mode,'proxy','package must leave a safety margin before the real signed URL expiry');
+  assert.equal(expiring.downloadPackage,undefined);
   assert.equal(backend.w20GetDownloadGrant_(otherTask,pageId,issued.downloadGrant,{...cfg,authorizedTaskPageId:otherTask}),null);
   assert.equal(backend.w20GetDownloadGrant_(taskId,otherPage,issued.downloadGrant,cfg),null);
   assert.equal(backend.w20GetDownloadGrant_(taskId,pageId,issued.downloadGrant,{...cfg,deniedPageIds:{[taskId]:true}}),null);
@@ -1609,6 +1855,9 @@ test('download grants are HMAC-bound to task and page, expire in 60 seconds and 
 
   backend.w20InvalidateDownloadMaterialCache_(taskId,pageId);
   assert.equal(backend.w20GetDownloadGrant_(taskId,pageId,issued.downloadGrant,cfg),null);
+  const stale=backend.w20IssueDownloadGrant_(taskId,pageId,direct,cfg,0);
+  assert.equal(stale.mode,'proxy','an epoch race must fail closed before a fast package is formed');
+  assert.equal(stale.downloadPackage,undefined);
   const replacement=backend.w20IssueDownloadGrant_(taskId,pageId,direct,cfg);
   assert.notEqual(replacement.downloadGrant,issued.downloadGrant,'revocation epoch must bind replacement grants');
   now+=60_001;

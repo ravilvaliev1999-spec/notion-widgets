@@ -18,6 +18,7 @@
   <script>
   (()=>{
     'use strict';
+    const POLL_DELAYS=[250,400,650,1000,1500,2200,3200,4500,6500,9000,12000,15000,18000,20000];
     const status=document.getElementById('status');
     let requestId='';
 
@@ -56,12 +57,54 @@
       }catch(_error){return '';}
     }
 
-    function callCreate(input){
+    function callStatus(input){
       return new Promise((resolve,reject)=>{
         const runtime=window.google&&google.script&&google.script.run;
         if(!runtime){reject(new Error('Нет связи с сервисом создания.'));return;}
-        runtime.withSuccessHandler(resolve).withFailureHandler((error)=>reject(new Error(error&&error.message||'Нет связи с сервисом создания.'))).apiCreateGoogle(input);
+        runtime.withSuccessHandler(resolve).withFailureHandler((error)=>{const failure=new Error(error&&error.message||'Нет связи с сервисом создания.');failure.retryable=true;reject(failure);}).apiGetCreateStatus(input);
       });
+    }
+
+    function wait(delay){return new Promise((resolve)=>window.setTimeout(resolve,delay));}
+
+    function operationInProgress(response){return Boolean(response&&response.ok===false&&response.error&&response.error.code==='OPERATION_IN_PROGRESS');}
+
+    function responseError(response,fallback){
+      const error=response&&response.error;
+      const value=new Error(String(error&&error.message||fallback||'Файл не удалось создать.').slice(0,500));
+      value.retryable=Boolean(error&&error.retryable);value.code=String(error&&error.code||'');return value;
+    }
+
+    function notifyMaterial(material){
+      const openUrl=allowedOpenUrl(material&&material.openUrl);
+      if(!openUrl)throw new Error('Сервис вернул недопустимый адрес файла.');
+      status.textContent='Файл создан. Открываю…';notify('success','',openUrl);return true;
+    }
+
+    function inspectStatusResponse(response){
+      if(!response||response.ok!==true){
+        if(operationInProgress(response)||response&&response.error&&response.error.retryable)return {state:'pending'};
+        throw responseError(response,'Не удалось проверить создание файла.');
+      }
+      const data=response.data||{},state=String(data.status||'');
+      if(state==='done'&&data.material)return {state:'done',material:data.material};
+      if(state==='pending')return {state:'pending'};
+      if(state==='failed')return {state:'failed'};
+      if(state==='missing')return {state:'missing'};
+      return {state:'pending'};
+    }
+
+    async function inspectStatus(input){return inspectStatusResponse(await callStatus(input));}
+
+    async function pollUntilDone(statusInput){
+      for(const delay of POLL_DELAYS){
+        await wait(delay);
+        let result;
+        try{result=await inspectStatus(statusInput);}catch(_error){continue;}
+        if(result.state==='done')return notifyMaterial(result.material);
+        if(result.state==='failed')throw new Error('Создание не завершилось. Закройте вкладку и повторите нажатие.');
+      }
+      return false;
     }
 
     async function start(){
@@ -69,7 +112,7 @@
         const prepared=precomputedResult();
         if(prepared){
           requestId=String(prepared.requestId||'').toLowerCase();
-          if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(requestId))throw new Error('Результат создания повреждён.');
+          if(!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(requestId))throw new Error('Результат создания повреждён.');
           if(prepared.status==='pending'){
             const message=String(prepared.message||'Файл уже создаётся в первой вкладке.').slice(0,500);
             status.textContent=message;notify('pending',message,'');return;
@@ -80,18 +123,23 @@
           status.textContent='Файл создан. Открываю…';notify('success','',readyUrl);return;
         }
         const params=runtimeParams();
-        const taskPageId=String(params.task||params.taskPageId||'').toLowerCase();
+        const keys=Object.keys(params).sort(),expected=['accessToken','createRequestId','createSection','task'];
+        if(keys.length!==4||keys.some((key,index)=>key!==expected[index]))throw new Error('Параметры создания повреждены.');
+        const taskPageId=String(params.task||'').toLowerCase();
         const accessToken=String(params.accessToken||'');
         const section=String(params.createSection||'');
         requestId=String(params.createRequestId||'').toLowerCase();
         const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-        if(!uuid.test(taskPageId)||!uuid.test(requestId)||!/^[A-Za-z0-9._~-]{32,256}$/.test(accessToken)||!['Docs','Sheets','Slides'].includes(section))throw new Error('Параметры создания повреждены.');
-        const response=await callCreate({taskPageId,accessToken,section,idempotencyKey:requestId});
-        if(!response||!response.ok)throw new Error(response&&response.error&&response.error.message||'Файл не удалось создать.');
-        const openUrl=allowedOpenUrl(response.data&&response.data.material&&response.data.material.openUrl);
-        if(!openUrl)throw new Error('Сервис вернул недопустимый адрес файла.');
-        status.textContent='Файл создан. Открываю…';
-        notify('success','',openUrl);
+        const requestUuid=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+        if(!uuid.test(taskPageId)||!requestUuid.test(requestId)||!/^[A-Za-z0-9._~-]{32,256}$/.test(accessToken)||!['Docs','Sheets','Slides'].includes(section))throw new Error('Параметры создания повреждены.');
+        const statusInput={taskPageId,accessToken,section,createRequestId:requestId};
+        let result;
+        try{result=await inspectStatus(statusInput);}catch(error){if(!error.retryable)throw error;result={state:'pending'};}
+        if(result.state==='done'){notifyMaterial(result.material);return;}
+        if(result.state==='failed')throw new Error('Создание не завершилось. Закройте вкладку и повторите нажатие.');
+        if(await pollUntilDone(statusInput))return;
+        const message='Создание продолжается. Новая карточка появится в виджете автоматически.';
+        status.textContent=message;notify('pending',message,'');
       }catch(error){
         const message=error&&error.message||'Файл не удалось создать.';
         status.textContent=message;notify('error',message,'');

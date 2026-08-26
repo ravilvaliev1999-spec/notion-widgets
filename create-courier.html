@@ -19,12 +19,19 @@
   <script>
   (()=>{
     'use strict';
-    const TIMEOUT_MS=180000;
+    const TIMEOUT_MS=180*1000;
     const status=document.getElementById('status');
     const runner=document.getElementById('runner');
+    let mode='';
     let expectedRequestId='';
+    let responseTimer=0;
+    let settled=false;
 
-    function fail(message){status.textContent=String(message||'Не удалось создать файл.').slice(0,500);runner.remove();}
+    function cleanup(){
+      window.clearTimeout(responseTimer);responseTimer=0;
+    }
+
+    function fail(message){settled=true;cleanup();status.textContent=String(message||'Не удалось создать файл.').slice(0,500);runner.remove();}
 
     function isRunnerDescendant(source){
       const root=runner.contentWindow;if(!root||!source)return false;
@@ -37,15 +44,25 @@
       return visit(root,0);
     }
 
-    function decodeFragment(hash){
-      const match=/^#v1=([A-Za-z0-9_-]{80,6000})$/.exec(String(hash||''));
-      if(!match)throw new Error('Ссылка на создание повреждена.');
-      const encoded=match[1],padding='='.repeat((4-encoded.length%4)%4);
+    function decodePayload(encoded){
+      const padding='='.repeat((4-encoded.length%4)%4);
       let binary;
       try{binary=atob(encoded.replace(/-/g,'+').replace(/_/g,'/')+padding);}catch(_error){throw new Error('Ссылка на создание повреждена.');}
       const bytes=new Uint8Array(binary.length);
       for(let index=0;index<binary.length;index+=1)bytes[index]=binary.charCodeAt(index);
       try{return new TextDecoder('utf-8',{fatal:true}).decode(bytes);}catch(_error){throw new Error('Ссылка на создание повреждена.');}
+    }
+
+    function decodeV1Fragment(hash){
+      const match=/^#v1=([A-Za-z0-9_-]{80,6000})$/.exec(String(hash||''));
+      if(!match)throw new Error('Ссылка на создание повреждена.');
+      return decodePayload(match[1]);
+    }
+
+    function decodeV2Fragment(hash){
+      const match=/^#v2=([A-Za-z0-9_-]{80,6000})$/.exec(String(hash||''));
+      if(!match)throw new Error('Ссылка на создание повреждена.');
+      return decodePayload(match[1]);
     }
 
     function validateServiceUrl(raw){
@@ -55,14 +72,16 @@
       const entries=Array.from(url.searchParams.entries()),allowed=new Set(['task','accessToken','createSection','createRequestId']);
       if(entries.length!==4||entries.some(([key])=>!allowed.has(key))||new Set(entries.map(([key])=>key)).size!==4)throw new Error('Параметры создания повреждены.');
       const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if(!uuid.test(url.searchParams.get('task')||'')||!uuid.test(url.searchParams.get('createRequestId')||'')||!/^[A-Za-z0-9._~-]{32,256}$/.test(url.searchParams.get('accessToken')||'')||!['Docs','Sheets','Slides'].includes(url.searchParams.get('createSection')||''))throw new Error('Параметры создания повреждены.');
+      const requestId=String(url.searchParams.get('createRequestId')||'').toLowerCase();
+      if(!uuid.test(url.searchParams.get('task')||'')||!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(requestId)||!/^[A-Za-z0-9._~-]{32,256}$/.test(url.searchParams.get('accessToken')||'')||!['Docs','Sheets','Slides'].includes(url.searchParams.get('createSection')||''))throw new Error('Параметры создания повреждены.');
       return {
+        href:url.href,
         action:url.origin+url.pathname,
         fields:{
           task:url.searchParams.get('task'),
           accessToken:url.searchParams.get('accessToken'),
           createSection:url.searchParams.get('createSection'),
-          createRequestId:url.searchParams.get('createRequestId')
+          createRequestId:requestId
         }
       };
     }
@@ -90,10 +109,12 @@
       const fragment=location.hash;
       history.replaceState(null,'',location.pathname);
       try{window.opener=null;}catch(_error){}
-      const request=validateServiceUrl(decodeFragment(fragment));
+      mode=/^#v2=/.test(fragment)?'v2':'v1';
+      const request=validateServiceUrl(mode==='v2'?decodeV2Fragment(fragment):decodeV1Fragment(fragment));
       expectedRequestId=request.fields.createRequestId||'';
-      runner.setAttribute('credentialless','');runner.credentialless=true;submitCreate(request);
-      window.setTimeout(()=>fail('Сервис не ответил. Закройте эту вкладку и повторите нажатие.'),TIMEOUT_MS);
+      runner.setAttribute('credentialless','');runner.credentialless=true;
+      if(mode==='v2')runner.src=request.href;else submitCreate(request);
+      responseTimer=window.setTimeout(()=>fail('Сервис не ответил. Закройте эту вкладку и повторите нажатие.'),TIMEOUT_MS);
     }catch(error){
       try{history.replaceState(null,'',location.pathname);}catch(_error){}
       fail(error&&error.message||'Не удалось начать создание.');
@@ -103,15 +124,16 @@
       if(!isRunnerDescendant(event.source))return;
       if(event.origin!=='null'&&!/^https:\/\/(?:script\.google\.com|[a-z0-9-]+\.googleusercontent\.com)$/.test(event.origin))return;
       const data=event.data;
-      if(!data||data.type!=='notion-widget-v20-create'||data.requestId!==expectedRequestId)return;
+      if(settled||!data||data.type!=='notion-widget-v20-create'||data.requestId!==expectedRequestId)return;
       if(data.status==='success'){
-        try{status.textContent='Файл создан. Открываю…';location.replace(allowedOpenUrl(data.openUrl));}
+        try{const openUrl=allowedOpenUrl(data.openUrl);settled=true;cleanup();status.textContent='Файл создан. Открываю…';location.replace(openUrl);}
         catch(error){fail(error&&error.message||'Не удалось открыть файл.');}
       } else if(data.status==='pending'){
-        status.textContent=String(data.message||'Файл уже создаётся в первой вкладке.').slice(0,500);
+        settled=true;cleanup();status.textContent=String(data.message||'Файл уже создаётся в первой вкладке.').slice(0,500);
         window.setTimeout(()=>{try{window.close();}catch(_error){}},2500);
       } else if(data.status==='error') fail(data.message||'Файл не удалось создать.');
     });
+    window.addEventListener('pagehide',cleanup);
   })();
   </script>
 </body>

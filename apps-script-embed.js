@@ -203,6 +203,10 @@
     try { return window['session' + 'Storage']; } catch (_error) { return null; }
   }
 
+  function validCreateRequestId(value) {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(String(value || '').toLowerCase());
+  }
+
   function createRequestSlot(section) {
     const task = params && params.get('task');
     return task && ['Docs', 'Sheets', 'Slides'].includes(section) ? `notion-widget-v20:create:${task}:${section}` : '';
@@ -230,24 +234,26 @@
   }
 
   function createCourierHref(section) {
-    if (!params || !bridge || !bridge.authoritative || !['Docs', 'Sheets', 'Slides'].includes(section)) return '';
+    if (!params || !bridge || !(bridge.actionReady || bridge.authoritative) || !['Docs', 'Sheets', 'Slides'].includes(section)) return '';
     const existing = createRequests.get(section);
     if (existing) return existing.href;
     try {
+      const requestId = rememberedCreateRequest(section) || randomId();
+      if (!validCreateRequestId(requestId)) return '';
       const service = new URL(DEPLOYMENT_URL);
       if (service.protocol !== 'https:' || service.hostname !== 'script.google.com' || service.search || service.hash ||
           !/^\/macros\/s\/[A-Za-z0-9_-]{20,}\/exec$/.test(service.pathname)) return '';
       service.searchParams.set('task', params.get('task'));
       service.searchParams.set('accessToken', params.get('accessToken'));
       service.searchParams.set('createSection', section);
-      const requestId = rememberedCreateRequest(section) || randomId();
       service.searchParams.set('createRequestId', requestId);
+      if (Array.from(service.searchParams.keys()).length !== 4) return '';
       const courier = new URL(CREATE_COURIER_URL);
       if (courier.origin !== 'https://ravilvaliev1999-spec.github.io' || courier.pathname !== '/notion-widgets/create-courier.html' || courier.search || courier.hash) return '';
-      const href = `${courier.href}#v1=${encodeCourierFragment(service.href)}`;
-      createRequests.set(section, { requestId, href });
+      const record = { section, requestId, href: `${courier.href}#v2=${encodeCourierFragment(service.href)}`, actionStarted: false };
+      createRequests.set(section, record);
       rememberCreateRequest(section, requestId);
-      return href;
+      return record.href;
     } catch (_error) {
       return '';
     }
@@ -269,16 +275,29 @@
     const completed = new Set((Array.isArray(value) ? value : []).slice(0, 100).map((item) => String(item || '').toLowerCase())
       .filter((item) => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(item)));
     ['Docs','Sheets','Slides'].forEach((section)=>{if(completed.has(rememberedCreateRequest(section)))forgetCreateRequest(section);});
-    createRequests.forEach((record, section) => { if (completed.has(record.requestId)) { createRequests.delete(section);forgetCreateRequest(section); } });
+    createRequests.forEach((record, section) => {
+      if (!completed.has(record.requestId)) return;
+      createRequests.delete(section);forgetCreateRequest(section);
+    });
   }
 
   function claimCreateNavigation(section) {
     const record = createRequests.get(section);
     if (!record) return false;
+    if (record.actionStarted) return false;
     const now = Date.now();
     if (record.lastNavigationAt && now - record.lastNavigationAt < 1500) return false;
     record.lastNavigationAt = now;
     return true;
+  }
+
+  function beginNativeCreate(record) {
+    if (!record) return false;
+    if (record.actionStarted) return true;
+    record.actionStarted = true;
+    if (sendToBridge({ type: 'notion-widget-v20-primary-action', section: record.section, requestId: record.requestId })) return true;
+    record.actionStarted = false;
+    return false;
   }
 
 
@@ -287,7 +306,7 @@
     if (!data || data.embedNonce !== embedNonce || !isGoogleScriptOrigin(event.origin)) return;
     if (data.type === 'notion-widget-v20-bridge-ready') {
       if (!isWidgetDescendant(event.source) || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(data.instanceId || ''))) return;
-      bridge = { source: event.source, origin: event.origin, instanceId: data.instanceId, authoritative: data.authoritative === true, folderUrl: allowedDriveFolderUrl(data.folderUrl) };
+      bridge = { source: event.source, origin: event.origin, instanceId: data.instanceId, authoritative: data.authoritative === true, actionReady: data.actionReady === true, folderUrl: allowedDriveFolderUrl(data.folderUrl) };
       geometryRequestId = 0;
       latestGeometryResponseId = 0;
       lastGeometryAckAt = 0;
@@ -300,6 +319,14 @@
       return;
     }
     if (!isCurrentBridgeEvent(event)) return;
+    if (data.type === 'notion-widget-v20-primary-result' && validCreateRequestId(data.requestId) && data.ok === false) {
+      createRequests.forEach((record) => {
+        if (record.requestId !== String(data.requestId).toLowerCase()) return;
+        record.actionStarted = false;record.lastNavigationAt = 0;
+      });
+      showNotice(String(data.message || 'Файл не удалось создать. Повторите нажатие.').slice(0, 300));
+      return;
+    }
     if (data.type === 'notion-widget-v20-primary-geometry') {
       if (data.requestId !== undefined) {
         const responseId = Number(data.requestId);
@@ -336,7 +363,7 @@
             if (section === 'Drive') return;
             if (claimCreateNavigation(section)) {
               const record = createRequests.get(section);
-              if (record) sendToBridge({ type: 'notion-widget-v20-create-started', section, requestId: record.requestId });
+              if (record) beginNativeCreate(record);
               return;
             }
             event.preventDefault();
