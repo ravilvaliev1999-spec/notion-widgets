@@ -118,6 +118,14 @@ test('server-attested fast download packages are short-lived, minimal and issued
   assert.match(issue,/cfg\.deniedPageIds\[task\]/);
 });
 
+test('hosted download verification preserves the exact signed Notion URL', () => {
+  const backend = text('Code.gs');
+  const verifier = backend.slice(backend.indexOf('function w20HostedDownloadDispositionMatches_'), backend.indexOf('function w20DownloadGrantCacheKey_'));
+  assert.match(verifier, /UrlFetchApp\.fetch\(trustedUrl,\s*\{/);
+  assert.match(verifier, /escaping:\s*false/);
+  assert.match(verifier, /validateHttpsCertificates:\s*true/);
+});
+
 test('public download courier accepts strict v3 packages directly and retains strict v1 POST fallback', () => {
   const courier=fs.readFileSync(path.join(root,'..','download-courier.html'),'utf8');
   const fast=courier.slice(courier.indexOf('function validateFastPackage'),courier.indexOf('function validateDirectDownload'));

@@ -2147,6 +2147,7 @@ function w20HostedDownloadDispositionMatches_(url, expectedName) {
     var response = UrlFetchApp.fetch(trustedUrl, {
       method: 'get',
       headers: { Range: 'bytes=0-0' },
+      escaping: false,
       followRedirects: true,
       muteHttpExceptions: true,
       validateHttpsCertificates: true
