@@ -2,11 +2,12 @@
   'use strict';
 
   const DEPLOYMENT_URL = 'https://script.google.com/macros/s/AKfycbxrGUXhfRsvqjUrLSDFyhmjl3bJjbx-XtOjicHh7E7dAUVJW6Qi2F_K889ckvOCzu7KiQ/exec';
+  const CREATE_COURIER_URL = 'https://ravilvaliev1999-spec.github.io/notion-widgets/create-courier.html';
   const SECTIONS = ['Drive', 'Docs', 'Sheets', 'Slides'];
   const widget = document.getElementById('widget');
   const interactionGrid = document.getElementById('interactionGrid');
   const fatal = document.getElementById('fatal');
-  const pendingActions = new Map();
+  const createRequests = new Map();
   const embedNonce = randomId().replace(/-/g, '');
   let bridge = null;
   let noticeTimer = 0;
@@ -181,61 +182,88 @@
     requestPrimaryGeometry();
   }
 
-  function sendPending(record) {
-    if (!bridge || record.sentInstance === bridge.instanceId) return;
-    if (sendToBridge(record.message)) record.sentInstance = bridge.instanceId;
-  }
-
-  function sendAllPending() {
-    pendingActions.forEach(sendPending);
-  }
-
-  function setSectionDisabled(section, disabled) {
-    interactionGrid.querySelectorAll(`[data-section="${section}"]`).forEach((control) => { control.disabled = disabled; });
-  }
-
-  function allowedGoogleOpenUrl(value) {
+  function allowedDriveFolderUrl(value) {
     try {
       const url = new URL(String(value || ''));
       return url.protocol === 'https:' && !url.port && !url.username && !url.password &&
-        (url.hostname === 'docs.google.com' || url.hostname === 'drive.google.com');
+        url.hostname === 'drive.google.com' && /^\/drive\/folders\/[A-Za-z0-9_-]{10,}$/.test(url.pathname) ? url.href : '';
     } catch (_error) {
-      return false;
+      return '';
     }
   }
 
-  function finishPrimaryAction(data) {
-    const record = pendingActions.get(String(data.requestId || ''));
-    if (!record) return;
-    window.clearTimeout(record.timeout);
-    pendingActions.delete(record.message.requestId);
-    setSectionDisabled(record.message.section, false);
-    if (data.ok && allowedGoogleOpenUrl(data.openUrl)) {
-      try {
-        record.popup.opener = null;
-        record.popup.location.replace(data.openUrl);
-      } catch (_error) {
-        try { record.popup.close(); } catch (_closeError) {}
-        showNotice('Файл создан. Нажмите его карточку, чтобы открыть.');
-      }
-      return;
-    }
-    try { record.popup.close(); } catch (_error) {}
-    showNotice(String(data.message || 'Не удалось выполнить действие. Повторите ещё раз.'));
+  function encodeCourierFragment(value) {
+    const bytes = new TextEncoder().encode(String(value || ''));
+    let binary = '';
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
   }
+
+  function createCourierHref(section) {
+    if (!params || !bridge || !bridge.authoritative || !['Docs', 'Sheets', 'Slides'].includes(section)) return '';
+    const existing = createRequests.get(section);
+    if (existing) return existing.href;
+    try {
+      const service = new URL(DEPLOYMENT_URL);
+      if (service.protocol !== 'https:' || service.hostname !== 'script.google.com' || service.search || service.hash ||
+          !/^\/macros\/s\/[A-Za-z0-9_-]{20,}\/exec$/.test(service.pathname)) return '';
+      service.searchParams.set('task', params.get('task'));
+      service.searchParams.set('accessToken', params.get('accessToken'));
+      service.searchParams.set('createSection', section);
+      const requestId = randomId();
+      service.searchParams.set('createRequestId', requestId);
+      const courier = new URL(CREATE_COURIER_URL);
+      if (courier.origin !== 'https://ravilvaliev1999-spec.github.io' || courier.pathname !== '/notion-widgets/create-courier.html' || courier.search || courier.hash) return '';
+      const href = `${courier.href}#v1=${encodeCourierFragment(service.href)}`;
+      createRequests.set(section, { requestId, href });
+      return href;
+    } catch (_error) {
+      return '';
+    }
+  }
+
+  function refreshControlHref(control) {
+    const section = control && control.dataset.section;
+    const href = section === 'Drive' ? bridge && bridge.folderUrl || '' : createCourierHref(section);
+    if (href) control.href = href;
+    else control.removeAttribute('href');
+    return href;
+  }
+
+  function refreshAllControlHrefs() {
+    interactionGrid.querySelectorAll('[data-section]').forEach(refreshControlHref);
+  }
+
+  function completeCreateRequests(value) {
+    const completed = new Set((Array.isArray(value) ? value : []).slice(0, 100).map((item) => String(item || '').toLowerCase())
+      .filter((item) => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(item)));
+    createRequests.forEach((record, section) => { if (completed.has(record.requestId)) createRequests.delete(section); });
+  }
+
+  function claimCreateNavigation(section) {
+    const record = createRequests.get(section);
+    if (!record) return false;
+    const now = Date.now();
+    if (record.lastNavigationAt && now - record.lastNavigationAt < 1500) return false;
+    record.lastNavigationAt = now;
+    return true;
+  }
+
 
   function handleWidgetMessage(event) {
     const data = event.data;
     if (!data || data.embedNonce !== embedNonce || !isGoogleScriptOrigin(event.origin)) return;
     if (data.type === 'notion-widget-v20-bridge-ready') {
       if (!isWidgetDescendant(event.source) || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(data.instanceId || ''))) return;
-      bridge = { source: event.source, origin: event.origin, instanceId: data.instanceId };
+      bridge = { source: event.source, origin: event.origin, instanceId: data.instanceId, authoritative: data.authoritative === true, folderUrl: allowedDriveFolderUrl(data.folderUrl) };
       geometryRequestId = 0;
       latestGeometryResponseId = 0;
       lastGeometryAckAt = 0;
       applyPrimaryGeometry(data.geometry, data.viewport);
       fatal.hidden = true;
-      sendAllPending();
+      document.body.classList.add('widget-ready');
+      completeCreateRequests(data.completedCreateRequestIds);
+      refreshAllControlHrefs();
       requestPrimaryGeometry();
       return;
     }
@@ -249,43 +277,6 @@
       applyPrimaryGeometry(data.geometry, data.viewport);
       return;
     }
-    if (data.type === 'notion-widget-v20-primary-result') finishPrimaryAction(data);
-  }
-
-  function writePlaceholder(popup, section) {
-    const label = section === 'Drive' ? 'Открываю папку…' : 'Создаю файл…';
-    try {
-      popup.document.open();
-      popup.document.write(`<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>${label}</title><body style="margin:0;background:#191919;color:#e6e6e4;font:14px system-ui;display:grid;place-items:center;min-height:100vh;text-align:center"><p role="status" style="margin:24px;max-width:340px">${label}</p></body></html>`);
-      popup.document.close();
-    } catch (_error) {}
-  }
-
-  function startPrimaryAction(section) {
-    const existing = Array.from(pendingActions.values()).find((record) => record.message.section === section);
-    if (!bridge || !SECTIONS.includes(section) || (existing && !existing.timedOut)) return;
-    const popup = window.open('about:blank', '_blank');
-    if (!popup) {
-      showNotice('Браузер заблокировал новую вкладку. Разрешите всплывающие окна для Notion и повторите.');
-      return;
-    }
-    writePlaceholder(popup, section);
-    const requestId = existing ? existing.message.requestId : randomId();
-    const message = existing ? existing.message : { type: 'notion-widget-v20-primary-action', requestId, section };
-    const record = existing || { message, popup, sentInstance: '', timeout: 0, timedOut: false };
-    record.popup = popup;
-    record.sentInstance = '';
-    record.timedOut = false;
-    record.timeout = window.setTimeout(() => {
-      if (!pendingActions.has(requestId)) return;
-      record.timedOut = true;
-      try { popup.close(); } catch (_error) {}
-      setSectionDisabled(section, false);
-      showNotice('Ответ не получен. Повторите нажатие — тот же запрос продолжится без создания дубля.');
-    }, 410000);
-    pendingActions.set(requestId, record);
-    setSectionDisabled(section, true);
-    sendPending(record);
   }
 
   function installInteractionControls() {
@@ -293,17 +284,30 @@
       const section = slot.dataset.slot;
       if (!SECTIONS.includes(section)) return;
       ['main', 'pencil-top', 'pencil-right', 'pencil-bottom'].forEach((region, index) => {
-        const control = document.createElement('button');
-        control.type = 'button';
+        const control = document.createElement('a');
         control.className = `primary-control primary-control-${region}`;
         control.dataset.section = section;
+        control.target = '_blank';
+        control.rel = 'noopener noreferrer';
+        control.referrerPolicy = 'no-referrer';
         if (index === 0) {
           control.setAttribute('aria-label', section === 'Drive' ? 'Открыть папку задачи' : `Создать новый файл ${section}`);
         } else {
           control.tabIndex = -1;
           control.setAttribute('aria-hidden', 'true');
         }
-        control.addEventListener('click', () => startPrimaryAction(section));
+        const prepare = () => refreshControlHref(control);
+        control.addEventListener('pointerdown', prepare);
+        control.addEventListener('keydown', (event) => { if (event.key === 'Enter') prepare(); });
+        control.addEventListener('click', (event) => {
+          if (refreshControlHref(control)) {
+            if (section === 'Drive' || claimCreateNavigation(section)) return;
+            event.preventDefault();
+            return;
+          }
+          event.preventDefault();
+          showNotice(section === 'Drive' ? 'Папка задачи ещё синхронизируется.' : 'Не удалось подготовить защищённое создание файла.');
+        });
         control.addEventListener('pointerenter', () => sendToBridge({ type: 'notion-widget-v20-primary-hover', section, active: true }));
         control.addEventListener('pointerleave', () => sendToBridge({ type: 'notion-widget-v20-primary-hover', section, active: false }));
         slot.appendChild(control);

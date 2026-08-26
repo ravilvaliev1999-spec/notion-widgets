@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url';
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const frontend = fs.readFileSync(path.join(root, 'Index.html'), 'utf8');
 const downloader = fs.readFileSync(path.join(root, 'Download.html'), 'utf8');
+const creator = fs.readFileSync(path.join(root, 'Create.html'), 'utf8');
 const publicCourier = fs.readFileSync(path.join(root, '..', 'download-courier.html'), 'utf8');
+const publicCreateCourier = fs.readFileSync(path.join(root, '..', 'create-courier.html'), 'utf8');
 const original = fs.readFileSync(path.join(root, '..', 'google-buttons-widget.html'), 'utf8');
 
 test('v20 preserves the original four-column visual system', () => {
@@ -34,7 +36,7 @@ test('all original inline Google icon paths are retained exactly', () => {
 
 test('every material is rendered as a full-size clone of its service card', () => {
   assert.match(frontend, /function materialCard\(item,count\)[\s\S]*className=`btn \$\{group\.cls\} item-card`/);
-  assert.match(frontend, /document\.createElement\(courierHref\?'a':'article'\)/);
+  assert.match(frontend, /document\.createElement\(courierHref\|\|directHref\?'a':'article'\)/);
   assert.match(frontend, /card\.innerHTML=cardMarkup\(section,item\.name\|\|'\u0411\u0435\u0437 \u043d\u0430\u0437\u0432\u0430\u043d\u0438\u044f',count/);
   assert.match(frontend, /materials\.forEach\(\(item\)=>files\.appendChild\(materialCard\(item,materials\.length\)\)\)/);
   assert.match(frontend, /add\.textContent='\+ \u0434\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0441\u0441\u044b\u043b\u043a\u0443'/);
@@ -70,11 +72,11 @@ test('owned binaries always enter the revocation-aware neutral courier', () => {
   const materialCard = frontend.slice(frontend.indexOf('function materialCard'), frontend.indexOf('async function bootstrap'));
   const gridClick = frontend.slice(frontend.indexOf('function handleGridClick'), frontend.indexOf('function handleGridKeydown'));
   assert.match(materialCard, /const courierHref=downloadCourierHref\(item\)/);
-  assert.match(materialCard, /document\.createElement\(courierHref\?'a':'article'\)/);
+  assert.match(materialCard, /document\.createElement\(courierHref\|\|directHref\?'a':'article'\)/);
   assert.match(materialCard, /card\.href=courierHref;card\.target='_blank';card\.rel='noopener noreferrer';card\.referrerPolicy='no-referrer'/);
   assert.match(materialCard, /card\.dataset\.downloadCourier='true'/);
   assert.match(materialCard, /const action=canPrepareDownload\(item\)\?'\u0421\u043a\u0430\u0447\u0430\u0442\u044c'/);
-  assert.match(gridClick, /if\(itemCard\.dataset\.downloadCourier==='true'\)return/);
+  assert.match(gridClick, /if\(itemCard\.tagName==='A'\)return/);
   assert.ok(gridClick.indexOf("const edit=event.target.closest('[data-edit-id]')") < gridClick.indexOf("const itemCard=event.target.closest('[data-item-id]')"));
   assert.match(gridClick, /if\(edit\)\{event\.preventDefault\(\);event\.stopPropagation\(\);openEdit/);
   assert.doesNotMatch(frontend, /directHostedDownloadHref/);
@@ -86,7 +88,7 @@ test('courier href carries the service URL only in a fragment and uses a fresh c
   const windowMock = { crypto: { getRandomValues(bytes) { for (let i=0;i<bytes.length;i+=1) bytes[i]=(seed+i)&255; seed+=1; return bytes; } } };
   const normalizeUuid = (value) => String(value || '').toLowerCase();
   const canPrepareDownload = (item) => Boolean(item?.canDownload && item?.widgetOwned && !item?.archived);
-  const state = { bootstrapped:true, serviceUrl:'https://script.google.com/macros/s/abcdefghijklmnopqrstuvwxyz0123456789_-AB/exec' };
+  const state = { authoritative:true, serviceUrl:'https://script.google.com/macros/s/abcdefghijklmnopqrstuvwxyz0123456789_-AB/exec' };
   const taskPageId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',accessToken='A'.repeat(48);
   const build = new Function('window','TextEncoder','btoa','URL','normalizeUuid','state','taskPageId','accessToken','canPrepareDownload','DOWNLOAD_COURIER_URL',`${helpersSource};return {strongDownloadTicket,downloadCourierHref};`);
   const helpers = build(windowMock,TextEncoder,btoa,URL,normalizeUuid,state,taskPageId,accessToken,canPrepareDownload,'https://ravilvaliev1999-spec.github.io/notion-widgets/download-courier.html');
@@ -158,11 +160,30 @@ test('Apps Script courier fetches only after its page is opened and forces an ex
   assert.doesNotMatch(downloader, /postMessage\([^\n]*(?:accessToken|base64)/);
 });
 
+test('create courier uses a credentialless fragment-only handoff and opens only Google file URLs', () => {
+  assert.match(publicCreateCourier, /<iframe[^>]+credentialless[^>]+referrerpolicy="no-referrer"/);
+  assert.match(publicCreateCourier, /\^#v1=\(\[A-Za-z0-9_-\]\{80,6000\}\)\$/);
+  assert.match(publicCreateCourier, /allowed=new Set\(\['task','accessToken','createSection','createRequestId'\]\)/);
+  assert.match(publicCreateCourier, /entries\.length!==4/);
+  assert.match(publicCreateCourier, /history\.replaceState\(null,'',location\.pathname\)/);
+  assert.match(publicCreateCourier, /data\.type!=='notion-widget-v20-create'/);
+  assert.match(publicCreateCourier, /url\.hostname!=='docs\.google\.com'&&url\.hostname!=='drive\.google\.com'/);
+  assert.match(publicCreateCourier, /location\.replace\(allowedOpenUrl\(data\.openUrl\)\)/);
+  assert.doesNotMatch(publicCreateCourier, /window\.open\(|accessToken[^\n]+postMessage|analytics|fetch\(/i);
+  assert.match(creator, /id="runtimeParams" data-params="<\?= runtimeParamsJson \?>"/);
+  assert.match(creator, /apiCreateGoogle\(input\)/);
+  assert.match(creator, /idempotencyKey:requestId/);
+  assert.match(creator, /type:'notion-widget-v20-create'/);
+  assert.match(creator, /window\.top&&window\.top!==window/);
+  assert.doesNotMatch(creator, /window\.open|window\.opener/);
+});
+
 test('rename synchronization polls immediately on return and uses a staggered visible interval', () => {
   assert.match(frontend, /const DRIVE_POLL_INTERVAL_MS = 15000/);
   assert.match(frontend, /const DRIVE_POLL_MIN_GAP_MS = 12000/);
-  assert.match(frontend, /window\.addEventListener\('focus',\(\)=>pollDriveMetadata\(true\)\)/);
-  assert.match(frontend, /visibilitychange[\s\S]*visibilityState==='visible'\)pollDriveMetadata\(true\)/);
+  assert.match(frontend, /window\.addEventListener\('focus',refreshOnReturn\)/);
+  assert.match(frontend, /visibilitychange[\s\S]*visibilityState==='visible'\)refreshOnReturn\(\)/);
+  assert.match(frontend, /await refresh\(true\);pollDriveMetadata\(true\)/);
   assert.match(frontend, /pollInterval=DRIVE_POLL_INTERVAL_MS\+Math\.floor\(Math\.random\(\)\*5000\)/);
   assert.match(frontend, /window\.setInterval\([\s\S]*pollDriveMetadata\(false\)[\s\S]*,pollInterval\)/);
   const poll = frontend.slice(frontend.indexOf('async function pollDriveMetadata'), frontend.indexOf('async function createGoogle'));
@@ -188,10 +209,30 @@ test('sync triggers coalesce in one background RPC lane', async () => {
   assert.equal(maxActive,1);
 });
 
+test('a degraded force refresh never unlocks provisional cards', async () => {
+  const applyBootstrapData=frontend.slice(frontend.indexOf('function applyBootstrapData'),frontend.indexOf('async function bootstrap'));
+  const bootstrap=frontend.slice(frontend.indexOf('async function bootstrap'),frontend.indexOf('async function refresh'));
+  assert.match(bootstrap,/if\(fresh\.cached\|\|fresh\.authoritative!==true\)/);
+  assert.ok(bootstrap.indexOf('fresh.cached||fresh.authoritative!==true') < bootstrap.indexOf('applyBootstrapData(fresh,true)'));
+  const responses=[
+    {task:{id:'task',name:'Cached'},materials:[{id:'cached'}],cached:true,authoritative:false},
+    {task:{id:'task',name:'Still cached'},materials:[{id:'stale'}],cached:true,authoritative:false}
+  ];
+  const state={task:null,folderUrl:null,serviceUrl:null,materials:[],maxUploadBytes:8388608,claimRefreshNotBefore:0,bootstrapped:false,authoritative:false};
+  const fatals=[];
+  const harness=new Function('state','taskPageId','clearFatal','call','render','announceEmbedBridgeReady','pollDriveMetadata','showFatal',`${applyBootstrapData};${bootstrap};return {bootstrap};`)(
+    state,'task',()=>{},async()=>responses.shift(),()=>{},()=>{},()=>{throw new Error('provisional bootstrap must not poll Drive');},(message)=>fatals.push(message)
+  );
+  await harness.bootstrap();
+  assert.equal(state.authoritative,false);
+  assert.deepEqual(state.materials,[{id:'cached'}]);
+  assert.equal(fatals.length,1);
+});
+
 test('production bridge and local mock expose all required scenarios and scripts parse', () => {
   assert.match(frontend, /window\.google && google\.script && google\.script\.run/);
   for (const method of ['apiBootstrap','apiPollDriveMetadata','apiSyncTask','apiCreateGoogle','apiAddLink','apiUpload','apiDownload']) assert.ok(frontend.includes(`method==='${method}'`), `mock does not implement ${method}`);
-  for (const html of [frontend,downloader,publicCourier]) {
+  for (const html of [frontend,downloader,creator,publicCourier,publicCreateCourier]) {
     const scripts=[...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match)=>match[1]);
     assert.ok(scripts.length>0);scripts.forEach((script)=>assert.doesNotThrow(()=>new Function(script)));
   }

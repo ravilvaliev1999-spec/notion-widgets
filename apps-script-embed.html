@@ -11,7 +11,33 @@
     * { box-sizing: border-box; }
     html, body { width: 100%; min-height: 100%; margin: 0; background: #191919; overflow-x: hidden; }
     .shell { position: relative; width: 100%; min-height: 100vh; }
-    iframe { display: block; width: 100%; min-height: 100vh; border: 0; background: #191919; }
+    iframe {
+      position: relative; z-index: 2; display: block; width: 100%; min-height: 100vh; border: 0;
+      background: #191919; opacity: 0; transition: opacity 120ms ease;
+    }
+    .skeleton {
+      position: absolute; z-index: 1; inset: 0 auto auto 0; width: 100%; padding: 0 4px;
+      display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px;
+      opacity: 1; visibility: visible; transition: opacity 100ms ease,visibility 0s linear 100ms;
+      pointer-events: none;
+    }
+    .skeleton-card {
+      position: relative; display: flex; align-items: center; gap: 12px; min-width: 0; min-height: 58px;
+      padding: 16px 18px; border: 1px solid rgba(255,255,255,.13); border-radius: 12px; overflow: hidden;
+      color: #e6e6e4;
+    }
+    .skeleton-card::before { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg,rgba(255,255,255,.05),transparent 50%); }
+    .skeleton-card.gray{background:#2f2f2f}.skeleton-card.blue{background:#1f3b54;color:#cfe2f3}
+    .skeleton-card.green{background:#1c3829;color:#cdebd6}.skeleton-card.orange{background:#5c3a1e;color:#f4d8bf}
+    .skeleton-icon {
+      position: relative; flex: 0 0 auto; width: 26px; height: 26px; display: grid; place-items: center;
+      border-radius: 7px; background: rgba(255,255,255,.06); box-shadow: inset 0 0 0 1px rgba(255,255,255,.04);
+    }
+    .skeleton-icon svg{width:16px;height:16px;display:block}.skeleton-meta{position:relative;display:flex;flex:1;min-width:0;flex-direction:column}
+    .skeleton-title{font:600 15px/1.15 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:-.01em}
+    .skeleton-sub{margin-top:4px;font:12.5px/1.15 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;opacity:.55;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .skeleton-count{position:relative;min-width:20px;padding:2px 7px;border-radius:10px;background:rgba(255,255,255,.1);font:600 11px/1.15 system-ui;text-align:center;color:rgba(255,255,255,.85)}
+    body.widget-ready iframe{opacity:1}.widget-ready .skeleton{opacity:0;visibility:hidden}
     .fatal {
       position: fixed; z-index: 30; left: 50%; bottom: 12px; transform: translateX(-50%);
       width: min(520px,calc(100% - 24px)); margin: 0; padding: 10px 12px; border: 1px solid rgba(255,105,105,.38);
@@ -23,19 +49,26 @@
     }
     .interaction-slot { position: absolute; pointer-events: none; }
     .primary-control {
-      position: absolute; z-index: 1; padding: 0; border: 0; background: transparent; color: transparent;
+      position: absolute; z-index: 1; display: block; padding: 0; border: 0; background: transparent; color: transparent;
       cursor: pointer; pointer-events: auto; -webkit-tap-highlight-color: transparent;
     }
     .primary-control-main { border-radius: 12px 0 0 12px; }
     .primary-control-pencil-top { border-radius: 0 12px 0 0; }
     .primary-control-pencil-bottom { border-radius: 0 0 12px 0; }
     .primary-control:focus-visible { outline: 2px solid rgba(255,255,255,.4); outline-offset: 2px; }
-    .primary-control:disabled { cursor: progress; }
+    @media (max-width:720px){.skeleton{gap:8px;padding:0 2px}.skeleton-card{padding:12px;gap:9px;min-height:50px;border-radius:10px}.skeleton-title{font-size:13px}.skeleton-sub{display:none}.skeleton-icon{width:22px;height:22px}.skeleton-icon svg{width:14px;height:14px}}
+    @media (prefers-reduced-motion:reduce){iframe,.skeleton{transition:none}}
   </style>
 </head>
 <body>
   <div class="shell">
     <div class="fatal" id="fatal" role="alert" hidden></div>
+    <div class="skeleton" id="skeleton" aria-hidden="true">
+      <div class="skeleton-card gray"><span class="skeleton-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#0f9d58" d="M8.2 3 2 14h5.3l6.2-11z"/><path fill="#f4b400" d="M13.5 3 20 14h-5.2L8.2 3z"/><path fill="#4285f4" d="M7.3 14H20l-2.9 5H4.4z"/></svg></span><span class="skeleton-meta"><span class="skeleton-title">Drive</span><span class="skeleton-sub">Папка задачи</span></span><span class="skeleton-count">0</span></div>
+      <div class="skeleton-card blue"><span class="skeleton-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285f4" d="M6 2h8l4 4v16H6z"/><path fill="#fff" d="M9 10h6v1.5H9zm0 3h6v1.5H9zm0 3h6v1.5H9z"/></svg></span><span class="skeleton-meta"><span class="skeleton-title">Docs</span><span class="skeleton-sub">Документы</span></span><span class="skeleton-count">0</span></div>
+      <div class="skeleton-card green"><span class="skeleton-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#0f9d58" d="M6 2h8l4 4v16H6z"/><path fill="#fff" d="M9 10h6v7H9zm1.3 1.3v1.5h1.2v-1.5zm2.2 0v1.5h1.2v-1.5zm-2.2 2.5v1.8h1.2v-1.8zm2.2 0v1.8h1.2v-1.8z"/></svg></span><span class="skeleton-meta"><span class="skeleton-title">Sheets</span><span class="skeleton-sub">Таблицы</span></span><span class="skeleton-count">0</span></div>
+      <div class="skeleton-card orange"><span class="skeleton-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#f4b400" d="M6 2h8l4 4v16H6z"/><path fill="#fff" d="M9 10h6v7H9zm1.5 1.5v4h3v-4z"/></svg></span><span class="skeleton-meta"><span class="skeleton-title">Slides</span><span class="skeleton-sub">Презентации</span></span><span class="skeleton-count">0</span></div>
+    </div>
     <iframe id="widget" credentialless title="Файлы задачи" referrerpolicy="no-referrer"></iframe>
     <div class="interaction-grid" id="interactionGrid" aria-label="Действия с файлами" hidden>
       <div class="interaction-slot" data-slot="Drive"></div>
@@ -44,6 +77,6 @@
       <div class="interaction-slot" data-slot="Slides"></div>
     </div>
   </div>
-  <script src="apps-script-embed.js?v=34" defer></script>
+  <script src="apps-script-embed.js?v=36" defer></script>
 </body>
 </html>

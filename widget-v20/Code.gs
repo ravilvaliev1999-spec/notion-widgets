@@ -99,6 +99,7 @@ W19Error_.prototype.constructor = W19Error_;
 function doGet(event) {
   var params = event && event.parameter || {};
   var isDownloadCourier = Boolean(params.downloadPageId || params.downloadTicket);
+  var isCreateCourier = !isDownloadCourier && Boolean(params.createSection || params.createRequestId);
   var output;
   if (isDownloadCourier) {
     var template = HtmlService.createTemplateFromFile('Download');
@@ -109,11 +110,20 @@ function doGet(event) {
       downloadTicket: String(params.downloadTicket || '').slice(0, 200)
     });
     output = template.evaluate();
+  } else if (isCreateCourier) {
+    var createTemplate = HtmlService.createTemplateFromFile('Create');
+    createTemplate.runtimeParamsJson = JSON.stringify({
+      task: String(params.task || params.taskPageId || '').slice(0, 100),
+      accessToken: String(params.accessToken || '').slice(0, 300),
+      createSection: String(params.createSection || '').slice(0, 20),
+      createRequestId: String(params.createRequestId || '').slice(0, 100)
+    });
+    output = createTemplate.evaluate();
   } else {
     output = HtmlService.createHtmlOutputFromFile('Index');
   }
   return output
-    .setTitle(isDownloadCourier ? 'Скачивание файла' : 'Файлы задачи')
+    .setTitle(isDownloadCourier ? 'Скачивание файла' : (isCreateCourier ? 'Создание файла' : 'Файлы задачи'))
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
     .addMetaTag('viewport', 'width=device-width, initial-scale=1, viewport-fit=cover');
 }
@@ -123,31 +133,41 @@ function doGet(event) {
 function apiBootstrap(input) {
   return w19ApiResult_(function () {
     var cfg = w19AuthorizedConfig_(input);
+    if (!(input && input.forceRefresh === true)) {
+      var cached = w20BootstrapFromRegistry_(input, cfg, null);
+      if (cached) return cached;
+    }
     try {
       w19AssertSchema_(cfg);
       var task = w19AssertTaskPage_(input && input.taskPageId, cfg);
-      var maxUploadBytes = w19EffectiveUploadLimit_(cfg);
-      var folder = w19WithMutationLock_(function () {
-        return w19EnsureTaskFolder_(task, cfg);
-      });
       var pages = w19QueryTaskMaterials_(task.id, cfg);
-      pages = w19SyncPageList_(pages, cfg, 30);
       w20CacheDownloadMaterials_(task.id, pages, cfg);
       var materials = pages.map(function (page) {
         return w20MaterialForClient_(w19MaterialFromPage_(page), task.id, cfg);
       });
+      var folderId = w20RegistryFolderId_(task.id, materials);
+      if (!folderId) {
+        folderId = w19WithMutationLock_(function () {
+          return w19EnsureTaskFolder_(task, cfg).id;
+        });
+      }
       w20RegistryReplaceTask_(task.id, materials);
+      w20RegistryWriteTaskMeta_(task.id, { taskName: task.name, folderId: folderId });
       return {
         version: W19_VERSION,
         task: { id: task.id, name: task.name },
-        folderUrl: 'https://drive.google.com/drive/folders/' + encodeURIComponent(folder.id),
+        folderUrl: 'https://drive.google.com/drive/folders/' + encodeURIComponent(folderId),
         serviceUrl: ScriptApp.getService().getUrl(),
-        maxUploadBytes: maxUploadBytes,
-        materials: materials
+        maxUploadBytes: cfg.maxUploadBytes,
+        materials: materials,
+        cached: false,
+        authoritative: true,
+        refreshRequired: false
       };
     } catch (err) {
       if (err && (err.code === 'GOOGLE_URLFETCH_QUOTA' || err.code === 'NOTION_UNAVAILABLE' || err.code === 'NOTION_RATE_LIMIT_BUSY')) {
-        return w20BootstrapFromRegistry_(input, cfg, err);
+        var degraded = w20BootstrapFromRegistry_(input, cfg, err);
+        if (degraded) return degraded;
       }
       throw err;
     }
@@ -523,7 +543,7 @@ function apiDeletePhysical(input) {
       if (material.archived && material.syncStatus === 'deleted') {
         w20SetDriveMaterialState_(material, task.id, 'deleted');
         w20RegistryRemove_(task.id, materialId);
-        return { material: material, deleted: true, duplicate: true };
+        return { material: w20MaterialForClient_(material, task.id, cfg), deleted: true, duplicate: true };
       }
       if (material.provider !== 'Google Drive' || !material.googleFileId) throw new W19Error_('NO_PHYSICAL_FILE', 'У этой карточки нет физического файла Google Drive.', false);
       if (String(input && input.confirmName || '') !== material.name) throw new W19Error_('CONFIRMATION_REQUIRED', 'Для удаления нужно точно ввести название файла.', false);
@@ -561,7 +581,7 @@ function apiDeletePhysical(input) {
       props[W19_P.LAST_SYNC] = w19DateNow_();
       var updated = w19UpdateNotionPage_(page.id, props, cfg);
       w20RegistryRemove_(task.id, materialId);
-      return { material: w19MaterialFromPage_(updated), deleted: true };
+      return { material: w20MaterialForClient_(w19MaterialFromPage_(updated), task.id, cfg), deleted: true };
       });
     });
   });
@@ -732,14 +752,20 @@ function apiSyncTask(input) {
     var cfg = w19AuthorizedConfig_(input);
     var task = w19AssertTaskPage_(input && input.taskPageId, cfg);
     var pages = w19QueryTaskMaterials_(task.id, cfg);
-    pages = w19SyncPageList_(pages, cfg, 100);
     w20CacheDownloadMaterials_(task.id, pages, cfg);
     var materials = pages.map(function (page) {
       return w20MaterialForClient_(w19MaterialFromPage_(page), task.id, cfg);
     });
+    var folderId = w20RegistryFolderId_(task.id, materials);
     w20RegistryReplaceTask_(task.id, materials);
+    w20RegistryWriteTaskMeta_(task.id, { taskName: task.name, folderId: folderId });
     return {
+      task: { id: task.id, name: task.name },
+      folderUrl: folderId ? 'https://drive.google.com/drive/folders/' + encodeURIComponent(folderId) : null,
+      serviceUrl: ScriptApp.getService().getUrl(),
+      maxUploadBytes: cfg.maxUploadBytes,
       materials: materials,
+      authoritative: true,
       syncedAt: new Date().toISOString()
     };
   });
@@ -999,9 +1025,19 @@ function w20DrivePollClaimStatus_(taskId, pageId, googleFileId, baseline, claim,
 function w20MaterialForClient_(material, taskId, cfg) {
   var out = {};
   Object.keys(material || {}).forEach(function (key) { out[key] = material[key]; });
+  var canonicalIdempotency = String(out.idempotency || '');
+  delete out.idempotency;
   var eligible = out.provider === 'Google Drive' && w20SafeDriveId_(out.googleFileId) &&
     /^Google (?:Docs|Sheets|Slides)$/.test(String(out.format || '')) && !out.archived &&
     out.syncStatus !== 'deleting' && out.syncStatus !== 'deleted';
+  if (eligible) {
+    var parts = canonicalIdempotency.split('|');
+    if (parts.length === 3 && parts[0] === WidgetV19Core.compactUuid(taskId) &&
+        parts[1] === 'create-google-' + out.section &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(parts[2])) {
+      out.createRequestId = parts[2].toLowerCase();
+    }
+  }
   if (eligible) out.drivePollClaim = w20IssueDrivePollClaim_(taskId, out.id, out.googleFileId, out, cfg);
   return out;
 }
@@ -1057,7 +1093,7 @@ function w19SetArchiveState_(input, archived) {
           if (!archived) throw new W19Error_('MATERIAL_DELETED', 'Физически удалённый материал нельзя восстановить.', false);
           w20SetDriveMaterialState_(material, task.id, 'deleted');
           w20RegistryRemove_(task.id, materialId);
-          return { material: material, archived: true, deleted: true, duplicate: true };
+          return { material: w20MaterialForClient_(material, task.id, cfg), archived: true, deleted: true, duplicate: true };
         }
         if (material.archived === archived) {
           w20SetDriveMaterialState_(material, task.id, archived ? 'archived' : 'active');
@@ -1066,7 +1102,7 @@ function w19SetArchiveState_(input, archived) {
             material = w20MaterialForClient_(material, task.id, cfg);
             w20RegistryUpsert_(task.id, material);
           }
-          return { material: material, archived: archived, duplicate: true };
+          return { material: w20MaterialForClient_(material, task.id, cfg), archived: archived, duplicate: true };
         }
         var props = {};
         props[W19_P.ARCHIVE] = { checkbox: archived };
@@ -1668,6 +1704,7 @@ function w19MaterialFromPage_(page) {
     normalizedUrl: w19TextValue_(props[W19_P.NORMALIZED_URL]) || '',
     knowledgeFormat: w19SelectValue_(props[W19_P.KNOWLEDGE_FORMAT]) || 'Файл',
     integrity: w19SelectValue_(props[W19_P.INTEGRITY]) || '',
+    idempotency: w19TextValue_(props[W19_P.IDEMPOTENCY]) || '',
     position: w19NumberValue_(props[W19_P.POSITION], 0),
     syncStatus: w19SelectValue_(props[W19_P.SYNC_STATUS]) || 'synced',
     error: w19TextValue_(props[W19_P.SYNC_ERROR]) || null,
