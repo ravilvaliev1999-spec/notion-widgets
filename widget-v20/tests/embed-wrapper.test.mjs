@@ -18,7 +18,8 @@ test('public wrapper isolates Apps Script from multi-login cookies', () => {
   assert.match(wrapper, /<iframe[^>]+id="widget"[^>]+credentialless|<iframe[^>]+credentialless[^>]+id="widget"/);
   assert.match(wrapper, /<iframe[^>]+loading="eager"[^>]+fetchpriority="high"/);
   assert.match(wrapper, /referrerpolicy="no-referrer"/);
-  assert.match(wrapper, /script src="apps-script-embed\.js\?v=45"/);
+  assert.match(wrapper, /j\.src='apps-script-embed\.js\?v=46'/);
+  assert.doesNotMatch(wrapper, /<script[^>]+src="apps-script-embed\.js/);
   assert.match(wrapper, /class="skeleton"/);
   assert.match(wrapper, /body\.widget-ready iframe\{opacity:1\}/);
   assert.match(wrapper, /\.widget-action-ready \.skeleton\{opacity:0;visibility:hidden\}/);
@@ -26,41 +27,82 @@ test('public wrapper isolates Apps Script from multi-login cookies', () => {
   assert.doesNotMatch(wrapper, /class="[^"]*chevron/);
 });
 
-test('wrapper starts the credentialless Apps Script frame before its deferred runtime arrives', () => {
+test('wrapper paints before starting the credentialless Apps Script frame and runtime', () => {
   assert.ok(earlyBootstrap);
-  assert.ok(wrapper.indexOf('id="earlyWidgetBootstrap"') < wrapper.indexOf('src="apps-script-embed.js?v=45"'));
   const hash = crypto.createHash('sha256').update(earlyBootstrap).digest('base64');
   assert.match(wrapper, new RegExp(`script-src 'self' 'sha256-${hash.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
 
   const widget = { src: '' };
   const bytes = Uint8Array.from({ length: 16 }, (_value, index) => index + 1);
   const earlyListeners = {};
-  const windowObject = { addEventListener(type, listener) { earlyListeners[type] = listener; } };
+  const timers = [];
+  const frames = [];
+  const scripts = [];
+  const windowObject = {
+    addEventListener(type, listener) { earlyListeners[type] = listener; },
+    requestAnimationFrame(callback) { frames.push(callback); return frames.length; },
+    setTimeout(callback, delay) { timers.push({ callback, delay }); return timers.length; }
+  };
   vm.runInNewContext(earlyBootstrap, {
     window: windowObject,
-    document: { getElementById(id) { return id === 'widget' ? widget : null; } },
+    document: {
+      readyState: 'loading',
+      head: { appendChild(value) { scripts.push(value); } },
+      createElement(tag) { return { tagName: String(tag).toUpperCase() }; },
+      getElementById(id) { return id === 'widget' ? widget : null; }
+    },
     location: { hash: `#task=3c62d627-39a1-80a1-aac7-ec19ffc9ef8e&accessToken=${'a'.repeat(64)}&release=test` },
     crypto: { getRandomValues(target) { target.set(bytes); return target; } },
     URL, URLSearchParams, Uint8Array, Array, String
   });
+  assert.equal(widget.src, '', 'the nested iframe must not delay the outer iframe load event');
+  assert.equal(scripts.length, 0, 'the runtime must not delay the outer iframe load event');
+  earlyListeners.load();
+  assert.equal(widget.src, '', 'the heavyweight work must wait until Notion can paint the shell');
+  assert.equal(frames.length, 1);
+  frames[0]();
+  assert.equal(frames.length, 2);
+  assert.equal(timers.length, 0, 'one paint is not enough to start the nested frame');
+  frames[1]();
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delay, 0);
+  timers[0].callback();
   const earlyUrl = new URL(widget.src);
   assert.equal(earlyUrl.origin, 'https://script.google.com');
   assert.deepEqual(Array.from(earlyUrl.searchParams.keys()).sort(), ['accessToken', 'embedNonce', 'release', 'task']);
   assert.equal(earlyUrl.searchParams.get('embedNonce'), windowObject.__notionWidgetEarlyBridge.nonce);
   assert.match(windowObject.__notionWidgetEarlyBridge.nonce, /^[0-9a-f]{32}$/);
+  assert.equal(scripts.length, 1);
+  assert.equal(scripts[0].src, 'apps-script-embed.js?v=46');
+  assert.equal(scripts[0].async, true);
+  assert.equal(scripts[0].fetchPriority, 'high');
   earlyListeners.message({origin:'https://evil.example',data:{embedNonce:windowObject.__notionWidgetEarlyBridge.nonce}});
   earlyListeners.message({origin:'https://script.googleusercontent.com',data:{embedNonce:windowObject.__notionWidgetEarlyBridge.nonce}});
   assert.equal(windowObject.__notionWidgetEarlyBridge.events.length, 1, 'only the authenticated early Google message is buffered');
 
-  const rejectedWidget = { src: '' };
+  const rejectedWidget = { src: '' }, rejectedTimers = [], rejectedFrames = [], rejectedScripts = [], rejectedListeners = {};
   vm.runInNewContext(earlyBootstrap, {
-    window: { addEventListener() {} },
-    document: { getElementById() { return rejectedWidget; } },
+    window: {
+      addEventListener(type, listener) { rejectedListeners[type] = listener; },
+      requestAnimationFrame(callback) { rejectedFrames.push(callback); return rejectedFrames.length; },
+      setTimeout(callback, delay) { rejectedTimers.push({ callback, delay }); return rejectedTimers.length; }
+    },
+    document: {
+      readyState: 'loading',
+      head: { appendChild(value) { rejectedScripts.push(value); } },
+      createElement(tag) { return { tagName: String(tag).toUpperCase() }; },
+      getElementById() { return rejectedWidget; }
+    },
     location: { hash: '#task=invalid&accessToken=invalid' },
     crypto: { getRandomValues() { throw new Error('invalid parameters must stop before entropy is requested'); } },
     URL, URLSearchParams, Uint8Array, Array, String
   });
+  rejectedListeners.load();
+  rejectedFrames[0]();
+  rejectedFrames[1]();
+  rejectedTimers[0].callback();
   assert.equal(rejectedWidget.src, '');
+  assert.equal(rejectedScripts.length, 1, 'the runtime still renders the validation error after first paint');
 });
 
 test('wrapper forwards only validated task runtime parameters', () => {
