@@ -47,9 +47,27 @@ test('primary cards create Google files and their pencils upload into the matchi
   assert.match(frontend, /data-upload-section="\$\{section\}"/);
   assert.match(frontend, /chooseFiles\(upload\.dataset\.uploadSection\)/);
   assert.match(frontend, /if\(section==='Drive'\)[\s\S]*createGoogle\(section\)/);
-  assert.match(frontend, /createGoogleWithRecovery\(\{taskPageId,section,idempotencyKey:operation\.value\}\)/);
+  assert.match(frontend, /const payload=\{taskPageId,section,idempotencyKey:operation\.value\}/);
+  assert.match(frontend, /if\(bridgeRequest&&bridgeRequest\.reservationId\)payload\.reservationId=bridgeRequest\.reservationId/);
+  assert.match(frontend, /createGoogleWithRecovery\(payload\)/);
   assert.match(frontend, /call\('apiUpload',\{taskPageId,name:file\.name,mimeType:file\.type\|\|'application\/octet-stream',section,dataBase64,idempotencyKey:operation\.value\}\)/);
   assert.doesNotMatch(frontend, /seedDownloadFromFile\(data\.material,file\)/);
+});
+
+test('authoritative prepared files open directly and bind the background claim to the same request', () => {
+  assert.match(frontend, /preparedCreates:\{\}/);
+  assert.match(frontend, /function safePreparedCreate\(value\)/);
+  assert.match(frontend, /url\.hostname!=='docs\.google\.com'/);
+  assert.match(frontend, /url\.search\|\|url\.hash/);
+  assert.match(frontend, /function warmPreparedCreates\(\)/);
+  assert.match(frontend, /!state\.authoritative\|\|!state\.actionReady/);
+  assert.match(frontend, /call\('apiWarmCreateContext',\{taskPageId\}\)/);
+  assert.match(frontend, /state\.authoritative&&state\.actionReady\?Object\.values\(state\.preparedCreates\)/);
+  assert.match(frontend, /issuedPreparedCreates\.get\(reservationId\)!==data\.section/);
+  assert.match(frontend, /type:'notion-widget-v20-primary-started',requestId/);
+  assert.match(frontend, /activeBridgeCreateRequests\.get\(data\.section\)===requestId/);
+  assert.match(frontend, /if\(bridgeRequest&&bridgeRequest\.reservationId\)payload\.reservationId=bridgeRequest\.reservationId/);
+  assert.match(frontend, /prepared&&prepared\.reservationId===bridgeRequest\.reservationId\)delete state\.preparedCreates\[section\]/);
 });
 
 test('mutation retries use per-session stable idempotency keys without persisting materials', () => {
@@ -170,6 +188,7 @@ test('bootstrap primes downloads while preserving unchanged unexpired packages i
   assert.match(frontend,/const downloadGrants = new Map\(\)/);
   assert.match(frontend,/const downloadGrantPrimeInFlight = new Map\(\)/);
   assert.match(frontend,/const downloadGrantRetryNotBefore = new Map\(\)/);
+  assert.match(frontend,/const DOWNLOAD_GRANT_PRIME_WORKERS = 4/);
   assert.match(bootstrap,/const previousDownloadFingerprints=new Map\(state\.materials\.filter\(canPrepareDownload\)\.map/);
   assert.match(bootstrap,/downloadGrants\.forEach\(\(_record,pageId\)=>/);
   assert.match(bootstrap,/previousDownloadFingerprints\.get\(pageId\)!==downloadMaterialFingerprint\(current\)/);
@@ -178,8 +197,12 @@ test('bootstrap primes downloads while preserving unchanged unexpired packages i
   assert.match(bootstrap,/downloadGrantRetryNotBefore\.clear\(\)/);
   assert.match(bootstrap,/scheduleDownloadGrantPrime\(downloadPrimeGeneration\)/);
   assert.match(prime,/window\.setTimeout\(async\(\)=>/);
-  assert.match(prime,/Promise\.all\(\[worker\(\),worker\(\)\]\)/);
+  assert.match(prime,/Promise\.all\(Array\.from\(\{length:Math\.min\(DOWNLOAD_GRANT_PRIME_WORKERS,candidates\.length\)\},\(\)=>worker\(\)\)\)/);
+  assert.match(prime,/visible:downloadCardIsVisible\(item\.id\)/);
+  assert.match(prime,/Number\(right\.visible\)-Number\(left\.visible\)/);
   assert.match(prime,/call\('apiPrepareDownload',\{taskPageId,pageId:materialId\}\)/);
+  assert.match(prime,/const requestedFingerprint=downloadMaterialFingerprint\(item\)/);
+  assert.match(prime,/const current=currentDownloadMaterialForPrime\(materialId,requestedFingerprint\)/);
   assert.match(prime,/card\.dataset\.downloadPath=data&&data\.mode==='grant'\?'grant':'proxy'/);
   assert.match(prime,/dataset\.downloadReason=proxyReason/);
   assert.match(prime,/data&&data\.mode==='grant'/);
@@ -188,6 +211,24 @@ test('bootstrap primes downloads while preserving unchanged unexpired packages i
   assert.match(prime,/refreshDownloadGrantLink\(materialId\)/);
   assert.match(frontend,/upsert\(data\.material\);render\(\);primeDownloadGrant\(data\.material&&data\.material\.id,downloadPrimeGeneration\)/);
   assert.doesNotMatch(prime,/localStorage|sessionStorage|indexedDB|downloadUrl|attachmentUrl/);
+});
+
+test('an in-flight download preparation is reusable only for the exact unchanged material', () => {
+  const source=frontend.slice(frontend.indexOf('function currentDownloadMaterialForPrime'),frontend.indexOf('function primeDownloadGrant'));
+  const original={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',googleFileId:'DRIVEFILE123',name:'report.pdf',canDownload:true,widgetOwned:true};
+  const state={materials:[original]};
+  const fingerprint=(item)=>[item&&item.id,item&&item.googleFileId,item&&item.name].map((value)=>String(value??'')).join('|');
+  const current=new Function('state','canPrepareDownload','downloadMaterialFingerprint',`${source};return currentDownloadMaterialForPrime;`)(
+    state,
+    (item)=>Boolean(item&&item.canDownload&&item.widgetOwned&&!item.archived),
+    fingerprint
+  );
+  const requested=fingerprint(original);
+  assert.equal(current(original.id,requested),original);
+  state.materials=[{...original,name:'renamed.pdf'}];
+  assert.equal(current(original.id,requested),null,'renamed coordinates reject the old response');
+  state.materials=[{...original,widgetOwned:false}];
+  assert.equal(current(original.id,requested),null,'lost ownership rejects the old response');
 });
 
 test('server-rendered safe registry cards paint before the first client RPC', () => {
@@ -199,12 +240,14 @@ test('server-rendered safe registry cards paint before the first client RPC', ()
   assert.match(startup,/Array\.isArray\(data\.materials\)/);
   assert.match(startup,/applyBootstrapData\(initialBootstrap,false,\{skipDownloadPrime:true\}\)/);
   assert.ok(startup.indexOf('applyBootstrapData(initialBootstrap,false')<startup.indexOf('resolveRuntimeLocation().then'));
-  assert.match(frontend,/state\.actionReady=Boolean\(runtimeLocationResolved&&data&&data\.actionReady===true&&state\.trustedUntil>Date\.now\(\)\)/);
+  assert.match(frontend,/state\.actionReady=Boolean\(state\.authoritative&&runtimeLocationResolved&&data&&data\.actionReady===true&&state\.trustedUntil>Date\.now\(\)\)/);
   assert.match(frontend,/if\(!runtimeLocationResolved\|\|!isEmbedBridgeMode\(\)\|\|!state\.bootstrapped\)return/);
   assert.ok(startupTail.indexOf('runtimeLocationResolved=true')<startupTail.lastIndexOf('applyBootstrapData(initialBootstrap,false'));
   assert.match(startupTail,/deferInitialDownloadPrimeUntilAuthoritative=true/);
   assert.match(startupTail,/scheduleCachedRefresh\(0\)/);
-  assert.doesNotMatch(startupTail,/scheduleDownloadGrantPrime/);
+  assert.match(startupTail,/if\(state\.actionReady\)scheduleDownloadGrantPrime\(downloadPrimeGeneration\)/);
+  assert.ok(startupTail.lastIndexOf('applyBootstrapData(initialBootstrap,false')<startupTail.indexOf('if(state.actionReady)scheduleDownloadGrantPrime'));
+  assert.ok(startupTail.indexOf('if(state.actionReady)scheduleDownloadGrantPrime')<startupTail.indexOf('scheduleCachedRefresh(0)'));
   assert.match(frontend,/if\(state\.authoritative\)deferInitialDownloadPrimeUntilAuthoritative=false/);
   assert.match(frontend,/!deferInitialDownloadPrimeUntilAuthoritative\)scheduleDownloadGrantPrime\(downloadPrimeGeneration\)/);
 });
@@ -222,7 +265,7 @@ test('visible download grants renew just before expiry with one timer, bounded w
   assert.doesNotMatch(prime,/setInterval/);
   assert.match(prime,/refreshVisibleDownloadGrants\(false\)/);
   assert.match(prime,/downloadGrants\.forEach\(\(_record,pageId\)=>refreshDownloadGrantLink\(pageId\)\)/);
-  assert.match(prime,/Promise\.all\(\[worker\(\),worker\(\)\]\)/);
+  assert.match(prime,/Promise\.all\(Array\.from\(\{length:Math\.min\(DOWNLOAD_GRANT_PRIME_WORKERS,candidates\.length\)\},\(\)=>worker\(\)\)\)/);
   assert.match(frontend,/grid\.addEventListener\('pointerover',handleDownloadGrantIntent\)/);
   assert.match(frontend,/grid\.addEventListener\('focusin',handleDownloadGrantIntent\)/);
   assert.match(frontend,/refreshVisibleDownloadGrants\(true\)\.catch\(\(\)=>\{\}\)/);
@@ -510,22 +553,24 @@ test('native create clicks render one optimistic card and poll only the server l
   assert.match(frontend, /data\.status==='done'&&data\.material/);
   assert.match(frontend, /function completeOptimisticCreate\(requestId,material,announce\)/);
   assert.match(frontend, /state\.materials=state\.materials\.filter\(\(item\)=>item\.id!==record\.pendingId\)/);
-  assert.match(frontend, /upsert\(material\);if\(material\)\{recentCompletedCreates\.set\(normalized,material\);recentDrivePageIds\.add\(material\.id\);\}/);
+  assert.match(frontend, /upsert\(material\);if\(material\)\{recentCompletedCreates\.set\(normalized,material\);rememberCompletedCreate\(normalized\);recentDrivePageIds\.add\(material\.id\);\}/);
   assert.match(frontend, /startOptimisticCreate\(section,bridgeRequest\.requestId,false\)/);
   assert.match(frontend, /function createGoogleWithRecovery\(payload\)/);
   assert.match(frontend, /const delays=\[0,900,2400\]/);
   assert.match(frontend, /if\(delay\)await new Promise\(\(resolve\)=>window\.setTimeout\(resolve,delay\)\)/);
   assert.match(frontend, /return await call\('apiCreateGoogle',payload\)/);
   assert.match(frontend, /if\(!error\.retryable\)throw error/);
-  assert.match(frontend, /createGoogleWithRecovery\(\{taskPageId,section,idempotencyKey:operation\.value\}\)/);
+  assert.match(frontend, /createGoogleWithRecovery\(payload\)/);
   assert.match(frontend, /completeOptimisticCreate\(bridgeRequest\.requestId,data\.material,false\);reply\(\{ok:true,openUrl:/);
-  assert.ok(frontend.indexOf("reply({ok:true,openUrl:") < frontend.indexOf('announceEmbedBridgeReady();}'));
-  assert.match(frontend, /if\(state\.actionReady!==true\)/);
+  const createSource=frontend.slice(frontend.indexOf('async function createGoogle(section,bridgeRequest)'),frontend.indexOf('function openLinkModal'));
+  const releaseAt=createSource.indexOf('delete state.preparedCreates[section]'),replyAt=createSource.indexOf('reply({ok:true,openUrl:'),announceAt=createSource.indexOf('announceEmbedBridgeReady();',replyAt);
+  assert.ok(releaseAt>=0&&releaseAt<replyAt&&replyAt<announceAt,'the consumed descriptor must disappear before success is announced');
+  assert.match(frontend, /if\(state\.authoritative!==true\|\|state\.actionReady!==true\)/);
   assert.match(frontend, /actionReady:state\.actionReady===true/);
   assert.doesNotMatch(frontend, /actionReady:state\.actionReady===true\|\|state\.authoritative/);
-  assert.match(frontend, /state\.materials\.filter\(\(item\)=>item&&!String\(item\.id\|\|''\)\.startsWith\('pending:'\)&&item\.syncStatus!=='pending'\)/);
-  assert.match(frontend, /pendingCreatePolls\.delete\(requestId\);recentDrivePageIds\.add\(completed\.id\)/);
-  assert.match(frontend, /call\('apiWarmCreateContext',\{taskPageId\}\)\.catch\(\(\)=>\{\}\)/);
+  assert.match(frontend, /state\.materials\.slice\(\)\.reverse\(\)\.filter\(\(item\)=>item&&!String\(item\.id\|\|''\)\.startsWith\('pending:'\)&&item\.syncStatus!=='pending'\)/);
+  assert.match(frontend, /pendingCreatePolls\.delete\(requestId\);rememberCompletedCreate\(requestId\);recentDrivePageIds\.add\(completed\.id\)/);
+  assert.match(frontend, /warmPreparedCreates\(\)\.catch\(\(\)=>\{\}\)/);
   assert.doesNotMatch(frontend, /apiGetCreateStatus[^\n]+idempotencyKey/);
 });
 
@@ -545,7 +590,7 @@ test('action proof is renewed before expiry and authoritative data never bypasse
   assert.match(frontend,/runtimeLocationResolved&&state\.authoritative&&!state\.actionReady&&!\(options&&options\.deferActionProofRetry\)\)scheduleActionProofRetry\(\)/);
   assert.match(frontend,/applyBootstrapData\(fresh,true,\{deferActionProofRetry:true\}\)/);
   assert.match(frontend,/state\.trustedUntil-Date\.now\(\)<=ACTION_READY_RENEW_LEAD_MS\)\)scheduleActionProofRefresh\(0\)/);
-  assert.match(frontend,/state\.actionReady=Boolean\(runtimeLocationResolved&&data&&data\.actionReady===true&&state\.trustedUntil>Date\.now\(\)\)/);
+  assert.match(frontend,/state\.actionReady=Boolean\(state\.authoritative&&runtimeLocationResolved&&data&&data\.actionReady===true&&state\.trustedUntil>Date\.now\(\)\)/);
   assert.doesNotMatch(frontend,/state\.actionReady=state\.authoritative\|\|/);
   assert.doesNotMatch(frontend,/const actionReady=state\.actionReady\|\|state\.authoritative/);
 

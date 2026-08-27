@@ -18,6 +18,10 @@ var W20_DOWNLOAD_GRANT_SCHEMA = 2;
 var W20_FAST_DOWNLOAD_PACKAGE_TTL_SECONDS = 60;
 var W20_DRIVE_DIRECT_SOURCE_TTL_SECONDS = 180;
 var W20_DRIVE_POLL_CLAIM_TTL_SECONDS = 60;
+var W20_CREATE_RESERVATION_PREFIX = 'w20:create-reservation:';
+var W20_CREATE_CLAIM_PREFIX = 'w20:create-claim:';
+var W20_CREATE_RESERVATION_SCHEMA = 1;
+var W20_CREATE_RESERVATION_PREPARING_TTL_MS = 2 * 60 * 1000;
 var W19_IDEMPOTENCY_PENDING_TTL_MS = 7 * 60 * 1000;
 var W19_NOTION_RATE_CACHE_KEY = 'w20:notion:last-request-at';
 var W19_NOTION_RATE_INTERVAL_MS = 350;
@@ -34,19 +38,11 @@ var W19_P = Object.freeze({
   ARCHIVE: 'Архив',
   FILE_FORMAT: '[SYS] Формат файла',
   SECTION: '[SYS] Раздел виджета',
-  PROVIDER: '[SYS] Провайдер',
   GOOGLE_FILE_ID: '[SYS] Google File ID',
   GOOGLE_FOLDER_ID: '[SYS] Google Folder ID',
   POSITION: '[SYS] Позиция',
   SYNC_STATUS: '[SYS] Sync status',
   IDEMPOTENCY: '[SYS] Idempotency key',
-  MIME: '[SYS] MIME type',
-  SIZE: '[SYS] Размер байт',
-  DRIVE_MD5: '[SYS] Drive MD5',
-  DOWNLOAD_NAME: '[SYS] Download name',
-  NORMALIZED_URL: '[SYS] Normalized URL',
-  SYNC_ERROR: '[SYS] Ошибка sync',
-  INTEGRITY: '[SYS] Integrity',
   CONTEXT_PATH: '[SYS] Context path',
   ANCESTOR_IDS: '[SYS] Ancestor IDs',
   DEPTH: '[SYS] Глубина',
@@ -66,19 +62,11 @@ var W19_REQUIRED_SCHEMA = Object.freeze({
   'Архив': 'checkbox',
   '[SYS] Формат файла': 'select',
   '[SYS] Раздел виджета': 'select',
-  '[SYS] Провайдер': 'select',
   '[SYS] Google File ID': 'rich_text',
   '[SYS] Google Folder ID': 'rich_text',
   '[SYS] Позиция': 'number',
   '[SYS] Sync status': 'select',
   '[SYS] Idempotency key': 'rich_text',
-  '[SYS] MIME type': 'rich_text',
-  '[SYS] Размер байт': 'number',
-  '[SYS] Drive MD5': 'rich_text',
-  '[SYS] Download name': 'rich_text',
-  '[SYS] Normalized URL': 'rich_text',
-  '[SYS] Ошибка sync': 'rich_text',
-  '[SYS] Integrity': 'select',
   '[SYS] Context path': 'rich_text',
   '[SYS] Ancestor IDs': 'rich_text',
   '[SYS] Глубина': 'number',
@@ -375,6 +363,7 @@ function apiBootstrap(input) {
       var materials = pages.map(function (page) {
         return w20MaterialForClient_(w19MaterialFromPage_(page), task.id, cfg);
       });
+      materials = w20PreserveRegistryRuntimeMetadata_(task.id, materials);
       var previousMeta = w20RegistryReadTaskMeta_(task.id);
       var folderId = w20RegistryFolderId_(task.id, materials);
       var folderVerified = Boolean(previousMeta && previousMeta.folderId === folderId &&
@@ -418,6 +407,7 @@ function apiBootstrap(input) {
         cached: false,
         authoritative: true,
         actionReady: actionProof.ready,
+        preparedCreates: actionProof.ready ? w20PreparedCreatePoolSnapshot_(task.id) : [],
         trustedUntil: actionProof.trustedUntil,
         fullySynced: true,
         refreshRequired: false
@@ -432,6 +422,605 @@ function apiBootstrap(input) {
   });
 }
 
+function w20CreateReservationId_(value) {
+  var normalized = String(value || '').trim().toLowerCase();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(normalized) ? normalized : '';
+}
+
+function w20CreateReservationSection_(value) {
+  var section = String(value || '');
+  return ['Docs', 'Sheets', 'Slides'].indexOf(section) === -1 ? '' : section;
+}
+
+function w20CreateReservationKey_(taskId, section) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  var normalizedSection = w20CreateReservationSection_(section);
+  return task && normalizedSection ? W20_CREATE_RESERVATION_PREFIX + task + ':' + normalizedSection : '';
+}
+
+function w20CreateClaimKey_(canonicalHash) {
+  var hash = String(canonicalHash || '').trim().toLowerCase();
+  return /^[a-f0-9]{64}$/.test(hash) ? W20_CREATE_CLAIM_PREFIX + hash.slice(0, 48) : '';
+}
+
+function w20CreateReservationRef_(value) {
+  var normalized = String(value || '').trim().toLowerCase();
+  return normalized.indexOf(W20_CREATE_CLAIM_PREFIX) === 0 &&
+    /^[a-f0-9]{48}$/.test(normalized.slice(W20_CREATE_CLAIM_PREFIX.length)) ? normalized : '';
+}
+
+function w20ExactCreateAppProperties_(actual, expected) {
+  var source = actual && typeof actual === 'object' ? actual : {};
+  var wanted = expected && typeof expected === 'object' ? expected : {};
+  var actualKeys = Object.keys(source).sort();
+  var expectedKeys = Object.keys(wanted).sort();
+  if (actualKeys.length !== expectedKeys.length) return false;
+  for (var i = 0; i < expectedKeys.length; i += 1) {
+    var key = expectedKeys[i];
+    if (actualKeys[i] !== key || String(source[key]) !== String(wanted[key])) return false;
+  }
+  return true;
+}
+
+function w20ReadCreateReservation_(props, key) {
+  var raw = key && props && props.getProperty(key);
+  if (!raw) return null;
+  var value;
+  try { value = JSON.parse(raw); } catch (_parseReservationError) { return null; }
+  var status = String(value && value.status || '');
+  var task = String(value && value.taskId || '').toLowerCase();
+  var section = w20CreateReservationSection_(value && value.section);
+  var reservationId = w20CreateReservationId_(value && value.reservationId);
+  var at = Number(value && value.at || 0);
+  if (!value || value.schema !== W20_CREATE_RESERVATION_SCHEMA ||
+      !/^[a-f0-9]{32}$/.test(task) || value.taskId !== task || !section || value.section !== section ||
+      !reservationId || value.reservationId !== reservationId || !isFinite(at) || at <= 0 ||
+      ['preparing', 'prepared', 'claimed', 'done'].indexOf(status) === -1) return null;
+  if (status === 'preparing') {
+    if (!w20CreateReservationId_(value.prepareAttemptId)) return null;
+  } else if (!w20SafeDriveId_(value.fileId)) {
+    return null;
+  }
+  if (status !== 'preparing' && (typeof value.preparedName !== 'string' || !value.preparedName || value.preparedName.length > 500)) return null;
+  if (status === 'claimed' || status === 'done') {
+    if (!/^[a-f0-9]{64}$/.test(String(value.canonicalHash || '').toLowerCase()) ||
+        !w20CreateReservationId_(value.createRequestId) || !w20CreateReservationId_(value.attemptId) ||
+        value.createRequestId !== reservationId || !w20SafeDriveId_(value.folderId) ||
+        !isFinite(Number(value.position)) || Number(value.position) < 0) return null;
+    if (status === 'claimed' && value.notionPageId) return null;
+    if (status === 'done' && !WidgetV19Core.normalizeUuid(value.notionPageId)) return null;
+  }
+  return value;
+}
+
+function w20CreateReservationFormat_(section) {
+  return section === 'Docs' ? 'Google Docs' : (section === 'Sheets' ? 'Google Sheets' : (section === 'Slides' ? 'Google Slides' : ''));
+}
+
+function w20CreateReservationOpenUrl_(fileId, section) {
+  var id = w20SafeDriveId_(fileId);
+  var format = w20CreateReservationFormat_(section);
+  if (!id || !format) return '';
+  var url = WidgetV19Core.makeDriveOpenUrl(id, format);
+  return w20SafeCreateMaterialOpenUrl_({
+    openUrl: url,
+    googleFileId: id,
+    section: section,
+    format: format,
+    provider: 'Google Drive',
+    archived: false
+  });
+}
+
+function w20PreparedCreateFile_(file, taskId, section, reservationId, rootFolderId) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  var normalizedSection = w20CreateReservationSection_(section);
+  var normalizedReservation = w20CreateReservationId_(reservationId);
+  var root = w20SafeDriveId_(rootFolderId);
+  var props = file && file.appProperties || {};
+  var parents = file && Array.isArray(file.parents) ? file.parents.map(String) : [];
+  var fileId = w20SafeDriveId_(file && file.id);
+  var expectedProperties = {
+    widgetVersion: W20_DRIVE_MARKER,
+    taskPageId: task,
+    createReservationSection: normalizedSection,
+    createReservationId: normalizedReservation,
+    createReservationState: 'prepared',
+    materialState: 'reserved'
+  };
+  if (!task || !normalizedSection || !normalizedReservation || !root || !fileId || !file || file.trashed || file.ownedByMe !== true ||
+      file.mimeType !== WidgetV19Core.GOOGLE_MIME[normalizedSection] || parents.length !== 1 || parents[0] !== root ||
+      !w20ExactCreateAppProperties_(props, expectedProperties)) return null;
+  var openUrl = w20CreateReservationOpenUrl_(fileId, normalizedSection);
+  return openUrl ? { file: file, openUrl: openUrl } : null;
+}
+
+function w20ClaimedCreateFile_(file, claim, expectedNotionPageId) {
+  var props = file && file.appProperties || {};
+  var parents = file && Array.isArray(file.parents) ? file.parents.map(String) : [];
+  var fileId = w20SafeDriveId_(file && file.id);
+  var expectedIdem = String(claim && claim.canonicalHash || '').slice(0, 40);
+  var expectedProperties = {
+    widgetVersion: W20_DRIVE_MARKER,
+    taskPageId: claim && claim.taskId,
+    widgetIdem: expectedIdem,
+    materialState: 'active'
+  };
+  var compactPage = expectedNotionPageId === undefined ? '' : WidgetV19Core.compactUuid(expectedNotionPageId);
+  if (expectedNotionPageId !== undefined && !compactPage) return null;
+  var propertiesValid = w20ExactCreateAppProperties_(props, expectedProperties);
+  if (compactPage) {
+    var withPage = {};
+    Object.keys(expectedProperties).forEach(function (key) { withPage[key] = expectedProperties[key]; });
+    withPage.notionPageId = compactPage;
+    propertiesValid = propertiesValid || w20ExactCreateAppProperties_(props, withPage);
+  }
+  if (!file || file.trashed || file.ownedByMe !== true || !fileId || fileId !== claim.fileId ||
+      file.mimeType !== WidgetV19Core.GOOGLE_MIME[claim.section] || parents.length !== 1 || parents[0] !== claim.folderId ||
+      !propertiesValid) return null;
+  var openUrl = w20CreateReservationOpenUrl_(fileId, claim.section);
+  return openUrl ? { file: file, openUrl: openUrl } : null;
+}
+
+function w20CreateReservationForClient_(slot, verified) {
+  var reservationId = w20CreateReservationId_(slot && slot.reservationId);
+  var section = w20CreateReservationSection_(slot && slot.section);
+  var openUrl = verified && w20CreateReservationOpenUrl_(verified.file && verified.file.id, section);
+  return reservationId && section && openUrl ? { section: section, reservationId: reservationId, openUrl: openUrl } : null;
+}
+
+function w20PreparedCreatePoolSnapshot_(taskId) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  if (!task) return [];
+  var values = PropertiesService.getScriptProperties().getProperties();
+  var snapshot = {
+    getProperty: function (key) {
+      return Object.prototype.hasOwnProperty.call(values, key) ? values[key] : null;
+    }
+  };
+  var prepared = [];
+  ['Docs', 'Sheets', 'Slides'].forEach(function (section) {
+    var slot = w20ReadCreateReservation_(snapshot, w20CreateReservationKey_(taskId, section));
+    if (!slot || slot.status !== 'prepared' || slot.taskId !== task || slot.section !== section) return;
+    var openUrl = w20CreateReservationOpenUrl_(slot.fileId, section);
+    if (openUrl) prepared.push({ section: section, reservationId: slot.reservationId, openUrl: openUrl });
+  });
+  return prepared;
+}
+
+function w20FindPreparedReservationFiles_(taskId, section, reservationId) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  var normalizedSection = w20CreateReservationSection_(section);
+  var normalizedReservation = w20CreateReservationId_(reservationId);
+  if (!task || !normalizedSection) return [];
+  var q = "trashed = false and appProperties has { key='widgetVersion' and value='" + W20_DRIVE_MARKER + "' } and " +
+    "appProperties has { key='taskPageId' and value='" + w19DriveQueryEscape_(task) + "' } and " +
+    "appProperties has { key='createReservationSection' and value='" + normalizedSection + "' } and " +
+    "appProperties has { key='createReservationState' and value='prepared' }";
+  if (normalizedReservation) q += " and appProperties has { key='createReservationId' and value='" + normalizedReservation + "' }";
+  var result = w19DriveRetry_(function () {
+    return Drive.Files.list({
+      q: q,
+      pageSize: 2,
+      spaces: 'drive',
+      fields: 'files(id,name,mimeType,size,md5Checksum,modifiedTime,webViewLink,webContentLink,ownedByMe,trashed,parents,appProperties)'
+    });
+  });
+  return result && Array.isArray(result.files) ? result.files.slice(0, 2) : [];
+}
+
+function w20CreatePreparedReservationFile_(taskId, section, reservationId, cfg) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  var normalizedSection = w20CreateReservationSection_(section);
+  var normalizedReservation = w20CreateReservationId_(reservationId);
+  if (!task || !normalizedSection || !normalizedReservation || !w20SafeDriveId_(cfg && cfg.rootFolderId)) {
+    throw new W19Error_('RESERVATION_INVALID', 'Не удалось подготовить резерв файла.', false);
+  }
+  var recovered = w20FindPreparedReservationFiles_(taskId, normalizedSection, normalizedReservation);
+  if (recovered.length === 1) return recovered[0];
+  if (recovered.length > 1) throw new W19Error_('RESERVATION_AMBIGUOUS', 'Обнаружено несколько резервов файла.', false);
+  try {
+    return Drive.Files.create({
+      name: w19DefaultGoogleName_(normalizedSection),
+      mimeType: WidgetV19Core.GOOGLE_MIME[normalizedSection],
+      parents: [cfg.rootFolderId],
+      appProperties: {
+        widgetVersion: W20_DRIVE_MARKER,
+        taskPageId: task,
+        createReservationSection: normalizedSection,
+        createReservationId: normalizedReservation,
+        createReservationState: 'prepared',
+        materialState: 'reserved'
+      }
+    }, null, { fields: 'id,name,mimeType,size,md5Checksum,modifiedTime,webViewLink,webContentLink,ownedByMe,trashed,parents,appProperties' });
+  } catch (err) {
+    var afterError = [];
+    try { afterError = w20FindPreparedReservationFiles_(taskId, normalizedSection, normalizedReservation); }
+    catch (_reservationLookupError) { afterError = []; }
+    if (afterError.length === 1) return afterError[0];
+    throw new W19Error_('RESERVATION_PREPARE_UNCERTAIN', 'Google Drive не подтвердил подготовку резерва.', true);
+  }
+}
+
+function w20StorePreparedReservation_(key, expected, file, cfg) {
+  var verified = w20PreparedCreateFile_(file, expected.taskId, expected.section, expected.reservationId, cfg.rootFolderId);
+  if (!verified) return null;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return null;
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var current = w20ReadCreateReservation_(props, key);
+    if (!current || current.status !== 'preparing' || current.reservationId !== expected.reservationId ||
+        current.prepareAttemptId !== expected.prepareAttemptId || current.taskId !== expected.taskId || current.section !== expected.section) return null;
+    var prepared = {
+      schema: W20_CREATE_RESERVATION_SCHEMA,
+      status: 'prepared',
+      taskId: expected.taskId,
+      section: expected.section,
+      reservationId: expected.reservationId,
+      fileId: verified.file.id,
+      preparedName: String(verified.file.name || w19DefaultGoogleName_(expected.section)),
+      at: Date.now()
+    };
+    props.setProperty(key, JSON.stringify(prepared));
+    return { slot: prepared, verified: verified };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function w20EnsurePreparedCreate_(taskId, section, cfg) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  var normalizedSection = w20CreateReservationSection_(section);
+  var key = w20CreateReservationKey_(taskId, normalizedSection);
+  if (!task || !normalizedSection || !key) return null;
+  var props = PropertiesService.getScriptProperties();
+  var raw = props.getProperty(key);
+  var slot = w20ReadCreateReservation_(props, key);
+
+  if (slot && slot.status === 'prepared') {
+    var preparedFile = w19GetDriveMetadata_(slot.fileId);
+    var preparedVerified = w20PreparedCreateFile_(preparedFile, taskId, normalizedSection, slot.reservationId, cfg.rootFolderId);
+    if (!preparedVerified) return null;
+    var verifyLock = LockService.getScriptLock();
+    if (!verifyLock.tryLock(5000)) return null;
+    try {
+      var currentPrepared = w20ReadCreateReservation_(PropertiesService.getScriptProperties(), key);
+      if (!currentPrepared || currentPrepared.status !== 'prepared' || currentPrepared.reservationId !== slot.reservationId ||
+          currentPrepared.fileId !== slot.fileId) return null;
+      return w20CreateReservationForClient_(currentPrepared, preparedVerified);
+    } finally {
+      verifyLock.releaseLock();
+    }
+  }
+  if (slot && (slot.status === 'claimed' || slot.status === 'done')) return null;
+
+  if (slot && slot.status === 'preparing') {
+    var recoveredPreparing = w20FindPreparedReservationFiles_(taskId, normalizedSection, slot.reservationId);
+    if (recoveredPreparing.length === 1) {
+      var promoted = w20StorePreparedReservation_(key, slot, recoveredPreparing[0], cfg);
+      return promoted ? w20CreateReservationForClient_(promoted.slot, promoted.verified) : null;
+    }
+    if (recoveredPreparing.length > 1 || Date.now() - Number(slot.at || 0) < W20_CREATE_RESERVATION_PREPARING_TTL_MS) return null;
+  }
+
+  if (raw && !slot) return null;
+  if (!slot) {
+    var existingFiles = w20FindPreparedReservationFiles_(taskId, normalizedSection, '');
+    if (existingFiles.length > 1) return null;
+    if (existingFiles.length === 1) {
+      var existingId = w20CreateReservationId_(existingFiles[0].appProperties && existingFiles[0].appProperties.createReservationId);
+      var existingVerified = w20PreparedCreateFile_(existingFiles[0], taskId, normalizedSection, existingId, cfg.rootFolderId);
+      if (!existingVerified) return null;
+      var reconstructLock = LockService.getScriptLock();
+      if (!reconstructLock.tryLock(5000)) return null;
+      try {
+        var reconstructProps = PropertiesService.getScriptProperties();
+        if (reconstructProps.getProperty(key)) return null;
+        var reconstructed = {
+          schema: W20_CREATE_RESERVATION_SCHEMA,
+          status: 'prepared',
+          taskId: task,
+          section: normalizedSection,
+          reservationId: existingId,
+          fileId: existingFiles[0].id,
+          preparedName: String(existingFiles[0].name || w19DefaultGoogleName_(normalizedSection)),
+          at: Date.now()
+        };
+        reconstructProps.setProperty(key, JSON.stringify(reconstructed));
+        return w20CreateReservationForClient_(reconstructed, existingVerified);
+      } finally {
+        reconstructLock.releaseLock();
+      }
+    }
+  }
+
+  var prepareAttemptId = Utilities.getUuid().toLowerCase();
+  var reservationId = slot && slot.status === 'preparing' ? slot.reservationId : Utilities.getUuid().toLowerCase();
+  var prepareLock = LockService.getScriptLock();
+  if (!prepareLock.tryLock(5000)) return null;
+  var preparing;
+  try {
+    var prepareProps = PropertiesService.getScriptProperties();
+    var current = w20ReadCreateReservation_(prepareProps, key);
+    if (current && current.status !== 'preparing') return null;
+    if (current && Date.now() - Number(current.at || 0) < W20_CREATE_RESERVATION_PREPARING_TTL_MS) return null;
+    if (!current && prepareProps.getProperty(key)) return null;
+    preparing = {
+      schema: W20_CREATE_RESERVATION_SCHEMA,
+      status: 'preparing',
+      taskId: task,
+      section: normalizedSection,
+      reservationId: reservationId,
+      prepareAttemptId: prepareAttemptId,
+      at: Date.now()
+    };
+    prepareProps.setProperty(key, JSON.stringify(preparing));
+  } finally {
+    prepareLock.releaseLock();
+  }
+
+  var created = w20CreatePreparedReservationFile_(taskId, normalizedSection, reservationId, cfg);
+  var stored = w20StorePreparedReservation_(key, preparing, created, cfg);
+  return stored ? w20CreateReservationForClient_(stored.slot, stored.verified) : null;
+}
+
+function w20WarmCreatePool_(taskId, cfg) {
+  var prepared = [];
+  ['Docs', 'Sheets', 'Slides'].forEach(function (section) {
+    try {
+      var item = w20EnsurePreparedCreate_(taskId, section, cfg);
+      if (item) prepared.push(item);
+    } catch (err) {
+      w19Audit_('create_reservation_prepare_deferred', { section: section, code: String(err && err.code || 'DRIVE_ERROR') });
+    }
+  });
+  return prepared;
+}
+
+function w20ReadClaimedReservation_(canonicalHash) {
+  var key = w20CreateClaimKey_(canonicalHash);
+  return key ? w20ReadCreateReservation_(PropertiesService.getScriptProperties(), key) : null;
+}
+
+function w20ClaimCreateReservation_(taskId, section, requestId, reservationId, idem, cfg, attemptId) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  var canonicalHash = w19Hash_(idem);
+  var slotKey = w20CreateReservationKey_(taskId, section);
+  var claimKey = w20CreateClaimKey_(canonicalHash);
+  var props = PropertiesService.getScriptProperties();
+  if (requestId !== reservationId) throw new W19Error_('RESERVATION_REQUEST_MISMATCH', 'Запрос не совпал с одноразовым резервом.', false);
+  var durableClaim = w20ReadCreateReservation_(props, claimKey);
+  if (durableClaim) {
+    if ((durableClaim.status !== 'claimed' && durableClaim.status !== 'done') || durableClaim.taskId !== task || durableClaim.section !== section ||
+        durableClaim.reservationId !== reservationId || durableClaim.createRequestId !== requestId ||
+        durableClaim.canonicalHash !== canonicalHash) {
+      throw new W19Error_('RESERVATION_CONFLICT', 'Резерв уже привязан к другому запросу.', false);
+    }
+    return { claim: durableClaim, taskMeta: null, recovered: true };
+  }
+
+  var slot = w20ReadCreateReservation_(props, slotKey);
+  if (slot && slot.status === 'claimed') {
+    if (slot.taskId === task && slot.section === section && slot.reservationId === reservationId &&
+        slot.createRequestId === requestId && slot.canonicalHash === canonicalHash) return { claim: slot, taskMeta: null, recovered: true };
+    throw new W19Error_('RESERVATION_CONFLICT', 'Резерв уже использован.', false);
+  }
+  if (!slot || slot.status !== 'prepared' || slot.taskId !== task || slot.section !== section || slot.reservationId !== reservationId) {
+    throw new W19Error_('RESERVATION_STALE', 'Резерв файла больше не актуален.', false);
+  }
+  var preparedDrive = w19GetDriveMetadata_(slot.fileId);
+  if (!w20PreparedCreateFile_(preparedDrive, taskId, section, reservationId, cfg.rootFolderId)) {
+    throw new W19Error_('RESERVATION_FILE_INVALID', 'Резервный файл изменён или недоступен.', false);
+  }
+  var createSlot = w20RegistryClaimCreateSlot_(taskId, section, cfg.rootFolderId);
+  if (!createSlot || !createSlot.taskMeta || !w20SafeDriveId_(createSlot.taskMeta.folderId)) {
+    throw new W19Error_('CREATE_CONTEXT_STALE', 'Контекст задачи требует обновления.', true);
+  }
+  var claim = {
+    schema: W20_CREATE_RESERVATION_SCHEMA,
+    status: 'claimed',
+    taskId: task,
+    section: section,
+    reservationId: reservationId,
+    fileId: slot.fileId,
+    preparedName: slot.preparedName,
+    at: Date.now(),
+    claimedAt: Date.now(),
+    createRequestId: requestId,
+    canonicalHash: canonicalHash,
+    attemptId: String(attemptId || '').toLowerCase(),
+    folderId: createSlot.taskMeta.folderId,
+    position: createSlot.position
+  };
+  if (!w20CreateReservationId_(claim.attemptId)) throw new W19Error_('RESERVATION_INVALID', 'Не удалось привязать резерв.', false);
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) throw new W19Error_('BUSY', 'Сервис занят привязкой файла.', true);
+  try {
+    var lockedProps = PropertiesService.getScriptProperties();
+    var existingClaim = w20ReadCreateReservation_(lockedProps, claimKey);
+    if (existingClaim) {
+      if (existingClaim.status === 'claimed' && existingClaim.reservationId === reservationId &&
+          existingClaim.createRequestId === requestId && existingClaim.canonicalHash === canonicalHash && existingClaim.fileId === slot.fileId) {
+        return { claim: existingClaim, taskMeta: null, recovered: true };
+      }
+      throw new W19Error_('RESERVATION_CONFLICT', 'Резерв уже привязан к другому запросу.', false);
+    }
+    var current = w20ReadCreateReservation_(lockedProps, slotKey);
+    if (!current || current.status !== 'prepared' || current.reservationId !== reservationId || current.fileId !== slot.fileId ||
+        current.taskId !== task || current.section !== section) {
+      throw new W19Error_('RESERVATION_STALE', 'Резерв уже изменился.', false);
+    }
+    var ledgerKey = w19IdempotencyLedgerKey_(idem);
+    var ledger = w19ReadLedger_(lockedProps, ledgerKey);
+    if (!ledger || ledger.status !== 'pending' || String(ledger.attemptId || '').toLowerCase() !== claim.attemptId) {
+      throw new W19Error_('RESERVATION_LEDGER_STALE', 'Запрос на создание уже изменился.', true);
+    }
+    ledger.reservationRef = claimKey;
+    var serializedClaim = JSON.stringify(claim);
+    var updates = {};
+    updates[slotKey] = serializedClaim;
+    updates[claimKey] = serializedClaim;
+    updates[ledgerKey] = JSON.stringify(ledger);
+    lockedProps.setProperties(updates);
+  } finally {
+    lock.releaseLock();
+  }
+  return { claim: claim, taskMeta: createSlot.taskMeta, recovered: false };
+}
+
+function w20ResolveCreateReservation_(taskId, section, requestId, suppliedReservationId, idem) {
+  var supplied = w20CreateReservationId_(suppliedReservationId);
+  var canonicalHash = w19Hash_(idem);
+  var expectedClaimKey = w20CreateClaimKey_(canonicalHash);
+  var ledger = w19ReadIdempotencyStatus_(idem);
+  var ledgerClaimRef = w20CreateReservationRef_(ledger && ledger.reservationRef);
+  if (supplied && requestId !== supplied) {
+    throw new W19Error_('RESERVATION_REQUEST_MISMATCH', 'Запрос не совпал с одноразовым резервом.', false);
+  }
+  var durable = w20ReadClaimedReservation_(canonicalHash);
+  if (ledgerClaimRef && ledgerClaimRef !== expectedClaimKey) {
+    throw new W19Error_('RESERVATION_CONFLICT', 'Журнал запроса ссылается на другой резерв.', false);
+  }
+  if (ledgerClaimRef && !durable) {
+    throw new W19Error_('RESERVATION_CLAIM_MISSING', 'Точная привязка резерва недоступна; создание дубля заблокировано.', false);
+  }
+  if (durable) {
+    if (durable.taskId !== WidgetV19Core.compactUuid(taskId) || durable.section !== section ||
+        durable.createRequestId !== requestId || durable.reservationId !== requestId || durable.canonicalHash !== canonicalHash ||
+        (supplied && durable.reservationId !== supplied)) {
+      throw new W19Error_('RESERVATION_CONFLICT', 'Запрос уже привязан к другому резерву.', false);
+    }
+    return durable.reservationId;
+  }
+  var slot = w20ReadCreateReservation_(PropertiesService.getScriptProperties(), w20CreateReservationKey_(taskId, section));
+  if (supplied) {
+    if (!slot || slot.reservationId !== supplied) throw new W19Error_('RESERVATION_STALE', 'Резерв файла больше не актуален.', false);
+    return supplied;
+  }
+  if (slot) {
+    if (slot.status === 'prepared' && requestId === slot.reservationId) return slot.reservationId;
+    if (slot.status === 'claimed' && slot.createRequestId === requestId && slot.canonicalHash === canonicalHash) return slot.reservationId;
+    throw new W19Error_('RESERVATION_REQUIRED', 'Готовый файл уже подготовлен; обновите виджет перед созданием.', true);
+  }
+  var driveEvidence = w20FindPreparedReservationFiles_(taskId, section, '');
+  if (driveEvidence.length) {
+    throw new W19Error_('RESERVATION_REQUIRED', 'Готовый файл требует повторной синхронизации.', true);
+  }
+  return '';
+}
+
+function w20TransitionClaimedReservationFile_(claim, name, cfg) {
+  var current = w19GetDriveMetadata_(claim.fileId);
+  var alreadyClaimed = w20ClaimedCreateFile_(current, claim);
+  if (alreadyClaimed) return alreadyClaimed.file;
+  if (!w20PreparedCreateFile_(current, claim.taskId, claim.section, claim.reservationId, cfg.rootFolderId)) {
+    throw new W19Error_('RESERVATION_FILE_INVALID', 'Резервный файл не прошёл точную проверку.', false);
+  }
+  var updateError = null;
+  var updated = null;
+  try {
+    var updateResource = {
+      appProperties: {
+        widgetVersion: W20_DRIVE_MARKER,
+        taskPageId: claim.taskId,
+        widgetIdem: claim.canonicalHash.slice(0, 40),
+        materialState: 'active',
+        createReservationSection: null,
+        createReservationId: null,
+        createReservationState: null
+      }
+    };
+    if (String(current.name || '') === String(claim.preparedName || '')) {
+      updateResource.name = WidgetV19Core.cleanName(name, w19DefaultGoogleName_(claim.section));
+    }
+    updated = Drive.Files.update(updateResource, claim.fileId, null, {
+      addParents: claim.folderId,
+      removeParents: cfg.rootFolderId,
+      fields: 'id,name,mimeType,size,md5Checksum,modifiedTime,webViewLink,webContentLink,ownedByMe,trashed,parents,appProperties'
+    });
+  } catch (err) {
+    updateError = err;
+  }
+  var verified = w20ClaimedCreateFile_(updated, claim);
+  if (verified) return verified.file;
+  var after = w19GetDriveMetadata_(claim.fileId);
+  verified = w20ClaimedCreateFile_(after, claim);
+  if (verified) return verified.file;
+  throw new W19Error_('RESERVATION_TRANSITION_UNCERTAIN', 'Перенос резервного файла не подтверждён. Повтор продолжит тот же файл.', true, {
+    reason: String(updateError && updateError.message || '').slice(0, 200)
+  });
+}
+
+function w20TaskForClaimedReservation_(taskId, claim, taskMeta, cfg) {
+  var meta = taskMeta || w20RegistryReadFreshTaskMeta_(taskId);
+  if (meta && meta.folderId === claim.folderId) return w20TaskFromRegistryMeta_(taskId, meta);
+  w19AssertSchema_(cfg);
+  return w19AssertTaskPage_(taskId, cfg);
+}
+
+function w20CreateGoogleFromReservation_(taskId, section, name, requestId, reservationId, idem, cfg, idempotencyState) {
+  var bound = w20ClaimCreateReservation_(taskId, section, requestId, reservationId, idem, cfg, idempotencyState && idempotencyState.attemptId);
+  var claim = bound.claim;
+  if (bound.recovered || idempotencyState && idempotencyState.recovery) {
+    w19AssertSchema_(cfg);
+    var existing = w19FindMaterialByIdempotency_(taskId, idem, cfg);
+    if (existing) {
+      var existingMaterial = w19MaterialFromPage_(existing);
+      if (existingMaterial.googleFileId !== claim.fileId || existingMaterial.section !== section ||
+          existingMaterial.provider !== 'Google Drive' || existingMaterial.archived ||
+          existingMaterial.syncStatus === 'deleting' || existingMaterial.syncStatus === 'deleted') {
+        throw new W19Error_('RESERVATION_MATERIAL_CONFLICT', 'Резерв не совпал с сохранённым знанием.', false);
+      }
+      var existingDrive = w19GetDriveMetadata_(claim.fileId);
+      if (!w20ClaimedCreateFile_(existingDrive, claim, existing.id)) {
+        throw new W19Error_('RESERVATION_FILE_INVALID', 'Сохранённый файл не прошёл точную проверку.', false);
+      }
+      w19MarkDriveNotionPage_(existingDrive, taskId, claim.canonicalHash.slice(0, 40), existing.id, 'active');
+      return { material: w20MaterialWithRuntimeMetadata_(existingMaterial, existingDrive), duplicate: true };
+    }
+  }
+  var driveFile = w20TransitionClaimedReservationFile_(claim, name, cfg);
+  if (!w20WriteCreateDriveReady_(idem, idempotencyState.attemptId, driveFile, section)) {
+    throw new W19Error_('RESERVATION_LEDGER_STALE', 'Не удалось зафиксировать готовый файл.', true);
+  }
+  var task = w20TaskForClaimedReservation_(taskId, claim, bound.taskMeta, cfg);
+  var page = w20CreateGoogleNotionPage_(task, driveFile, claim.folderId, section, driveFile.name || name, claim.position, idem, cfg);
+  w19MarkDriveNotionPage_(driveFile, taskId, claim.canonicalHash.slice(0, 40), page.id, 'active');
+  return { material: w20MaterialWithRuntimeMetadata_(w19MaterialFromPage_(page), driveFile), duplicate: false };
+}
+
+function w20ReleaseClaimedCreateReservation_(taskId, section, requestId, idem, material) {
+  var canonicalHash = w19Hash_(idem);
+  var claimKey = w20CreateClaimKey_(canonicalHash);
+  var slotKey = w20CreateReservationKey_(taskId, section);
+  var fileId = w20SafeDriveId_(material && material.googleFileId);
+  var pageId = WidgetV19Core.normalizeUuid(material && material.id);
+  if (!claimKey || !slotKey || !fileId || !pageId) return false;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return false;
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var claim = w20ReadCreateReservation_(props, claimKey);
+    if (!claim || (claim.status !== 'claimed' && claim.status !== 'done') || claim.taskId !== WidgetV19Core.compactUuid(taskId) ||
+        claim.section !== section || claim.createRequestId !== requestId || claim.canonicalHash !== canonicalHash || claim.fileId !== fileId) return false;
+    var done = {};
+    Object.keys(claim).forEach(function (key) { done[key] = claim[key]; });
+    done.status = 'done';
+    done.at = Date.now();
+    done.notionPageId = pageId;
+    props.setProperty(claimKey, JSON.stringify(done));
+    var slot = w20ReadCreateReservation_(props, slotKey);
+    if (slot && slot.status === 'claimed' && slot.reservationId === claim.reservationId &&
+        slot.createRequestId === requestId && slot.canonicalHash === canonicalHash && slot.fileId === fileId) props.deleteProperty(slotKey);
+    return true;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+
 function apiCreateGoogle(input) {
   return w19ApiResult_(function () {
     var cfg = w19AuthorizedConfig_(input);
@@ -440,8 +1029,23 @@ function apiCreateGoogle(input) {
     if (section === 'Drive') throw new W19Error_('INVALID_CREATE_TYPE', 'Карточка Drive открывает папку; для нового файла выберите Docs, Sheets или Slides.', false);
     var name = WidgetV19Core.cleanName(input && input.name, w19DefaultGoogleName_(section));
     var requestId = w19ValidateClientKey_(input && input.idempotencyKey).toLowerCase();
+    var rawReservationId = String(input && input.reservationId || '').trim();
+    var suppliedReservationId = w20CreateReservationId_(rawReservationId);
+    if (rawReservationId && !suppliedReservationId) throw new W19Error_('RESERVATION_INVALID', 'Резерв файла повреждён.', false);
+    if (suppliedReservationId && suppliedReservationId !== requestId) {
+      throw new W19Error_('RESERVATION_REQUEST_MISMATCH', 'Запрос не совпал с одноразовым резервом.', false);
+    }
     var idem = w19CanonicalIdempotency_(taskId, 'create-google-' + section, requestId);
+    var knownMaterial = w20RegistryFindCreateRequest_(taskId, section, requestId);
+    if (knownMaterial) {
+      w20ReleaseClaimedCreateReservation_(taskId, section, requestId, idem, knownMaterial);
+      return { material: w20MaterialForClient_(knownMaterial, taskId, cfg), duplicate: true };
+    }
+    var reservationId = w20ResolveCreateReservation_(taskId, section, requestId, suppliedReservationId, idem);
     var outcome = w19WithIdempotency_(idem, function (idempotencyState) {
+      if (reservationId) {
+        return w20CreateGoogleFromReservation_(taskId, section, name, requestId, reservationId, idem, cfg, idempotencyState);
+      }
       if (!(idempotencyState && idempotencyState.recovery)) {
         var slot = w20RegistryClaimCreateSlot_(taskId, section, cfg.rootFolderId);
         if (slot) return w20CreateGoogleHot_(taskId, section, name, idem, slot, cfg, idempotencyState.attemptId);
@@ -450,10 +1054,18 @@ function apiCreateGoogle(input) {
     });
     if (outcome && outcome.completed && !outcome.material) {
       var completedMaterial = w20RegistryFindCreateRequest_(taskId, section, requestId);
-      outcome = completedMaterial ? { material: completedMaterial, duplicate: true } :
-        w20CreateGoogleRecovery_(taskId, section, name, idem, cfg);
+      if (completedMaterial) outcome = { material: completedMaterial, duplicate: true };
+      else if (reservationId) {
+        var completedClaim = w20ReadClaimedReservation_(w19Hash_(idem));
+        if (!completedClaim) throw new W19Error_('RESERVATION_CLAIM_MISSING', 'Точная привязка резерва недоступна.', false);
+        outcome = w20CreateGoogleFromReservation_(taskId, section, name, requestId, reservationId, idem, cfg, {
+          recovery: true,
+          attemptId: completedClaim.attemptId
+        });
+      } else outcome = w20CreateGoogleRecovery_(taskId, section, name, idem, cfg);
     }
     if (outcome && outcome.material) {
+      w20ReleaseClaimedCreateReservation_(taskId, section, requestId, idem, outcome.material);
       outcome.material = w20MaterialForClient_(outcome.material, taskId, cfg);
       w20RegistryUpsert_(taskId, outcome.material);
     }
@@ -467,20 +1079,36 @@ function apiGetCreateStatus(input) {
     var taskId = w20AssertAuthorizedTaskId_(input && input.taskPageId, cfg);
     var section = WidgetV19Core.assertSection(input && input.section);
     if (section === 'Drive') throw new W19Error_('INVALID_CREATE_TYPE', 'Нельзя создать файл в разделе Drive.', false);
-    var requestId = w19ValidateClientKey_(input && input.createRequestId);
+    var requestId = w19ValidateClientKey_(input && input.createRequestId).toLowerCase();
     var idem = w19CanonicalIdempotency_(taskId, 'create-google-' + section, requestId);
     var ledger = w19ReadIdempotencyStatus_(idem);
     var material = null;
+    var storedMaterial = null;
     if (ledger && ledger.status === 'done' && ledger.data && ledger.data.material) {
-      material = w20MaterialForClient_(ledger.data.material, taskId, cfg);
+      storedMaterial = ledger.data.material;
+      material = w20MaterialForClient_(storedMaterial, taskId, cfg);
     } else if (!ledger || ledger.status === 'done') {
       var registryMaterial = w20RegistryFindCreateRequest_(taskId, section, requestId);
-      if (registryMaterial) material = w20MaterialForClient_(registryMaterial, taskId, cfg);
+      if (registryMaterial) {
+        storedMaterial = registryMaterial;
+        material = w20MaterialForClient_(registryMaterial, taskId, cfg);
+      }
     }
-    if (material) return { status: 'done', material: material };
-    if (!ledger) return { status: 'missing' };
+    if (material) {
+      w20ReleaseClaimedCreateReservation_(taskId, section, requestId, idem, storedMaterial);
+      return { status: 'done', material: material };
+    }
     var driveReadyUrl = w20CreateDriveReadyUrl_(ledger);
     if (driveReadyUrl) return { status: 'drive_ready', openUrl: driveReadyUrl };
+    var durableClaim = w20ReadClaimedReservation_(w19Hash_(idem));
+    if (durableClaim && durableClaim.taskId === WidgetV19Core.compactUuid(taskId) && durableClaim.section === section &&
+        durableClaim.createRequestId === requestId.toLowerCase() && durableClaim.reservationId === requestId.toLowerCase()) {
+      var claimedFile = w19GetDriveMetadata_(durableClaim.fileId);
+      var expectedPageId = durableClaim.status === 'done' ? durableClaim.notionPageId : undefined;
+      var exactClaimed = w20ClaimedCreateFile_(claimedFile, durableClaim, expectedPageId);
+      if (exactClaimed) return { status: 'drive_ready', openUrl: exactClaimed.openUrl };
+    }
+    if (!ledger) return { status: 'missing' };
     if (ledger.status === 'pending') {
       return { status: 'pending', retryable: true };
     }
@@ -524,23 +1152,33 @@ function apiWarmCreateContext(input) {
     var cfg = w19AuthorizedConfig_(input);
     var taskId = w20AssertAuthorizedTaskId_(input && input.taskPageId, cfg);
     var meta = w20RegistryReadFreshTaskMeta_(taskId);
-    if (!meta) return { ready: false };
-    if (w20RegistryFolderMetaFresh_(meta, cfg.rootFolderId)) return { ready: true, cached: true };
-    return w19WithMutationLock_(function () {
-      var current = w20RegistryReadFreshTaskMeta_(taskId);
-      if (!current) return { ready: false };
-      if (w20RegistryFolderMetaFresh_(current, cfg.rootFolderId)) return { ready: true, cached: true };
-      var task = w20TaskFromRegistryMeta_(taskId, current);
-      var folder = w19EnsureTaskFolder_(task, cfg);
-      var stored = w20RegistryWriteFolderProof_(taskId, {
-        folderId: folder.id,
-        rootFolderId: cfg.rootFolderId,
-        folderVerified: true,
-        folderValidatedAt: new Date().toISOString()
+    if (!meta) return { ready: false, preparedCreates: [] };
+    var folderWasCached = w20RegistryFolderMetaFresh_(meta, cfg.rootFolderId);
+    if (!folderWasCached) {
+      var folderReady = w19WithMutationLock_(function () {
+        var current = w20RegistryReadFreshTaskMeta_(taskId);
+        if (!current) return false;
+        if (w20RegistryFolderMetaFresh_(current, cfg.rootFolderId)) return true;
+        var task = w20TaskFromRegistryMeta_(taskId, current);
+        var folder = w19EnsureTaskFolder_(task, cfg);
+        return Boolean(w20RegistryWriteFolderProof_(taskId, {
+          folderId: folder.id,
+          rootFolderId: cfg.rootFolderId,
+          folderVerified: true,
+          folderValidatedAt: new Date().toISOString()
+        }));
       });
-      if (!stored) return { ready: false };
-      return { ready: true, cached: false };
-    });
+      if (!folderReady) return { ready: false, cached: false, preparedCreates: [] };
+      meta = w20RegistryReadFreshTaskMeta_(taskId);
+    }
+    var registry = w20RegistryReadTaskResult_(taskId, null);
+    var proof = w20RegistryActionProof_(meta, registry, cfg.rootFolderId);
+    if (!proof.ready) return { ready: false, cached: folderWasCached, preparedCreates: [] };
+    return {
+      ready: true,
+      cached: folderWasCached,
+      preparedCreates: w20WarmCreatePool_(taskId, cfg)
+    };
   });
 }
 
@@ -578,7 +1216,7 @@ function w20CreateGoogleHot_(taskId, section, name, idem, slot, cfg, attemptId) 
   var driveFile = w19CreateGoogleFile_(task, slot.taskMeta.folderId, section, name, idemHash);
   w20WriteCreateDriveReady_(idem, attemptId, driveFile, section);
   var page = w20CreateGoogleNotionPage_(task, driveFile, slot.taskMeta.folderId, section, name, slot.position, idem, cfg);
-  return { material: w19MaterialFromPage_(page), duplicate: false };
+  return { material: w20MaterialWithRuntimeMetadata_(w19MaterialFromPage_(page), driveFile), duplicate: false };
 }
 
 function w20CreateGoogleRecovery_(taskId, section, name, idem, cfg, attemptId) {
@@ -592,7 +1230,10 @@ function w20CreateGoogleRecovery_(taskId, section, name, idem, cfg, attemptId) {
       var existingMaterial = w19MaterialFromPage_(existing);
       if (existingMaterial.googleFileId && existingMaterial.widgetOwned) {
         var existingDrive = w19GetDriveMetadata_(existingMaterial.googleFileId);
-        if (existingDrive) w19MarkDriveNotionPage_(existingDrive, task.id, idemHash, existing.id, w20DriveStateForMaterial_(existingMaterial));
+        if (existingDrive) {
+          w19MarkDriveNotionPage_(existingDrive, task.id, idemHash, existing.id, w20DriveStateForMaterial_(existingMaterial));
+          existingMaterial = w20MaterialWithRuntimeMetadata_(existingMaterial, existingDrive);
+        }
       }
       return { material: existingMaterial, duplicate: true };
     }
@@ -616,7 +1257,7 @@ function w20CreateGoogleRecovery_(taskId, section, name, idem, cfg, attemptId) {
       if (byFile) {
         var byFileMaterial = w19MaterialFromPage_(byFile);
         w19MarkDriveNotionPage_(driveFile, task.id, idemHash, byFile.id, w20DriveStateForMaterial_(byFileMaterial));
-        return { material: byFileMaterial, duplicate: true };
+        return { material: w20MaterialWithRuntimeMetadata_(byFileMaterial, driveFile), duplicate: true };
       }
     }
 
@@ -624,7 +1265,7 @@ function w20CreateGoogleRecovery_(taskId, section, name, idem, cfg, attemptId) {
     var page = w20CreateGoogleNotionPage_(task, driveFile, folder.id, section, name,
       w19NextPosition_(task.id, section, cfg), idem, cfg);
     w19MarkDriveNotionPage_(driveFile, task.id, idemHash, page.id, 'active');
-    return { material: w19MaterialFromPage_(page), duplicate: false };
+    return { material: w20MaterialWithRuntimeMetadata_(w19MaterialFromPage_(page), driveFile), duplicate: false };
   });
 }
 
@@ -684,7 +1325,7 @@ function apiAddLink(input) {
       return w19WithMutationLock_(function () {
         var existing = w19FindMaterialByIdempotency_(task.id, idem, cfg) ||
           (googleFileId ? w19FindMaterialByGoogleFile_(task.id, googleFileId, cfg) : null) ||
-          w19FindMaterialByNormalizedUrl_(task.id, linkData.normalizedUrl, cfg);
+          w19FindMaterialBySourceUrl_(task.id, linkData.normalizedUrl, cfg);
         if (existing) {
           var existingMaterial = w19MaterialFromPage_(existing);
           if (existingMaterial.syncStatus === 'deleted') {
@@ -694,7 +1335,6 @@ function apiAddLink(input) {
             var restoreProps = {};
             restoreProps[W19_P.ARCHIVE] = { checkbox: false };
             restoreProps[W19_P.SYNC_STATUS] = w19Select_('synced');
-            restoreProps[W19_P.SYNC_ERROR] = w19Text_('');
             restoreProps[W19_P.POSITION] = { number: w19NextPosition_(task.id, existingMaterial.section, cfg) };
             existing = w19UpdateNotionPage_(existing.id, restoreProps, cfg);
             return { material: w19MaterialFromPage_(existing), duplicate: true, restored: true };
@@ -722,6 +1362,7 @@ function apiAddLink(input) {
       });
     });
     if (outcome && outcome.material) {
+      outcome.material = w20MaterialWithRuntimeMetadata_(outcome.material, linkData);
       outcome.material = w20MaterialForClient_(outcome.material, task.id, cfg);
       var registryStored = outcome.restored ? w20RegistryRestore_(task.id, outcome.material) :
         w20RegistryUpsert_(task.id, outcome.material);
@@ -751,6 +1392,7 @@ function apiUpload(input) {
     var section = input && input.section ? WidgetV19Core.assertSection(input.section) : detected.section;
     var idem = w19CanonicalIdempotency_(task.id, 'upload', input && input.idempotencyKey);
     var pageForDownloadCache = null;
+    var runtimeDriveMetadata = null;
     var outcome = w19WithIdempotency_(idem, function () {
       return w19WithMutationLock_(function () {
         var idemHash = w19Hash_(idem).slice(0, 40);
@@ -760,7 +1402,10 @@ function apiUpload(input) {
           var existingMaterial = w19MaterialFromPage_(existing);
           if (existingMaterial.googleFileId && existingMaterial.widgetOwned) {
             var existingDrive = w19GetDriveMetadata_(existingMaterial.googleFileId);
-            if (existingDrive) w19MarkDriveNotionPage_(existingDrive, task.id, idemHash, existing.id, w20DriveStateForMaterial_(existingMaterial));
+            if (existingDrive) {
+              runtimeDriveMetadata = existingDrive;
+              w19MarkDriveNotionPage_(existingDrive, task.id, idemHash, existing.id, w20DriveStateForMaterial_(existingMaterial));
+            }
           }
           return { material: existingMaterial, duplicate: true };
         }
@@ -769,6 +1414,7 @@ function apiUpload(input) {
         var driveFile = w19FindDriveByIdempotency_(task.id, idemHash);
         var driveWasExisting = Boolean(driveFile);
         if (!driveFile) driveFile = w19CreateBinaryFile_(task, folder.id, name, mime, bytes, idemHash);
+        runtimeDriveMetadata = driveFile;
 
         if (driveWasExisting) {
           var byFile = w19FindMaterialByGoogleFile_(task.id, driveFile.id, cfg);
@@ -809,6 +1455,7 @@ function apiUpload(input) {
       });
     });
     if (outcome && outcome.material && outcome.material.id) {
+      outcome.material = w20MaterialWithRuntimeMetadata_(outcome.material, runtimeDriveMetadata);
       outcome.material = w20MaterialForClient_(outcome.material, task.id, cfg);
       if (pageForDownloadCache) w20CacheDownloadMaterials_(task.id, [pageForDownloadCache], cfg);
       w20RegistryUpsert_(task.id, outcome.material);
@@ -845,7 +1492,6 @@ function apiUpdateMaterial(input) {
             w19DriveRetry_(function () { Drive.Files.update({ name: nextName }, current.googleFileId, null, { fields: 'id,name' }); });
           }
           props[W19_P.NAME] = w19Title_(nextName);
-          props[W19_P.DOWNLOAD_NAME] = w19Text_(nextName);
         }
         if (input && Object.prototype.hasOwnProperty.call(input, 'url')) {
           if (current.provider !== 'External URL') throw new W19Error_('URL_REPLACE_FORBIDDEN', 'Ссылку Google Drive нельзя заменить как внешнюю URL.', false);
@@ -862,24 +1508,16 @@ function apiUpdateMaterial(input) {
           }
           props[W19_P.SOURCE] = { url: url };
           props[W19_P.ATTACHMENTS] = { files: [{ name: WidgetV19Core.cleanName(displayName, 'Ссылка'), type: 'external', external: { url: url } }] };
-          props[W19_P.NORMALIZED_URL] = w19Text_(url);
           props[W19_P.KNOWLEDGE_FORMAT] = w19Select_(detected.knowledgeFormat);
           props[W19_P.FILE_FORMAT] = w19Select_(detected.format);
-          props[W19_P.PROVIDER] = w19Select_(detected.provider);
           props[W19_P.GOOGLE_FILE_ID] = w19Text_(googleFileId);
           props[W19_P.GOOGLE_FOLDER_ID] = w19Text_('');
-          props[W19_P.MIME] = w19Text_('');
-          props[W19_P.SIZE] = { number: null };
-          props[W19_P.DRIVE_MD5] = w19Text_('');
-          props[W19_P.DOWNLOAD_NAME] = w19Text_(displayName);
-          props[W19_P.INTEGRITY] = w19Select_('ok');
           if (!(input && input.section)) {
             props[W19_P.SECTION] = w19Select_(detected.section);
             if (detected.section !== current.section) props[W19_P.POSITION] = { number: w19NextPosition_(task.id, detected.section, cfg) };
           }
         }
         props[W19_P.SYNC_STATUS] = w19Select_('synced');
-        props[W19_P.SYNC_ERROR] = w19Text_('');
         var updated = w19UpdateNotionPage_(material.id, props, cfg);
         var clientMaterial = w20MaterialForClient_(w19MaterialFromPage_(updated), task.id, cfg);
         w20RegistryUpsert_(task.id, clientMaterial);
@@ -967,7 +1605,6 @@ function apiDeletePhysical(input) {
       if (!prepared) {
         var preparing = {};
         preparing[W19_P.SYNC_STATUS] = w19Select_('deleting');
-        preparing[W19_P.SYNC_ERROR] = w19Text_('');
         page = w19UpdateNotionPage_(page.id, preparing, cfg);
         material = w19MaterialFromPage_(page);
       }
@@ -981,7 +1618,6 @@ function apiDeletePhysical(input) {
       props[W19_P.ARCHIVE] = { checkbox: true };
       props[W19_P.ATTACHMENTS] = { files: [] };
       props[W19_P.SYNC_STATUS] = w19Select_('deleted');
-      props[W19_P.SYNC_ERROR] = w19Text_('');
       var updated = w19UpdateNotionPage_(page.id, props, cfg);
       w20RegistryRemove_(task.id, materialId);
       return { material: w20MaterialForClient_(w19MaterialFromPage_(updated), task.id, cfg), deleted: true };
@@ -1121,18 +1757,13 @@ function apiPollDriveMetadata(input) {
         }
         if (data.format !== baseline.format) props[W19_P.FILE_FORMAT] = w19Select_(data.format);
         if (data.section !== baseline.section) props[W19_P.SECTION] = w19Select_(data.section);
-        if ((data.mimeType || '') !== (baseline.mimeType || '')) props[W19_P.MIME] = w19Text_(data.mimeType || '');
-        if (data.size !== baseline.size) props[W19_P.SIZE] = { number: data.size };
-        if (data.driveMd5 !== baseline.driveMd5) props[W19_P.DRIVE_MD5] = w19Text_(data.driveMd5);
-        if (data.name !== baseline.downloadName) props[W19_P.DOWNLOAD_NAME] = w19Text_(data.name);
-        if (data.normalizedUrl !== baseline.normalizedUrl) props[W19_P.NORMALIZED_URL] = w19Text_(data.normalizedUrl);
         props[W19_P.SYNC_STATUS] = w19Select_('synced');
-        props[W19_P.SYNC_ERROR] = w19Text_('');
-        props[W19_P.INTEGRITY] = w19Select_('ok');
         var updatedPage = w19WithMutationLock_(function () {
           return w19UpdateNotionPage_(pageId, props, cfg);
         });
-        var updatedMaterial = w20MaterialForClient_(w19MaterialFromPage_(updatedPage), taskId, cfg);
+        var updatedMaterial = w20MaterialForClient_(
+          w20MaterialWithRuntimeMetadata_(w19MaterialFromPage_(updatedPage), data), taskId, cfg
+        );
         w20RegistryUpsert_(taskId, updatedMaterial);
         updatedMaterial.pageId = updatedMaterial.id;
         updates.push(updatedMaterial);
@@ -1169,6 +1800,7 @@ function apiSyncTask(input) {
     var materials = pages.map(function (page) {
       return w20MaterialForClient_(w19MaterialFromPage_(page), task.id, cfg);
     });
+    materials = w20PreserveRegistryRuntimeMetadata_(task.id, materials);
     var previousMeta = w20RegistryReadTaskMeta_(task.id);
     var folderId = w20RegistryFolderId_(task.id, materials);
     var folderVerified = Boolean(previousMeta && previousMeta.folderId === folderId &&
@@ -1270,7 +1902,6 @@ function scheduledSync(event) {
       filter: {
         and: [
           { property: W19_P.TYPE, select: { equals: 'Знание' } },
-          { property: W19_P.PROVIDER, select: { equals: 'Google Drive' } },
           { property: W19_P.INSIDE, relation: { contains: cfg.authorizedTaskPageId } },
           { property: W19_P.ARCHIVE, checkbox: { equals: false } }
         ]
@@ -1469,6 +2100,44 @@ function w20DrivePollClaimStatus_(taskId, pageId, googleFileId, baseline, claim,
   return expiresAt < now ? 'expired' : 'valid';
 }
 
+function w20MaterialWithRuntimeMetadata_(material, metadata) {
+  var out = {};
+  Object.keys(material || {}).forEach(function (key) { out[key] = material[key]; });
+  var source = metadata || {};
+  var mimeType = String(source.mimeType || out.mimeType || '').trim();
+  if (mimeType && mimeType.length <= 300 && /^[a-z0-9][a-z0-9!#$&^_.+\-]*\/[a-z0-9][a-z0-9!#$&^_.+\-]*$/i.test(mimeType)) {
+    out.mimeType = mimeType.toLowerCase();
+  }
+  var rawSize = Object.prototype.hasOwnProperty.call(source, 'size') ? source.size : out.size;
+  var size = rawSize === null || rawSize === undefined || rawSize === '' ? null : Number(rawSize);
+  out.size = size !== null && isFinite(size) && size >= 0 ? size : null;
+  var driveMd5 = String(source.md5Checksum || source.driveMd5 || out.driveMd5 || '').trim();
+  out.driveMd5 = driveMd5.slice(0, 128);
+  out.downloadName = WidgetV19Core.cleanName(source.name || source.downloadName || out.downloadName || out.name, 'Файл');
+  var normalizedUrl = WidgetV19Core.normalizeExternalUrl(source.normalizedUrl || source.sourceUrl || out.normalizedUrl || out.openUrl || '');
+  out.normalizedUrl = normalizedUrl || '';
+  return out;
+}
+
+function w20PreserveRegistryRuntimeMetadata_(taskId, materials) {
+  var current = w20RegistryReadTaskResult_(taskId, null);
+  if (!current || !current.ok || !current.integrityOk) return materials;
+  var byId = {};
+  current.materials.forEach(function (material) { byId[material.id] = material; });
+  return (Array.isArray(materials) ? materials : []).map(function (material) {
+    var stored = material && byId[material.id];
+    if (!stored || stored.googleFileId !== material.googleFileId || stored.folderId !== material.folderId ||
+        stored.format !== material.format || stored.provider !== material.provider || stored.openUrl !== material.openUrl) return material;
+    return w20MaterialWithRuntimeMetadata_(material, {
+      mimeType: stored.mimeType,
+      size: stored.size,
+      driveMd5: stored.driveMd5,
+      downloadName: stored.name === material.name ? stored.downloadName : material.name,
+      normalizedUrl: stored.normalizedUrl
+    });
+  });
+}
+
 function w20MaterialForClient_(material, taskId, cfg) {
   var out = {};
   Object.keys(material || {}).forEach(function (key) { out[key] = material[key]; });
@@ -1557,7 +2226,6 @@ function w19SetArchiveState_(input, archived) {
         var props = {};
         props[W19_P.ARCHIVE] = { checkbox: archived };
         props[W19_P.SYNC_STATUS] = w19Select_(archived ? 'archived' : 'synced');
-        props[W19_P.SYNC_ERROR] = w19Text_('');
         if (!archived) props[W19_P.POSITION] = { number: w19NextPosition_(task.id, material.section, cfg) };
         if (archived) w20SetDriveMaterialState_(material, task.id, 'archived');
         var updated = w19UpdateNotionPage_(page.id, props, cfg);
@@ -2078,15 +2746,15 @@ function w19FindMaterialByGoogleFile_(taskId, fileId, cfg) {
   return w19FindOneMaterial_(taskId, { property: W19_P.GOOGLE_FILE_ID, rich_text: { equals: fileId } }, cfg);
 }
 
-function w19FindMaterialByNormalizedUrl_(taskId, url, cfg) {
+function w19FindMaterialBySourceUrl_(taskId, url, cfg) {
   if (!url) return null;
-  return w19FindOneMaterial_(taskId, { property: W19_P.NORMALIZED_URL, rich_text: { equals: url } }, cfg);
+  return w19FindOneMaterial_(taskId, { property: W19_P.SOURCE, url: { equals: url } }, cfg);
 }
 
 function w19FindMaterialCollision_(taskId, currentPageId, fileId, url, cfg) {
   var alternatives = [];
   if (fileId) alternatives.push({ property: W19_P.GOOGLE_FILE_ID, rich_text: { equals: fileId } });
-  if (url) alternatives.push({ property: W19_P.NORMALIZED_URL, rich_text: { equals: url } });
+  if (url) alternatives.push({ property: W19_P.SOURCE, url: { equals: url } });
   if (!alternatives.length) return null;
   var result = w19NotionRequest_('post', '/v1/data_sources/' + cfg.dataSourceId + '/query', {
     page_size: 20,
@@ -2155,19 +2823,11 @@ function w19CreateNotionMaterial_(task, data, cfg) {
   props[W19_P.ARCHIVE] = { checkbox: false };
   props[W19_P.FILE_FORMAT] = w19Select_(data.format || 'Other File');
   props[W19_P.SECTION] = w19Select_(WidgetV19Core.assertSection(data.section));
-  props[W19_P.PROVIDER] = w19Select_(data.provider || 'Google Drive');
   props[W19_P.GOOGLE_FILE_ID] = w19Text_(data.googleFileId || '');
   props[W19_P.GOOGLE_FOLDER_ID] = w19Text_(data.googleFolderId || '');
   props[W19_P.POSITION] = { number: Number(data.position || 0) };
   props[W19_P.SYNC_STATUS] = w19Select_('synced');
   props[W19_P.IDEMPOTENCY] = w19Text_(data.idempotency || '');
-  props[W19_P.MIME] = w19Text_(data.mimeType || '');
-  props[W19_P.SIZE] = { number: data.size === null || data.size === undefined ? null : Number(data.size) };
-  props[W19_P.DRIVE_MD5] = w19Text_(data.driveMd5 || '');
-  props[W19_P.DOWNLOAD_NAME] = w19Text_(data.downloadName || data.name || '');
-  props[W19_P.NORMALIZED_URL] = w19Text_(data.normalizedUrl || '');
-  props[W19_P.SYNC_ERROR] = w19Text_('');
-  props[W19_P.INTEGRITY] = w19Select_('ok');
   w19AppendContextProperties_(props, task, data.name);
   var createBody = {
     parent: { type: 'data_source_id', data_source_id: cfg.dataSourceId },
@@ -2471,9 +3131,11 @@ function w20GetDownloadGrant_(taskId, pageId, token, cfg) {
 function w19MaterialFromPage_(page) {
   var props = page.properties || {};
   var format = w19SelectValue_(props[W19_P.FILE_FORMAT]) || 'Other File';
-  var provider = w19SelectValue_(props[W19_P.PROVIDER]) || 'External URL';
   var fileId = w19TextValue_(props[W19_P.GOOGLE_FILE_ID]);
   var folderId = w19TextValue_(props[W19_P.GOOGLE_FOLDER_ID]);
+  var provider = fileId ? 'Google Drive' : 'External URL';
+  var name = w19TitleValue_(props[W19_P.NAME]) || 'Без названия';
+  var syncStatus = w19SelectValue_(props[W19_P.SYNC_STATUS]) || 'synced';
   var sourceUrl = w19UrlValue_(props[W19_P.SOURCE]) || WidgetV19Core.makeDriveOpenUrl(fileId, format);
   var nativeGoogle = /^Google (Docs|Sheets|Slides)$/.test(format);
   var widgetOwned = Boolean(fileId && folderId);
@@ -2485,7 +3147,7 @@ function w19MaterialFromPage_(page) {
   return {
     id: WidgetV19Core.normalizeUuid(page.id),
     notionUrl: page.url || null,
-    name: w19TitleValue_(props[W19_P.NAME]) || 'Без названия',
+    name: name,
     section: w19SelectValue_(props[W19_P.SECTION]) || 'Drive',
     format: format,
     provider: provider,
@@ -2501,17 +3163,17 @@ function w19MaterialFromPage_(page) {
     folderId: folderId || null,
     widgetOwned: widgetOwned,
     widgetOwnedBinary: widgetOwnedBinary,
-    mimeType: w19TextValue_(props[W19_P.MIME]) || null,
-    size: w19NumberValue_(props[W19_P.SIZE], null),
-    driveMd5: w19TextValue_(props[W19_P.DRIVE_MD5]) || '',
-    downloadName: w19TextValue_(props[W19_P.DOWNLOAD_NAME]) || '',
-    normalizedUrl: w19TextValue_(props[W19_P.NORMALIZED_URL]) || '',
+    mimeType: null,
+    size: null,
+    driveMd5: '',
+    downloadName: name,
+    normalizedUrl: sourceUrl || '',
     knowledgeFormat: w19SelectValue_(props[W19_P.KNOWLEDGE_FORMAT]) || 'Файл',
-    integrity: w19SelectValue_(props[W19_P.INTEGRITY]) || '',
+    integrity: syncStatus === 'error' ? 'sync_error' : 'ok',
     idempotency: w19TextValue_(props[W19_P.IDEMPOTENCY]) || '',
     position: w19NumberValue_(props[W19_P.POSITION], 0),
-    syncStatus: w19SelectValue_(props[W19_P.SYNC_STATUS]) || 'synced',
-    error: w19TextValue_(props[W19_P.SYNC_ERROR]) || null,
+    syncStatus: syncStatus,
+    error: syncStatus === 'error' ? 'Не удалось синхронизировать данные Google Drive.' : null,
     archived: w19CheckboxValue_(props[W19_P.ARCHIVE]),
     updatedAt: page.last_edited_time || null
   };
@@ -2622,6 +3284,7 @@ function w19WithIdempotency_(canonicalKey, fn) {
   var attemptId = Utilities.getUuid();
   var recovery = false;
   var previousStatus = 'missing';
+  var reservationRef = '';
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(15000)) throw new W19Error_('BUSY', 'Сервис занят другой операцией. Повторите через несколько секунд.', true);
   try {
@@ -2635,8 +3298,11 @@ function w19WithIdempotency_(canonicalKey, fn) {
       }
       recovery = true;
       previousStatus = existing && String(existing.status || '') || 'invalid';
+      reservationRef = w20CreateReservationRef_(existing && existing.reservationRef);
     }
-    props.setProperty(ledgerKey, JSON.stringify({ status: 'pending', at: Date.now(), attemptId: attemptId }));
+    var pending = { status: 'pending', at: Date.now(), attemptId: attemptId };
+    if (reservationRef) pending.reservationRef = reservationRef;
+    props.setProperty(ledgerKey, JSON.stringify(pending));
   } finally {
     lock.releaseLock();
   }
@@ -2647,8 +3313,14 @@ function w19WithIdempotency_(canonicalKey, fn) {
     try {
       var currentDone = w19ReadLedger_(props, ledgerKey);
       if (currentDone && currentDone.status === 'pending' && currentDone.attemptId === attemptId) {
-        var serialized = JSON.stringify({ status: 'done', at: Date.now(), attemptId: attemptId, data: data });
-        if (serialized.length > 8500) serialized = JSON.stringify({ status: 'done', at: Date.now(), attemptId: attemptId, data: { completed: true } });
+        var done = { status: 'done', at: Date.now(), attemptId: attemptId, data: data };
+        var doneReservationRef = w20CreateReservationRef_(currentDone.reservationRef);
+        if (doneReservationRef) done.reservationRef = doneReservationRef;
+        var serialized = JSON.stringify(done);
+        if (serialized.length > 8500) {
+          done.data = { completed: true };
+          serialized = JSON.stringify(done);
+        }
         props.setProperty(ledgerKey, serialized);
       }
     } finally { lock.releaseLock(); }
@@ -2663,6 +3335,8 @@ function w19WithIdempotency_(canonicalKey, fn) {
           failed.driveReady = currentFailed.driveReady;
           failed.driveReadyAt = currentFailed.driveReadyAt;
         }
+        var failedReservationRef = w20CreateReservationRef_(currentFailed.reservationRef);
+        if (failedReservationRef) failed.reservationRef = failedReservationRef;
         props.setProperty(ledgerKey, JSON.stringify(failed));
       }
     }
@@ -2688,6 +3362,14 @@ function w19PruneLedger_() {
   var all = props.getProperties();
   var cutoff = Date.now() - 14 * 24 * 60 * 60 * 1000;
   Object.keys(all).forEach(function (key) {
+    if (key.indexOf(W20_CREATE_CLAIM_PREFIX) === 0) {
+      try {
+        var claim = JSON.parse(all[key]);
+        if (claim && claim.schema === W20_CREATE_RESERVATION_SCHEMA && claim.status === 'done' &&
+            Number(claim.at || 0) < cutoff) props.deleteProperty(key);
+      } catch (_claimParseError) {}
+      return;
+    }
     if (key.indexOf(W19_LEDGER_PREFIX) !== 0) return;
     try {
       var entry = JSON.parse(all[key]);
@@ -2844,7 +3526,7 @@ function w19GetDriveMetadata_(fileId) {
   try {
     return w19DriveRetry_(function () {
       return Drive.Files.get(String(fileId), {
-        fields: 'id,name,mimeType,size,md5Checksum,modifiedTime,webViewLink,webContentLink,trashed,parents,appProperties'
+        fields: 'id,name,mimeType,size,md5Checksum,modifiedTime,webViewLink,webContentLink,ownedByMe,trashed,parents,appProperties'
       });
     });
   } catch (err) {
@@ -3056,16 +3738,8 @@ function w20DriveMetadataNeedsNotionWrite_(material, driveData) {
     (driveData.sourceUrl && driveData.sourceUrl !== material.openUrl) ||
     driveData.format !== material.format ||
     driveData.section !== material.section ||
-    material.provider !== 'Google Drive' ||
     material.knowledgeFormat !== 'Файл' ||
-    (driveData.mimeType || '') !== (material.mimeType || '') ||
-    driveData.size !== material.size ||
-    driveData.driveMd5 !== material.driveMd5 ||
-    driveData.name !== material.downloadName ||
-    driveData.normalizedUrl !== material.normalizedUrl ||
-    material.syncStatus !== 'synced' ||
-    material.error ||
-    material.integrity !== 'ok'
+    material.syncStatus !== 'synced'
   );
 }
 
@@ -3091,16 +3765,8 @@ function w19SyncOnePageUnlocked_(page, cfg, knownDrive) {
     var taskIds = w19RelationIds_(page.properties && page.properties[W19_P.INSIDE]);
     if (taskIds.length) props[W19_P.POSITION] = { number: w19NextPosition_(taskIds[0], driveData.section, cfg) };
   }
-  if (material.provider !== 'Google Drive') props[W19_P.PROVIDER] = w19Select_('Google Drive');
   if (material.knowledgeFormat !== 'Файл') props[W19_P.KNOWLEDGE_FORMAT] = w19Select_('Файл');
-  if ((driveData.mimeType || '') !== (material.mimeType || '')) props[W19_P.MIME] = w19Text_(driveData.mimeType || '');
-  if (driveData.size !== material.size) props[W19_P.SIZE] = { number: driveData.size };
-  if (driveData.driveMd5 !== material.driveMd5) props[W19_P.DRIVE_MD5] = w19Text_(driveData.driveMd5);
-  if (driveData.name !== material.downloadName) props[W19_P.DOWNLOAD_NAME] = w19Text_(driveData.name);
-  if (driveData.normalizedUrl !== material.normalizedUrl) props[W19_P.NORMALIZED_URL] = w19Text_(driveData.normalizedUrl);
   if (material.syncStatus !== 'synced') props[W19_P.SYNC_STATUS] = w19Select_('synced');
-  if (material.error) props[W19_P.SYNC_ERROR] = w19Text_('');
-  if (material.integrity !== 'ok') props[W19_P.INTEGRITY] = w19Select_('ok');
   if (!Object.keys(props).length) return page;
   return w19UpdateNotionPage_(page.id, props, cfg);
 }
@@ -3111,12 +3777,9 @@ function w19MarkSyncError_(page, err, cfg) {
       var current = w19NotionRequest_('get', '/v1/pages/' + page.id, null, cfg);
       var material = w19MaterialFromPage_(current);
       if (material.archived || material.syncStatus === 'deleting' || material.syncStatus === 'deleted') return current;
-      var message = String(err && err.message || 'Ошибка синхронизации').slice(0, 500);
-      if (material.syncStatus === 'error' && material.error === message && material.integrity === 'sync_error') return current;
+      if (material.syncStatus === 'error') return current;
       var props = {};
       props[W19_P.SYNC_STATUS] = w19Select_('error');
-      props[W19_P.SYNC_ERROR] = w19Text_(message);
-      props[W19_P.INTEGRITY] = w19Select_('sync_error');
       return w19UpdateNotionPage_(current.id, props, cfg);
     });
   } catch (_updateErr) { return page; }

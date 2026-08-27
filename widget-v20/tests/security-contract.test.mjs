@@ -299,6 +299,38 @@ test('late create-marker repair revalidates the current material under the share
   assert.ok(repair.indexOf('w19AssertMaterialForTask_') < repair.indexOf('w19GetDriveMetadata_'));
 });
 
+test('prepared Google creation is exact-file, CAS-bound and never exposes private pool state', () => {
+  const backend=text('Code.gs');
+  const validators=backend.slice(backend.indexOf('function w20PreparedCreateFile_'),backend.indexOf('function w20CreateReservationForClient_'));
+  const clientShape=backend.slice(backend.indexOf('function w20CreateReservationForClient_'),backend.indexOf('function w20FindPreparedReservationFiles_'));
+  const claim=backend.slice(backend.indexOf('function w20ClaimCreateReservation_'),backend.indexOf('function w20ResolveCreateReservation_'));
+  const transition=backend.slice(backend.indexOf('function w20TransitionClaimedReservationFile_'),backend.indexOf('function w20TaskForClaimedReservation_'));
+  const reservedCreate=backend.slice(backend.indexOf('function w20CreateGoogleFromReservation_'),backend.indexOf('function w20ReleaseClaimedCreateReservation_'));
+  const createApi=backend.slice(backend.indexOf('function apiCreateGoogle'),backend.indexOf('function apiGetCreateStatus'));
+  const ledger=backend.slice(backend.indexOf('function w19WithIdempotency_'),backend.indexOf('function w19ReadIdempotencyStatus_'));
+  assert.match(validators,/file\.ownedByMe !== true/);
+  assert.match(validators,/parents\.length !== 1/);
+  assert.match(validators,/w20ExactCreateAppProperties_/);
+  assert.match(validators,/expectedNotionPageId/);
+  assert.match(clientShape,/\{ section: section, reservationId: reservationId, openUrl: openUrl \}/);
+  assert.doesNotMatch(clientShape,/\b(?:fileId|canonicalHash|attemptId|preparedName|nonce|appProperties)\s*:/);
+  for(const field of ['reservationId','fileId','preparedName','createRequestId','canonicalHash','attemptId','folderId','position'])assert.match(claim,new RegExp(`${field}:`));
+  assert.match(claim,/ledger\.reservationRef = claimKey/);
+  assert.ok(claim.indexOf('w20PreparedCreateFile_') < claim.indexOf('getScriptLock'));
+  assert.match(transition,/createReservationSection: null/);
+  assert.match(transition,/createReservationId: null/);
+  assert.match(transition,/createReservationState: null/);
+  assert.match(transition,/String\(current\.name \|\| ''\) === String\(claim\.preparedName \|\| ''\)/);
+  assert.doesNotMatch(reservedCreate,/Drive\.Files\.create|w19CreateGoogleFile_/);
+  assert.match(createApi,/suppliedReservationId !== requestId/);
+  assert.ok(createApi.indexOf('suppliedReservationId !== requestId') < createApi.indexOf('w20RegistryFindCreateRequest_'));
+  assert.match(ledger,/reservationRef = w20CreateReservationRef_/);
+  assert.match(ledger,/failed\.reservationRef = failedReservationRef/);
+  assert.match(backend,/fields: 'id,name,mimeType,size,md5Checksum,modifiedTime,webViewLink,webContentLink,ownedByMe,trashed,parents,appProperties'/);
+  assert.match(backend,/claim\.status === 'done'/);
+  assert.doesNotMatch(backend.slice(backend.indexOf('function w19PruneLedger_'),backend.indexOf('function w19Hash_')),/claim\.status === 'claimed'/);
+});
+
 test('schema preflight covers every context property written on material creation', () => {
   const backend = text('Code.gs');
   assert.match(backend, /'\[SYS\] Context path':\s*'rich_text'/);
@@ -422,9 +454,10 @@ test('external URL updates atomically reclassify metadata and reject collisions'
   assert.match(body, /WidgetV19Core\.extractGoogleFileId\(url\)/);
   assert.match(body, /w19FindMaterialCollision_/);
   assert.match(body, /W19_P\.GOOGLE_FILE_ID/);
-  assert.match(body, /W19_P\.PROVIDER/);
+  assert.match(body, /W19_P\.SOURCE/);
   assert.match(body, /W19_P\.FILE_FORMAT/);
   assert.match(body, /W19_P\.KNOWLEDGE_FORMAT/);
+  assert.doesNotMatch(body, /W19_P\.(?:PROVIDER|MIME|SIZE|DRIVE_MD5|DOWNLOAD_NAME|NORMALIZED_URL|SYNC_ERROR|INTEGRITY)/);
   assert.match(body, /DUPLICATE_MATERIAL/);
 });
 

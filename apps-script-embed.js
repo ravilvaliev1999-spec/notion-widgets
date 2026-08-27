@@ -207,6 +207,30 @@
     return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(String(value || '').toLowerCase());
   }
 
+  function safePreparedCreate(value) {
+    const section = String(value && value.section || '');
+    const reservationId = String(value && value.reservationId || '').toLowerCase();
+    if (!['Docs', 'Sheets', 'Slides'].includes(section) || !validCreateRequestId(reservationId)) return null;
+    try {
+      const url = new URL(String(value && value.openUrl || ''));
+      const segment = section === 'Docs' ? 'document' : section === 'Sheets' ? 'spreadsheets' : 'presentation';
+      if (url.protocol !== 'https:' || url.hostname !== 'docs.google.com' || url.port || url.username || url.password || url.search || url.hash ||
+          !new RegExp(`^/${segment}/d/[A-Za-z0-9_-]{10,200}/edit$`).test(url.pathname)) return null;
+      return { section, reservationId, openUrl: url.href };
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function preparedCreateMap(value) {
+    const result = {};
+    (Array.isArray(value) ? value : []).slice(0, 3).forEach((row) => {
+      const prepared = safePreparedCreate(row);
+      if (prepared && !result[prepared.section]) result[prepared.section] = prepared;
+    });
+    return result;
+  }
+
   function createRequestSlot(section) {
     const task = params && params.get('task');
     return task && ['Docs', 'Sheets', 'Slides'].includes(section) ? `notion-widget-v20:create:${task}:${section}` : '';
@@ -235,9 +259,24 @@
 
   function createCourierHref(section) {
     if (!params || !bridge || bridge.actionReady !== true || !['Docs', 'Sheets', 'Slides'].includes(section)) return '';
-    const existing = createRequests.get(section);
+    const prepared = bridge.preparedCreates && bridge.preparedCreates[section] || null;
+    let existing = createRequests.get(section);
+    if (existing && !existing.actionStarted && !existing.navigationCommitted) {
+      const expectedReservationId = prepared && prepared.reservationId || '';
+      if (String(existing.reservationId || '') !== expectedReservationId) {
+        createRequests.delete(section);
+        forgetCreateRequest(section);
+        existing = null;
+      }
+    }
     if (existing) return existing.href;
     try {
+      if (prepared) {
+        const record = { section, requestId: prepared.reservationId, reservationId: prepared.reservationId, href: prepared.openUrl, actionStarted: false };
+        createRequests.set(section, record);
+        rememberCreateRequest(section, record.requestId);
+        return record.href;
+      }
       const requestId = rememberedCreateRequest(section) || randomId();
       if (!validCreateRequestId(requestId)) return '';
       const service = new URL(DEPLOYMENT_URL);
@@ -277,6 +316,7 @@
     ['Docs','Sheets','Slides'].forEach((section)=>{if(completed.has(rememberedCreateRequest(section)))forgetCreateRequest(section);});
     createRequests.forEach((record, section) => {
       if (!completed.has(record.requestId)) return;
+      if (record.ackTimer) window.clearTimeout(record.ackTimer);
       createRequests.delete(section);forgetCreateRequest(section);
     });
   }
@@ -288,6 +328,28 @@
     const now = Date.now();
     if (record.lastNavigationAt && now - record.lastNavigationAt < 1500) return false;
     record.lastNavigationAt = now;
+    record.navigationCommitted = true;
+    return true;
+  }
+
+  function createActionMessage(record) {
+    const message = { type: 'notion-widget-v20-primary-action', section: record.section, requestId: record.requestId };
+    if (record.reservationId) message.reservationId = record.reservationId;
+    return message;
+  }
+
+  function dispatchCreateAction(record) {
+    if (!record || !sendToBridge(createActionMessage(record))) return false;
+    record.ackAttempts = Number(record.ackAttempts || 0) + 1;
+    if (record.ackTimer) window.clearTimeout(record.ackTimer);
+    record.ackTimer = window.setTimeout(() => {
+      record.ackTimer = 0;
+      if (record.actionAcknowledged || createRequests.get(record.section) !== record) return;
+      if (record.ackAttempts < 2 && dispatchCreateAction(record)) return;
+      record.actionStarted = false;
+      record.lastNavigationAt = 0;
+      showNotice('Документ открыт, но фоновая привязка не подтверждена. Повторите нажатие — откроется тот же файл.');
+    }, 1000);
     return true;
   }
 
@@ -295,7 +357,9 @@
     if (!record) return false;
     if (record.actionStarted) return true;
     record.actionStarted = true;
-    if (sendToBridge({ type: 'notion-widget-v20-primary-action', section: record.section, requestId: record.requestId })) return true;
+    record.actionAcknowledged = false;
+    record.ackAttempts = 0;
+    if (dispatchCreateAction(record)) return true;
     record.actionStarted = false;
     return false;
   }
@@ -306,7 +370,7 @@
     if (!data || data.embedNonce !== embedNonce || !isGoogleScriptOrigin(event.origin)) return;
     if (data.type === 'notion-widget-v20-bridge-ready') {
       if (!isWidgetDescendant(event.source) || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(data.instanceId || ''))) return;
-      bridge = { source: event.source, origin: event.origin, instanceId: data.instanceId, authoritative: data.authoritative === true, actionReady: data.actionReady === true, folderUrl: allowedDriveFolderUrl(data.folderUrl) };
+      bridge = { source: event.source, origin: event.origin, instanceId: data.instanceId, authoritative: data.authoritative === true, actionReady: data.actionReady === true, folderUrl: allowedDriveFolderUrl(data.folderUrl), preparedCreates: data.authoritative === true && data.actionReady === true ? preparedCreateMap(data.preparedCreates) : {} };
       geometryRequestId = 0;
       latestGeometryResponseId = 0;
       lastGeometryAckAt = 0;
@@ -315,15 +379,30 @@
       document.body.classList.add('widget-ready');
       completeCreateRequests(data.completedCreateRequestIds);
       refreshAllControlHrefs();
+      createRequests.forEach((record) => { if (record.actionStarted && !record.actionAcknowledged && Number(record.ackAttempts || 0) < 2) dispatchCreateAction(record); });
       requestPrimaryGeometry();
       return;
     }
     if (!isCurrentBridgeEvent(event)) return;
-    if (data.type === 'notion-widget-v20-primary-result' && validCreateRequestId(data.requestId) && data.ok === false) {
+    if (data.type === 'notion-widget-v20-primary-started' && validCreateRequestId(data.requestId)) {
       createRequests.forEach((record) => {
         if (record.requestId !== String(data.requestId).toLowerCase()) return;
-        record.actionStarted = false;record.lastNavigationAt = 0;
+        record.actionAcknowledged = true;
+        if (record.ackTimer) window.clearTimeout(record.ackTimer);
+        record.ackTimer = 0;
       });
+      return;
+    }
+    if (data.type === 'notion-widget-v20-primary-result' && validCreateRequestId(data.requestId) && data.ok === false) {
+      const terminalSections = [];
+      createRequests.forEach((record, section) => {
+        if (record.requestId !== String(data.requestId).toLowerCase()) return;
+        if (record.ackTimer) window.clearTimeout(record.ackTimer);
+        if (data.retryable === false) { createRequests.delete(section);forgetCreateRequest(section);terminalSections.push(section);return; }
+        record.actionStarted = false;record.actionAcknowledged = false;record.lastNavigationAt = 0;record.ackTimer = 0;
+      });
+      if (terminalSections.length) terminalSections.forEach((section)=>interactionGrid.querySelectorAll(`[data-section="${section}"]`).forEach((control)=>control.removeAttribute('href')));
+      else refreshAllControlHrefs();
       showNotice(String(data.message || 'Файл не удалось создать. Повторите нажатие.').slice(0, 300));
       return;
     }
@@ -371,6 +450,16 @@
           }
           event.preventDefault();
           showNotice(section === 'Drive' ? 'Папка задачи ещё синхронизируется.' : 'Не удалось подготовить защищённое создание файла.');
+        });
+        control.addEventListener('auxclick', (event) => {
+          if (event.button !== 1 || section === 'Drive') return;
+          if (refreshControlHref(control) && claimCreateNavigation(section)) {
+            const record = createRequests.get(section);
+            if (record) beginNativeCreate(record);
+            return;
+          }
+          event.preventDefault();
+          showNotice('Создание этого файла уже выполняется.');
         });
         control.addEventListener('pointerenter', () => sendToBridge({ type: 'notion-widget-v20-primary-hover', section, active: true }));
         control.addEventListener('pointerleave', () => sendToBridge({ type: 'notion-widget-v20-primary-hover', section, active: false }));
