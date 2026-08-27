@@ -207,24 +207,34 @@ test('download cache hit avoids Notion after capability authorization and always
 test('direct Drive preparation uses only an exact fresh registry proof or the full current ownership fallback', () => {
   const backend = text('Code.gs');
   const body = backend.slice(backend.indexOf('function apiPrepareDownload'), backend.indexOf('function apiDownload'));
+  const registryProof = backend.slice(backend.indexOf('function w20FreshRegistryDownloadProof_'), backend.indexOf('function w20FastPreparedDownloadDrive_'));
   const fast = backend.slice(backend.indexOf('function w20FastPreparedDownloadDrive_'), backend.indexOf('function w20DownloadGrantEpochKey_'));
   assert.match(body, /w19AuthorizedConfig_\(input\)/);
   assert.match(body, /taskId !== cfg\.authorizedTaskPageId/);
   assert.match(body, /var cachedMaterial = w20GetCachedDownloadMaterial_\(taskId, materialId, cfg\)/);
-  assert.match(body, /if \(!material\)[\s\S]*w19AssertMaterialForTask_\(materialId, taskId, cfg\)/);
-  assert.match(body, /cachedMaterial \? w20FastPreparedDownloadDrive_\(taskId, materialId, cachedMaterial, cfg\) : null/);
-  assert.match(body, /if \(!drive\) drive = w19AssertOwnedBinary_\(material, task, cfg\)/);
+  assert.match(body, /var registryProof = w20FreshRegistryDownloadProof_\(taskId, materialId, cfg\)/);
+  assert.match(body, /var material = cachedMaterial \|\| \(registryProof && registryProof\.material\) \|\| null/);
+  assert.match(body, /w20FastPreparedDownloadDrive_\(taskId, materialId, material, cfg, registryProof\)/);
+  assert.match(body, /if \(!drive\)[\s\S]*if \(!cachedMaterial\)[\s\S]*w19AssertMaterialForTask_\(materialId, taskId, cfg\)/);
+  assert.match(body, /drive = w19AssertOwnedBinary_\(material, task, cfg\)/);
   assert.match(body, /w20DriveDownloadUrl_\(drive\.id, cfg\.allowedEmail\)/);
   assert.match(body, /w20IssueDownloadGrant_\(taskId, materialId, direct, cfg, grantEpoch\)/);
+  assert.match(body, /issued\.directDownloadUrl = direct\.url/);
+  assert.match(body, /issued\.directDownloadExpiresAt = issued\.expiresAt/);
   assert.doesNotMatch(body, /UrlFetchApp|attachmentUrl|attachmentExpiry|Utilities\.base64Encode|DriveApp\.getFileById/);
 
-  assert.match(fast, /w20RegistryReadTaskMeta_\(task\)/);
-  assert.match(fast, /w20RegistryReadTaskResult_\(task, null\)/);
-  assert.match(fast, /w20RegistryActionProof_\(meta, registry, cfg\.rootFolderId\)/);
-  assert.match(fast, /registry\.activeCount !== registryMaterials\.length/);
-  assert.match(fast, /registry\.activeCount !== meta\.snapshotActiveCount/);
+  assert.match(registryProof, /PropertiesService\.getScriptProperties\(\)\.getProperties\(\)/);
+  assert.match(registryProof, /w20RegistryReadTaskResultFromValues_\(task, null, values\)/);
+  assert.match(registryProof, /w20RegistryParseTaskMeta_\(task, values\[w20RegistryMetaKey_\(task\)\]\)/);
+  assert.match(registryProof, /w20RegistryActionProof_\(meta, registry, cfg\.rootFolderId\)/);
+  assert.match(registryProof, /registry\.activeCount !== registryMaterials\.length/);
+  assert.match(registryProof, /registry\.activeCount !== meta\.snapshotActiveCount/);
+  assert.match(registryProof, /exactCount !== 1/);
+  assert.doesNotMatch(registryProof, /w20RegistryReadTaskMeta_|w20RegistryReadTaskResult_\(/);
+
+  assert.match(fast, /snapshot\.taskId !== compactTask \|\| snapshot\.pageId !== compactPage/);
+  assert.match(fast, /!proof \|\| !proof\.ready/);
   assert.match(fast, /meta\.folderId !== folderId/);
-  assert.match(fast, /exactCount !== 1/);
   assert.match(fast, /exact\.widgetOwnedBinary !== true/);
   assert.match(fast, /exact\.googleFileId !== fileId/);
   assert.match(fast, /exact\.folderId !== folderId/);
@@ -238,6 +248,26 @@ test('direct Drive preparation uses only an exact fresh registry proof or the fu
   assert.match(fast, /application\\\/vnd\\\.google-apps/);
   assert.match(fast, /size > maxSize/);
   assert.doesNotMatch(fast, /w19AssertRootFolder_|w19AssertTaskPage_|w19AssertMaterialForTask_|Drive\.Files\.list|w19NotionRequest_/);
+});
+
+test('prepared Drive download handoff is canonical, short-lived, and falls back to grant redemption when invalid', () => {
+  const runner = text('Download.html');
+  const validator = runner.slice(runner.indexOf('function validatedPreparedDrive'), runner.indexOf('async function startDownload'));
+  const start = runner.slice(runner.indexOf('async function startDownload'), runner.indexOf('startDownload();'));
+  assert.match(validator, /data\.mode!=='grant'/);
+  assert.match(validator, /\^\[a-f0-9\]\{96\}\$/);
+  assert.match(validator, /expiresText!==grantExpiresText/);
+  assert.match(validator, /url\.hostname!=='drive\.google\.com'/);
+  assert.match(validator, /url\.pathname!=='\/uc'/);
+  assert.match(validator, /keys\.join\('\|'\)!=='export\|authuser\|id'/);
+  assert.match(validator, /raw!==canonical/);
+  assert.match(validator, /account!==account\.toLowerCase\(\)/);
+  assert.match(validator, /expiry<=now\+30000\|\|expiry-now>60000/);
+  assert.match(start, /validatedPreparedDrive\(prepareResponse\.data\)/);
+  assert.match(start, /if\(prepared\)[\s\S]*notifyCourierDirect\(prepared\);[\s\S]*return/);
+  assert.match(start, /grantedResponse=await callDownload\(Object\.assign\(\{\},input,\{downloadGrant:grant\}\)\)/);
+  assert.match(start, /await callDownload\(input\)/);
+  assert.doesNotMatch(start, /postMessage\([^\n]*(?:accessToken|downloadGrant|base64)/);
 });
 
 test('bootstrap and sync seed the download cache while archive, update and delete invalidate it', () => {
@@ -574,11 +604,11 @@ test('hosted mock exposes owned files and classifies Google links like backend',
 test('rapid reorder gestures are single-flight and coalesce to the latest snapshot', () => {
   const frontend = text('Index.html');
   const body = frontend.slice(frontend.indexOf('function captureOrder'), frontend.indexOf('function handleGridClick'));
-  assert.match(body, /if\(optimisticMaterialMutations\.size\)\{queuedOrder=null;return;\}queuedOrder=captureOrder\(\)/);
+  assert.match(body, /if\(!state\.authoritative\|\|optimisticMaterialMutations\.size\)\{queuedOrder=null;return;\}queuedOrder=captureOrder\(\)/);
   assert.match(body, /if\(orderSaveRunning\)return/);
-  assert.match(body, /while\(queuedOrder\)\{if\(optimisticMaterialMutations\.size\)\{queuedOrder=null;return;\}/);
+  assert.match(body, /while\(queuedOrder\)\{if\(!state\.authoritative\|\|optimisticMaterialMutations\.size\)\{queuedOrder=null;return;\}/);
   assert.ok(body.indexOf('queuedOrder=null') < body.indexOf("await call('apiReorder'"));
-  assert.match(body, /finally\{orderSaveRunning=false;if\(queuedOrder&&!optimisticMaterialMutations\.size\)persistOrder\(\)/);
+  assert.match(body, /finally\{orderSaveRunning=false;if\(queuedOrder&&state\.authoritative&&!optimisticMaterialMutations\.size\)persistOrder\(\)/);
 });
 
 test('backend and inline frontend scripts are syntactically valid JavaScript', () => {
