@@ -139,6 +139,9 @@ test('capability auth requires both the stored hash and the exact authorized tas
     accessTokenHash: tokenHash,
     authorizedTaskPageId: task
   };
+  const fastCapability = loadBackend('');
+  fastCapability.Session.getActiveUser=()=>{throw new Error('Session must not run for a valid capability');};
+  assert.equal(fastCapability.w19AssertViewer_(cfg, { taskPageId: task, accessToken: token }), 'capability');
   const anonymous = loadBackend('');
   assert.equal(anonymous.w19AssertViewer_(cfg, { taskPageId: task, accessToken: token }), 'capability');
   assert.throws(
@@ -149,6 +152,15 @@ test('capability auth requires both the stored hash and the exact authorized tas
     () => anonymous.w19AssertViewer_(cfg, { taskPageId: task, accessToken: 'wrong_token_0123456789_ABCDEFGHIJ' }),
     (error) => error && error.code === 'AUTH_REQUIRED'
   );
+});
+
+test('runtime config reads Script Properties from one snapshot', () => {
+  const source=backendSource.slice(backendSource.indexOf('function w19Config_'),backendSource.indexOf('function w19AssertViewer_'));
+  assert.match(source,/var values = props\.getProperties\(\)/);
+  assert.doesNotMatch(source,/props\.getProperty\(/);
+  for(const key of ['ALLOWED_EMAIL','NOTION_TOKEN','NOTION_DATA_SOURCE_ID','AUTHORIZED_TASK_PAGE_ID','WIDGET_ACCESS_TOKEN_SHA256','MAX_UPLOAD_BYTES','ROOT_DRIVE_FOLDER_ID','NOTION_VERSION','DENIED_NOTION_PAGE_IDS','DENIED_NOTION_DATA_SOURCE_IDS']){
+    assert.match(source,new RegExp(`values\\.${key}`));
+  }
 });
 
 test('confirmed owner identity remains an independent authorization path', () => {
@@ -465,6 +477,25 @@ test('repeated Docs creation with one request id executes the document creation 
   assert.equal(documentsCreated, 1);
 });
 
+test('a failed Notion finalize preserves the CAS-bound drive_ready document', () => {
+  const backend=loadBackend(),values={};
+  const props={getProperty:(key)=>values[key]||null,setProperty:(key,value)=>{values[key]=String(value);}};
+  const lock={tryLock:()=>true,waitLock(){},releaseLock(){}};
+  backend.PropertiesService={getScriptProperties:()=>props};
+  backend.LockService={getScriptLock:()=>lock};
+  backend.Utilities.getUuid=()=> 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const canonical=backend.w19CanonicalIdempotency_('3c62d627-39a1-80a1-aac7-ec19ffc9ef8e','create-google-Docs','11111111-1111-4111-8111-111111111111');
+  assert.throws(()=>backend.w19WithIdempotency_(canonical,(state)=>{
+    assert.equal(backend.w20WriteCreateDriveReady_(canonical,state.attemptId,{id:'FailedFinalizeDoc123',webViewLink:'https://docs.google.com/document/d/FailedFinalizeDoc123/edit'},'Docs'),true);
+    throw new backend.W19Error_('NOTION_UNAVAILABLE','notion failed',true);
+  }),(error)=>error&&error.code==='NOTION_UNAVAILABLE');
+  const failed=JSON.parse(values[backend.w19IdempotencyLedgerKey_(canonical)]);
+  assert.equal(failed.status,'failed');
+  assert.equal(failed.driveReady.googleFileId,'FailedFinalizeDoc123');
+  assert.ok(Number(failed.driveReadyAt)>0);
+  assert.equal(backend.w20CreateDriveReadyUrl_(failed),'https://docs.google.com/document/d/FailedFinalizeDoc123/edit');
+});
+
 test('fresh Google creation uses exactly one Drive CREATE and one Notion CREATE from authoritative registry state', () => {
   const backend = loadBackend();
   const taskId = '3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
@@ -580,6 +611,12 @@ test('fresh Google creation uses exactly one Drive CREATE and one Notion CREATE 
   const ready=backend.apiGetCreateStatus({taskPageId:taskId,section:'Docs',createRequestId:readyRequestId});
   assert.deepEqual(JSON.parse(JSON.stringify(ready.data)),{status:'drive_ready',openUrl:'https://docs.google.com/document/d/DriveReadyDocument123/edit'});
   assert.doesNotMatch(JSON.stringify(ready),/create-google-Docs|33333333-3333-4333-8333-333333333333|DriveReadyDocument123"\s*,\s*"section/);
+  props.setProperty(backend.w19IdempotencyLedgerKey_(readyCanonical),JSON.stringify({
+    status:'failed',at:Date.now(),attemptId:readyAttemptId,driveReadyAt:Date.now(),
+    driveReady:{openUrl:'https://docs.google.com/document/d/DriveReadyDocument123/edit',googleFileId:'DriveReadyDocument123',section:'Docs',format:'Google Docs',provider:'Google Drive',archived:false}
+  }));
+  const failedReady=backend.apiGetCreateStatus({taskPageId:taskId,section:'Docs',createRequestId:readyRequestId});
+  assert.deepEqual(JSON.parse(JSON.stringify(failedReady.data)),{status:'drive_ready',openUrl:'https://docs.google.com/document/d/DriveReadyDocument123/edit'});
 });
 
 test('create context warming verifies the task folder once without a Notion request', () => {

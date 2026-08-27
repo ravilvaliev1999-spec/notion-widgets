@@ -266,7 +266,7 @@ function w20WriteCreateDriveReady_(canonicalKey, attemptId, driveFile, section) 
 
 function w20CreateDriveReadyUrl_(ledger) {
   var readyAt = Number(ledger && ledger.driveReadyAt || 0);
-  if (!ledger || ledger.status !== 'pending' || !isFinite(readyAt) || readyAt <= 0 ||
+  if (!ledger || (ledger.status !== 'pending' && ledger.status !== 'failed') || !isFinite(readyAt) || readyAt <= 0 ||
       Date.now() - readyAt > W19_IDEMPOTENCY_PENDING_TTL_MS) return '';
   return w20SafeCreateMaterialOpenUrl_(ledger.driveReady);
 }
@@ -479,9 +479,9 @@ function apiGetCreateStatus(input) {
     }
     if (material) return { status: 'done', material: material };
     if (!ledger) return { status: 'missing' };
+    var driveReadyUrl = w20CreateDriveReadyUrl_(ledger);
+    if (driveReadyUrl) return { status: 'drive_ready', openUrl: driveReadyUrl };
     if (ledger.status === 'pending') {
-      var driveReadyUrl = w20CreateDriveReadyUrl_(ledger);
-      if (driveReadyUrl) return { status: 'drive_ready', openUrl: driveReadyUrl };
       return { status: 'pending', retryable: true };
     }
     if (ledger.status === 'failed') return { status: 'failed', retryable: true };
@@ -1359,11 +1359,12 @@ function w19AdminConfig_() {
 
 function w19Config_() {
   var props = PropertiesService.getScriptProperties();
-  var allowedEmail = String(props.getProperty('ALLOWED_EMAIL') || '').trim().toLowerCase();
-  var notionToken = String(props.getProperty('NOTION_TOKEN') || '').trim();
-  var dataSourceId = WidgetV19Core.normalizeUuid(props.getProperty('NOTION_DATA_SOURCE_ID'));
-  var authorizedTaskPageId = WidgetV19Core.normalizeUuid(props.getProperty('AUTHORIZED_TASK_PAGE_ID'));
-  var accessTokenHash = String(props.getProperty('WIDGET_ACCESS_TOKEN_SHA256') || '').trim().toLowerCase();
+  var values = props.getProperties();
+  var allowedEmail = String(values.ALLOWED_EMAIL || '').trim().toLowerCase();
+  var notionToken = String(values.NOTION_TOKEN || '').trim();
+  var dataSourceId = WidgetV19Core.normalizeUuid(values.NOTION_DATA_SOURCE_ID);
+  var authorizedTaskPageId = WidgetV19Core.normalizeUuid(values.AUTHORIZED_TASK_PAGE_ID);
+  var accessTokenHash = String(values.WIDGET_ACCESS_TOKEN_SHA256 || '').trim().toLowerCase();
   if (!allowedEmail) throw new W19Error_('CONFIG_MISSING', 'Не задан ALLOWED_EMAIL.', false);
   if (!notionToken) throw new W19Error_('CONFIG_MISSING', 'Не задан NOTION_TOKEN в Script Properties.', false);
   if (!dataSourceId) throw new W19Error_('CONFIG_MISSING', 'Не задан корректный NOTION_DATA_SOURCE_ID.', false);
@@ -1373,7 +1374,7 @@ function w19Config_() {
   if (accessTokenHash && !/^[a-f0-9]{64}$/.test(accessTokenHash)) {
     throw new W19Error_('CONFIG_INVALID', 'WIDGET_ACCESS_TOKEN_SHA256 должен быть SHA-256 в нижнем регистре.', false);
   }
-  var maxUpload = Number(props.getProperty('MAX_UPLOAD_BYTES') || 8388608);
+  var maxUpload = Number(values.MAX_UPLOAD_BYTES || 8388608);
   if (!isFinite(maxUpload) || maxUpload < 1048576 || maxUpload > W19_NOTION_SINGLE_PART_MAX_BYTES) throw new W19Error_('CONFIG_INVALID', 'MAX_UPLOAD_BYTES должен быть от 1 до 20 MiB.', false);
   var cfg = {
     allowedEmail: allowedEmail,
@@ -1381,20 +1382,17 @@ function w19Config_() {
     dataSourceId: dataSourceId,
     authorizedTaskPageId: authorizedTaskPageId,
     accessTokenHash: accessTokenHash,
-    rootFolderId: String(props.getProperty('ROOT_DRIVE_FOLDER_ID') || '').trim(),
-    notionVersion: String(props.getProperty('NOTION_VERSION') || W19_NOTION_DEFAULT_VERSION).trim(),
+    rootFolderId: String(values.ROOT_DRIVE_FOLDER_ID || '').trim(),
+    notionVersion: String(values.NOTION_VERSION || W19_NOTION_DEFAULT_VERSION).trim(),
     maxUploadBytes: Math.floor(maxUpload),
-    deniedPageIds: w19IdSet_(props.getProperty('DENIED_NOTION_PAGE_IDS')),
-    deniedDataSourceIds: w19IdSet_(props.getProperty('DENIED_NOTION_DATA_SOURCE_IDS'))
+    deniedPageIds: w19IdSet_(values.DENIED_NOTION_PAGE_IDS),
+    deniedDataSourceIds: w19IdSet_(values.DENIED_NOTION_DATA_SOURCE_IDS)
   };
   w19AssertAllowedDataSource_(cfg.dataSourceId, cfg);
   return cfg;
 }
 
 function w19AssertViewer_(cfg, input) {
-  var email = String(Session.getActiveUser().getEmail() || '').trim().toLowerCase();
-  if (email && email === cfg.allowedEmail) return 'owner';
-
   var token = String(input && input.accessToken || '').trim();
   var taskId = WidgetV19Core.normalizeUuid(input && input.taskPageId);
   var tokenShapeOk = /^[A-Za-z0-9._~-]{32,256}$/.test(token);
@@ -1402,6 +1400,9 @@ function w19AssertViewer_(cfg, input) {
   var taskMatches = Boolean(taskId && cfg.authorizedTaskPageId && taskId === cfg.authorizedTaskPageId);
   var tokenMatches = Boolean(cfg.accessTokenHash && WidgetV19Core.safeEqual(tokenHash, cfg.accessTokenHash));
   if (taskMatches && tokenMatches) return 'capability';
+
+  var email = String(Session.getActiveUser().getEmail() || '').trim().toLowerCase();
+  if (email && email === cfg.allowedEmail) return 'owner';
 
   if (email) throw new W19Error_('FORBIDDEN', 'У этой учётной записи нет доступа к виджету.', false);
   throw new W19Error_('AUTH_REQUIRED', 'Ссылка виджета не содержит действующий ключ доступа для этой задачи.', false);
@@ -2657,7 +2658,12 @@ function w19WithIdempotency_(canonicalKey, fn) {
     try {
       var currentFailed = w19ReadLedger_(props, ledgerKey);
       if (currentFailed && currentFailed.status === 'pending' && currentFailed.attemptId === attemptId) {
-        props.setProperty(ledgerKey, JSON.stringify({ status: 'failed', at: Date.now(), attemptId: attemptId, code: err && err.code || 'UNEXPECTED' }));
+        var failed = { status: 'failed', at: Date.now(), attemptId: attemptId, code: err && err.code || 'UNEXPECTED' };
+        if (currentFailed.driveReady && currentFailed.driveReadyAt) {
+          failed.driveReady = currentFailed.driveReady;
+          failed.driveReadyAt = currentFailed.driveReadyAt;
+        }
+        props.setProperty(ledgerKey, JSON.stringify(failed));
       }
     }
     finally { lock.releaseLock(); }
