@@ -69,15 +69,18 @@ test('the access capability is added centrally to backend payloads and is never 
   assert.doesNotMatch(frontend, /console\.(?:log|debug|info|warn|error)/);
 });
 
-test('owned binaries always enter the strict neutral courier', () => {
+test('owned binaries use only a server-prepared direct Drive link or the strict neutral courier', () => {
   const materialCard = frontend.slice(frontend.indexOf('function materialCard'), frontend.indexOf('async function bootstrap'));
   const gridClick = frontend.slice(frontend.indexOf('function handleGridClick'), frontend.indexOf('function handleGridKeydown'));
-  assert.match(materialCard, /const courierHref=downloadCourierHref\(item\)/);
+  assert.match(materialCard, /const directDownloadHref=freshDirectDownloadUrl\(item\),courierHref=downloadCourierHref\(item\)/);
   assert.match(materialCard, /document\.createElement\(courierHref\|\|directHref\?'a':'article'\)/);
   assert.match(materialCard, /card\.href=courierHref;card\.target='_blank';card\.rel='noopener noreferrer';card\.referrerPolicy='no-referrer'/);
-  assert.match(materialCard, /card\.dataset\.downloadCourier='true'/);
+  assert.match(materialCard, /if\(directDownloadHref\)card\.dataset\.downloadDirect='true';else card\.dataset\.downloadCourier='true'/);
   assert.match(materialCard, /const action=canPrepareDownload\(item\)\?'\u0421\u043a\u0430\u0447\u0430\u0442\u044c'/);
-  assert.match(gridClick, /if\(itemCard\.tagName==='A'\)\{if\(itemCard\.dataset\.directOpen==='true'\)recentDrivePageIds\.add/);
+  assert.match(gridClick, /itemCard\.dataset\.downloadDirect==='true'[\s\S]*freshDirectDownloadUrl\(item\)/);
+  assert.match(gridClick, /if\(!item\|\|!freshHref\)[\s\S]*downloadCourierHref\(item\)[\s\S]*delete itemCard\.dataset\.downloadDirect/);
+  assert.match(gridClick, /if\(!fallbackHref\)\{itemCard\.removeAttribute\('href'\)[\s\S]*delete itemCard\.dataset\.downloadDirect[\s\S]*delete itemCard\.dataset\.downloadCourier/);
+  assert.match(gridClick, /itemCard\.dataset\.directOpen==='true'\)recentDrivePageIds\.add/);
   assert.ok(gridClick.indexOf("const edit=event.target.closest('[data-edit-id]')") < gridClick.indexOf("const itemCard=event.target.closest('[data-item-id]')"));
   assert.match(gridClick, /if\(edit\)\{event\.preventDefault\(\);event\.stopPropagation\(\);openEdit/);
   assert.doesNotMatch(frontend, /function directHostedDownload\(item\)|#v2=/);
@@ -140,6 +143,27 @@ test('a fresh memory-only package uses v3 immediately while a grant keeps the st
   assert.notEqual(fallbackService.searchParams.get('downloadTicket'),grant);
 });
 
+test('a short-lived server-prepared Drive URL bypasses the courier only for the exact material', () => {
+  const helpersSource = frontend.slice(frontend.indexOf('function strongDownloadTicket'), frontend.indexOf('function canPrepareDownload'));
+  const normalizeUuid = (value) => String(value || '').toLowerCase();
+  const canPrepareDownload = (item) => Boolean(item?.canDownload && item?.widgetOwned && !item?.archived);
+  const state = { bootstrapped:true, serviceUrl:'https://script.google.com/macros/s/abcdefghijklmnopqrstuvwxyz0123456789_-AB/exec' };
+  const taskPageId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',accessToken='A'.repeat(48);
+  const item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',googleFileId:'DRIVEFILE123',canDownload:true,widgetOwned:true};
+  const direct='https://drive.google.com/uc?export=download&authuser=owner%40example.com&id=DRIVEFILE123';
+  const downloadGrants=new Map([[item.id,{downloadGrant:'a'.repeat(96),expiresAt:new Date(Date.now()+30000).toISOString(),directDownloadUrl:direct,directDownloadExpiresAt:new Date(Date.now()+30000).toISOString()}]]);
+  const build = new Function('window','TextEncoder','btoa','URL','normalizeUuid','state','taskPageId','accessToken','canPrepareDownload','DOWNLOAD_COURIER_URL','downloadGrants',`${helpersSource};return {freshDirectDownloadUrl,downloadCourierHref};`);
+  const helpers = build({crypto:{getRandomValues(){}}},TextEncoder,btoa,URL,normalizeUuid,state,taskPageId,accessToken,canPrepareDownload,'https://ravilvaliev1999-spec.github.io/notion-widgets/download-courier.html',downloadGrants);
+  assert.equal(helpers.freshDirectDownloadUrl(item),direct);
+  assert.equal(helpers.downloadCourierHref(item),direct);
+  assert.equal(direct.includes(accessToken),false);
+  assert.equal(helpers.freshDirectDownloadUrl({...item,googleFileId:'OTHERFILE123'}),'');
+  downloadGrants.get(item.id).directDownloadUrl='https://drive.google.com/uc?authuser=owner%40example.com&export=download&id=DRIVEFILE123';
+  assert.equal(helpers.freshDirectDownloadUrl(item),'','query order is canonical and fail-closed');
+  downloadGrants.get(item.id).directDownloadUrl='https://drive.google.com/uc?export=download&authuser=owner%40example.com&id=DRIVEFILE123&extra=1';
+  assert.equal(helpers.freshDirectDownloadUrl(item),'','extra parameters are rejected');
+});
+
 test('bootstrap primes downloads while preserving unchanged unexpired packages in memory', () => {
   const bootstrap=frontend.slice(frontend.indexOf('function applyBootstrapData'),frontend.indexOf('function refresh('));
   const prime=frontend.slice(frontend.indexOf('function freshDownloadGrant'),frontend.indexOf('function downloadCourierHref'));
@@ -190,30 +214,60 @@ test('visible download grants renew just before expiry with one timer, bounded w
   assert.match(frontend,/const DOWNLOAD_GRANT_RENEW_LEAD_MS = 15000/);
   assert.match(prime,/document\.visibilityState==='hidden'/);
   assert.match(prime,/function scheduleDownloadGrantRenewal\(\)/);
+  assert.match(prime,/downloadGrants\.forEach\(\(_record,pageId\)=>refreshDownloadGrantLink\(pageId\)\)/);
   assert.match(prime,/expiresAt-DOWNLOAD_GRANT_RENEW_LEAD_MS/);
   assert.match(prime,/downloadGrantRenewTimer=window\.setTimeout/);
+  assert.match(prime,/downloadGrantExpiryTimer=window\.setTimeout/);
+  assert.match(prime,/nextExpiryAt=Math\.min\(nextExpiryAt,Math\.max\(now\+250,expiresAt-1000\)\)/);
   assert.doesNotMatch(prime,/setInterval/);
   assert.match(prime,/refreshVisibleDownloadGrants\(false\)/);
+  assert.match(prime,/downloadGrants\.forEach\(\(_record,pageId\)=>refreshDownloadGrantLink\(pageId\)\)/);
   assert.match(prime,/Promise\.all\(\[worker\(\),worker\(\)\]\)/);
   assert.match(frontend,/grid\.addEventListener\('pointerover',handleDownloadGrantIntent\)/);
   assert.match(frontend,/grid\.addEventListener\('focusin',handleDownloadGrantIntent\)/);
   assert.match(frontend,/refreshVisibleDownloadGrants\(true\)\.catch\(\(\)=>\{\}\)/);
+  assert.match(frontend,/document\.visibilityState==='visible'\)\{\s*scheduleDownloadGrantRenewal\(\)/);
   assert.match(prime,/downloadGrantPrimeInFlight\.get\(materialId\)/);
   assert.match(prime,/downloadGrantRetryNotBefore\.set\(materialId,permanent\?Number\.POSITIVE_INFINITY/);
 });
 
+test('an expired direct link is removed when no protected fallback can be built', () => {
+  const source=frontend.slice(frontend.indexOf('function refreshDownloadGrantLink'),frontend.indexOf('function primeDownloadGrant'));
+  const item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'};
+  const classes=new Set(['download-ready']);
+  const card={tagName:'A',href:'https://drive.google.com/uc?export=download&authuser=owner%40example.com&id=DRIVEFILE123',dataset:{downloadDirect:'true'},classList:{remove(value){classes.delete(value);},add(value){classes.add(value);}},removeAttribute(name){if(name==='href')delete this.href;}};
+  const refresh=new Function('state','document','freshDirectDownloadUrl','downloadCourierHref',`${source};return refreshDownloadGrantLink;`)(
+    {materials:[item]},
+    {querySelector(){return card;}},
+    ()=>'',
+    ()=>''
+  );
+  refresh(item.id);
+  assert.equal('href' in card,false);
+  assert.equal(card.dataset.downloadDirect,undefined);
+  assert.equal(card.dataset.downloadCourier,undefined);
+  assert.equal(classes.has('download-ready'),false);
+});
+
 test('grant refresh eligibility honors expiry lead and suppresses repeated proxy intent calls', () => {
-  const source=frontend.slice(frontend.indexOf('function downloadGrantNeedsRefresh'),frontend.indexOf('function deferDownloadGrantRefresh'));
+  const source=frontend.slice(frontend.indexOf('function trustedPreparedDriveDownloadUrl'),frontend.indexOf('function deferDownloadGrantRefresh'));
   const downloadGrants=new Map(),downloadGrantRetryNotBefore=new Map();
   const normalizeUuid=(value)=>String(value||'').toLowerCase();
-  const needs=new Function('normalizeUuid','downloadGrants','downloadGrantRetryNotBefore','DOWNLOAD_GRANT_RENEW_LEAD_MS',`${source};return downloadGrantNeedsRefresh;`)(normalizeUuid,downloadGrants,downloadGrantRetryNotBefore,15000);
-  const item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'},grant='a'.repeat(96),now=Date.now();
+  const needs=new Function('URL','normalizeUuid','downloadGrants','downloadGrantRetryNotBefore','DOWNLOAD_GRANT_RENEW_LEAD_MS',`${source};return downloadGrantNeedsRefresh;`)(URL,normalizeUuid,downloadGrants,downloadGrantRetryNotBefore,15000);
+  const item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',googleFileId:'DRIVEFILE123'},grant='a'.repeat(96),now=Date.now();
   downloadGrants.set(item.id,{downloadGrant:grant,expiresAt:new Date(now+30000).toISOString(),downloadPackage:'B'.repeat(80),packageExpiresAt:new Date(now+30000).toISOString()});
   assert.equal(needs(item,true),false);
   downloadGrants.set(item.id,{downloadGrant:grant,expiresAt:new Date(now+10000).toISOString(),downloadPackage:'B'.repeat(80),packageExpiresAt:new Date(now+10000).toISOString()});
   assert.equal(needs(item,false),true);
   downloadGrants.set(item.id,{downloadGrant:grant,expiresAt:new Date(now+30000).toISOString()});
-  assert.equal(needs(item,false),true,'a legacy grant without v3 package should be upgraded');
+  assert.equal(needs(item,false),false,'a valid fallback grant is not refreshed on every timer tick');
+  assert.equal(needs(item,true),true,'explicit intent upgrades a legacy grant to the fast path');
+  downloadGrants.get(item.id).expiresAt=new Date(now-1000).toISOString();
+  assert.equal(needs(item,false),true,'an expired fallback grant is renewed automatically');
+  downloadGrants.set(item.id,{downloadGrant:grant,expiresAt:new Date(now+30000).toISOString(),directDownloadUrl:'https://drive.google.com/uc?export=download&authuser=owner%40example.com&id=DRIVEFILE123',directDownloadExpiresAt:new Date(now+30000).toISOString()});
+  assert.equal(needs(item,true),false,'a fresh exact Drive link needs no refresh');
+  downloadGrants.get(item.id).directDownloadExpiresAt=new Date(now+10000).toISOString();
+  assert.equal(needs(item,false),true,'the direct link renews before expiry');
   downloadGrants.delete(item.id);downloadGrantRetryNotBefore.set(item.id,Number.POSITIVE_INFINITY);
   assert.equal(needs(item,true),false);
   downloadGrantRetryNotBefore.delete(item.id);
