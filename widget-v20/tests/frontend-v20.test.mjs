@@ -13,7 +13,7 @@ const publicCourier = fs.readFileSync(path.join(root, '..', 'download-courier.ht
 const publicCreateCourier = fs.readFileSync(path.join(root, '..', 'create-courier.html'), 'utf8');
 const original = fs.readFileSync(path.join(root, '..', 'google-buttons-widget.html'), 'utf8');
 
-test('v20 preserves the original four-column visual system', () => {
+test('v20 preserves the original four-column desktop system and uses a readable two-column mobile layout', () => {
   const exactTokens = [
     '--gray-bg: #2f2f2f', '--gray-bg-h: #3a3a3a', '--blue-bg: #1f3b54',
     '--blue-bg-h: #264a6b', '--green-bg: #1c3829', '--green-bg-h: #234734',
@@ -24,7 +24,8 @@ test('v20 preserves the original four-column visual system', () => {
     'font-size: 15px; font-weight: 600', 'font-size: 12.5px; opacity: .55'
   ];
   exactTokens.forEach((token) => assert.ok(frontend.includes(token), `missing original token: ${token}`));
-  assert.doesNotMatch(frontend, /grid-template-columns:\s*(?:repeat\(2|1fr\s*;)/);
+  assert.match(frontend, /@media \(max-width: 720px\)[\s\S]*\.grid \{ grid-template-columns: repeat\(2,minmax\(0,1fr\)\); \}/);
+  assert.match(frontend, /\.material-menu-trigger \{[\s\S]*flex: 0 0 44px; width: 44px; min-height: 44px/);
 });
 
 test('all original inline Google icon paths are retained exactly', () => {
@@ -37,15 +38,103 @@ test('all original inline Google icon paths are retained exactly', () => {
 
 test('every material is rendered as a full-size clone of its service card', () => {
   assert.match(frontend, /function materialCard\(item,count\)[\s\S]*className=`btn \$\{group\.cls\} item-card`/);
-  assert.match(frontend, /document\.createElement\(courierHref\|\|directHref\?'a':'article'\)/);
-  assert.match(frontend, /card\.innerHTML=cardMarkup\(section,item\.name\|\|'\u0411\u0435\u0437 \u043d\u0430\u0437\u0432\u0430\u043d\u0438\u044f',count/);
+  assert.match(frontend, /card=document\.createElement\('article'\)/);
+  assert.match(frontend, /main=document\.createElement\(href\?'a':'button'\)/);
+  assert.match(frontend, /main\.innerHTML=materialCardMarkup\(section,count\)/);
+  assert.match(frontend, /card\.append\(main,menuButton\)/);
+  assert.doesNotMatch(frontend, /main\.append\([^)]*menuButton|main\.innerHTML[\s\S]{0,200}material-menu-trigger/);
   assert.match(frontend, /materials\.forEach\(\(item\)=>files\.appendChild\(materialCard\(item,materials\.length\)\)\)/);
-  assert.match(frontend, /add\.textContent='\+ \u0434\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0441\u0441\u044b\u043b\u043a\u0443'/);
+  assert.match(frontend, /add\.textContent='\+ \u0434\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442'/);
+});
+
+test('saved-card chevrons own edit/open/hide actions and no saved-card pencil remains', () => {
+  const cardMarkup = frontend.slice(frontend.indexOf('function materialCardMarkup'), frontend.indexOf('function escapeHtml'));
+  const materialCard = frontend.slice(frontend.indexOf('function materialCard(item,count)'), frontend.indexOf('function downloadMaterialFingerprint'));
+  const archive = frontend.slice(frontend.indexOf('async function archiveMaterial'), frontend.indexOf('function upsert'));
+  assert.match(cardMarkup, /function materialMenuTrigger\(item\)/);
+  assert.match(cardMarkup, /button\.dataset\.materialMenuId=/);
+  assert.match(cardMarkup, /button\.setAttribute\('aria-haspopup','menu'\)/);
+  assert.doesNotMatch(cardMarkup, /data-edit-id|class="gedit"|editIcon/);
+  assert.doesNotMatch(materialCard, /data-edit-id|editButton|class="gedit"/);
+  assert.match(frontend, /data-material-menu-action="edit"[^>]*>\u0418\u0437\u043c\u0435\u043d\u0438\u0442\u044c \u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435 \u0438 \u0440\u0430\u0437\u0434\u0435\u043b/);
+  assert.match(frontend, /data-material-menu-action="archive"[^>]*>\u0421\u043a\u0440\u044b\u0442\u044c \u0438\u0437 \u0432\u0438\u0434\u0436\u0435\u0442\u0430/);
+  assert.match(frontend, /if\(action==='edit'\)openEdit\(item\.id,returnFocus\);else if\(action==='archive'\)archiveMaterial\(item\)/);
+  assert.match(archive, /call\('apiArchive',\{taskPageId,pageId:item\.id,idempotencyKey:operation\.value\}\)/);
+  assert.match(archive, /state\.materials=state\.materials\.filter\(material=>material\.id!==item\.id\)/);
+  assert.doesNotMatch(archive, /apiDeletePhysical/);
+});
+
+test('saved-card menu restores focus, supports menu keys and survives a card rerender', () => {
+  const menu = frontend.slice(frontend.indexOf('function materialMenuTriggerForId'),frontend.indexOf('function isBoundedAncestor'));
+  const render = frontend.slice(frontend.indexOf('function render()'),frontend.indexOf('function scheduleActionProofRefresh'));
+  assert.match(menu,/openMaterialMenuTrigger/);
+  assert.match(menu,/settings\.afterRender\)pendingMaterialMenuFocusId=id/);
+  assert.match(menu,/restorePendingMaterialMenuFocus\(\)/);
+  assert.match(render,/closeMaterialMenu\(\{restoreFocus:Boolean\(openMaterialMenuId\),afterRender:true\}\)/);
+  assert.match(render,/restorePendingMaterialMenuFocus\(\)/);
+  assert.match(menu,/event\.key==='Escape'\|\|event\.key==='Tab'/);
+  assert.match(menu,/event\.key==='ArrowDown'/);
+  assert.match(menu,/event\.key==='ArrowUp'/);
+  assert.match(menu,/event\.key==='Home'/);
+  assert.match(menu,/event\.key==='End'/);
+  assert.match(frontend,/const modalReturnFocus = new Map\(\)/);
+  assert.match(frontend,/function restoreFocusTarget\(descriptor\)/);
+});
+
+test('menu open revalidates every native navigation gesture and fails closed on a stale link', () => {
+  const source=frontend.slice(frontend.indexOf('function refreshMaterialMenuOpenTarget'),frontend.indexOf('function handleMaterialMenuKeydown'));
+  const item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',provider:'Google Drive'};
+  const state={authoritative:true,materials:[item]};
+  let currentHref='',prevented=0,removed=0,primed=0,closed=0,lastToast='';
+  const handlers=new Function('state','openMaterialMenuId','materialMenuHref','canPrepareDownload','closeMaterialMenu','primeDownloadGrant','downloadPrimeGeneration','toast','recentDrivePageIds',`${source};return {open:handleMaterialMenuOpen,intent:handleMaterialMenuOpenIntent};`)(
+    state,item.id,()=>currentHref,()=>true,()=>{closed+=1;},()=>{primed+=1;},7,(message)=>{lastToast=message;},new Set()
+  );
+  const staleTarget={removeAttribute(name){if(name==='href'){removed+=1;delete this.href;}}};
+  handlers.intent({cancelable:true,preventDefault(){prevented+=1;},currentTarget:staleTarget});
+  assert.equal(prevented,1);
+  assert.equal(removed,1);
+  assert.equal(primed,1);
+  assert.equal(closed,0,'pointer and context intent refresh without closing the native menu target');
+  handlers.open({preventDefault(){prevented+=1;},currentTarget:staleTarget});
+  assert.equal(prevented,2);
+  assert.equal(primed,2);
+  assert.equal(closed,1);
+  assert.match(lastToast,/Обновляю защищённую ссылку/);
+  currentHref='https://docs.google.com/document/d/ExampleDocument123/edit';
+  const freshTarget={href:'https://stale.example/',removeAttribute(name){if(name==='href')delete this.href;}};
+  handlers.intent({cancelable:true,preventDefault(){prevented+=1;},currentTarget:freshTarget});
+  assert.equal(freshTarget.href,currentHref);
+  handlers.open({preventDefault(){prevented+=1;},currentTarget:freshTarget});
+  assert.equal(freshTarget.href,currentHref);
+  assert.equal(prevented,2,'a newly validated target is allowed to navigate');
+  assert.match(frontend, /materialMenuOpen\.addEventListener\('pointerdown',handleMaterialMenuOpenIntent\)/);
+  assert.match(frontend, /materialMenuOpen\.addEventListener\('contextmenu',handleMaterialMenuOpenIntent\)/);
+  assert.match(frontend, /materialMenuOpen\.addEventListener\('auxclick',handleMaterialMenuOpen\)/);
+  const toggle=frontend.slice(frontend.indexOf('function toggleMaterialMenu'),frontend.indexOf('function handleMaterialMenuAction'));
+  assert.match(toggle,/open\.removeAttribute\('href'\);open\.hidden=!href/);
+});
+
+test('each column offers one Add document chooser for either a link or an upload', () => {
+  const render = frontend.slice(frontend.indexOf('function render()'), frontend.indexOf('function scheduleActionProofRefresh'));
+  assert.match(render, /SECTIONS\.forEach\(\(section\)=>/);
+  assert.match(render, /add\.dataset\.addDocument=section/);
+  assert.match(render, /add\.textContent='\+ \u0434\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442'/);
+  assert.match(frontend, /data-document-action="link"/);
+  assert.match(frontend, /data-document-action="upload"/);
+  assert.match(frontend, /if\(action==='link'\)openLinkModal\(section,returnFocus\);else if\(action==='upload'\)\{chooseFiles\(section\);restoreFocusTarget\(returnFocus\);\}/);
+  assert.doesNotMatch(render, /data\.addLink|\+ \u0434\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0441\u0441\u044b\u043b\u043a\u0443/);
 });
 
 test('primary cards create Google files and their pencils upload into the matching section', () => {
+  const primaryMarkup = frontend.slice(frontend.indexOf('function cardMarkup'), frontend.indexOf('function materialCardMarkup'));
+  const render = frontend.slice(frontend.indexOf('function render()'), frontend.indexOf('function scheduleActionProofRefresh'));
   assert.match(frontend, /data-upload-section="\$\{section\}"/);
   assert.match(frontend, /chooseFiles\(upload\.dataset\.uploadSection\)/);
+  assert.match(primaryMarkup, /class="gedit"/);
+  assert.doesNotMatch(primaryMarkup, /chevronSvg|material-menu-trigger/);
+  assert.match(render, /primary\.classList\.toggle\('busy',state\.busy\.has\(`create:\$\{section\}`\)\)/);
+  assert.match(render, /primary\.setAttribute\('aria-disabled',String\(!actionReady\)\)/);
+  assert.doesNotMatch(render, /classList\.toggle\('busy'[^\n]*!actionReady/);
   assert.match(frontend, /if\(section==='Drive'\)[\s\S]*createGoogle\(section\)/);
   assert.match(frontend, /const payload=\{taskPageId,section,idempotencyKey:operation\.value\}/);
   assert.match(frontend, /if\(bridgeRequest&&bridgeRequest\.reservationId\)payload\.reservationId=bridgeRequest\.reservationId/);
@@ -61,6 +150,7 @@ test('authoritative prepared files open directly and bind the background claim t
   assert.match(frontend, /url\.search\|\|url\.hash/);
   assert.match(frontend, /function warmPreparedCreates\(\)/);
   assert.match(frontend, /!state\.authoritative\|\|!state\.actionReady/);
+  assert.match(frontend, /Object\.keys\(state\.preparedCreates\)\.length>=3/);
   assert.match(frontend, /call\('apiWarmCreateContext',\{taskPageId\}\)/);
   assert.match(frontend, /state\.authoritative&&state\.actionReady\?Object\.values\(state\.preparedCreates\)/);
   assert.match(frontend, /issuedPreparedCreates\.get\(reservationId\)!==data\.section/);
@@ -91,16 +181,16 @@ test('owned binaries use only a server-prepared direct Drive link or the strict 
   const materialCard = frontend.slice(frontend.indexOf('function materialCard'), frontend.indexOf('async function bootstrap'));
   const gridClick = frontend.slice(frontend.indexOf('function handleGridClick'), frontend.indexOf('function handleGridKeydown'));
   assert.match(materialCard, /const directDownloadHref=freshDirectDownloadUrl\(item\),courierHref=downloadCourierHref\(item\)/);
-  assert.match(materialCard, /document\.createElement\(courierHref\|\|directHref\?'a':'article'\)/);
-  assert.match(materialCard, /card\.href=courierHref;card\.target='_blank';card\.rel='noopener noreferrer';card\.referrerPolicy='no-referrer'/);
-  assert.match(materialCard, /if\(directDownloadHref\)card\.dataset\.downloadDirect='true';else card\.dataset\.downloadCourier='true'/);
+  assert.match(materialCard, /main=document\.createElement\(href\?'a':'button'\)/);
+  assert.match(materialCard, /main\.href=href;main\.target='_blank';main\.rel='noopener noreferrer';main\.referrerPolicy='no-referrer'/);
+  assert.match(materialCard, /if\(directDownloadHref\)main\.dataset\.downloadDirect='true';else main\.dataset\.downloadCourier='true'/);
   assert.match(materialCard, /const action=canPrepareDownload\(item\)\?'\u0421\u043a\u0430\u0447\u0430\u0442\u044c'/);
-  assert.match(gridClick, /itemCard\.dataset\.downloadDirect==='true'[\s\S]*freshDirectDownloadUrl\(item\)/);
-  assert.match(gridClick, /if\(!item\|\|!freshHref\)[\s\S]*downloadCourierHref\(item\)[\s\S]*delete itemCard\.dataset\.downloadDirect/);
-  assert.match(gridClick, /if\(!fallbackHref\)\{itemCard\.removeAttribute\('href'\)[\s\S]*delete itemCard\.dataset\.downloadDirect[\s\S]*delete itemCard\.dataset\.downloadCourier/);
-  assert.match(gridClick, /itemCard\.dataset\.directOpen==='true'\)recentDrivePageIds\.add/);
-  assert.ok(gridClick.indexOf("const edit=event.target.closest('[data-edit-id]')") < gridClick.indexOf("const itemCard=event.target.closest('[data-item-id]')"));
-  assert.match(gridClick, /if\(edit\)\{event\.preventDefault\(\);event\.stopPropagation\(\);openEdit/);
+  assert.match(gridClick, /itemOpen\.dataset\.downloadDirect==='true'[\s\S]*freshDirectDownloadUrl\(item\)/);
+  assert.match(gridClick, /if\(!item\|\|!freshHref\)[\s\S]*downloadCourierHref\(item\)[\s\S]*delete itemOpen\.dataset\.downloadDirect/);
+  assert.match(gridClick, /if\(!fallbackHref\)\{itemOpen\.removeAttribute\('href'\)[\s\S]*delete itemOpen\.dataset\.downloadDirect[\s\S]*delete itemOpen\.dataset\.downloadCourier/);
+  assert.match(gridClick, /itemOpen\.dataset\.directOpen==='true'&&item\)recentDrivePageIds\.add/);
+  assert.ok(gridClick.indexOf("const menuTrigger=event.target.closest('[data-material-menu-id]')") < gridClick.indexOf("const itemOpen=event.target.closest('[data-item-open]')"));
+  assert.match(gridClick, /if\(menuTrigger\)\{event\.preventDefault\(\);event\.stopPropagation\(\);toggleMaterialMenu/);
   assert.doesNotMatch(frontend, /function directHostedDownload\(item\)|#v2=/);
 });
 
@@ -278,7 +368,8 @@ test('an expired direct link is removed when no protected fallback can be built'
   const source=frontend.slice(frontend.indexOf('function refreshDownloadGrantLink'),frontend.indexOf('function primeDownloadGrant'));
   const item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'};
   const classes=new Set(['download-ready']);
-  const card={tagName:'A',href:'https://drive.google.com/uc?export=download&authuser=owner%40example.com&id=DRIVEFILE123',dataset:{downloadDirect:'true'},classList:{remove(value){classes.delete(value);},add(value){classes.add(value);}},removeAttribute(name){if(name==='href')delete this.href;}};
+  const main={tagName:'A',href:'https://drive.google.com/uc?export=download&authuser=owner%40example.com&id=DRIVEFILE123',dataset:{downloadDirect:'true'},removeAttribute(name){if(name==='href')delete this.href;}};
+  const card={querySelector(){return main;},classList:{remove(value){classes.delete(value);},add(value){classes.add(value);}}};
   const refresh=new Function('state','document','freshDirectDownloadUrl','downloadCourierHref',`${source};return refreshDownloadGrantLink;`)(
     {materials:[item]},
     {querySelector(){return card;}},
@@ -286,9 +377,9 @@ test('an expired direct link is removed when no protected fallback can be built'
     ()=>''
   );
   refresh(item.id);
-  assert.equal('href' in card,false);
-  assert.equal(card.dataset.downloadDirect,undefined);
-  assert.equal(card.dataset.downloadCourier,undefined);
+  assert.equal('href' in main,false);
+  assert.equal(main.dataset.downloadDirect,undefined);
+  assert.equal(main.dataset.downloadCourier,undefined);
   assert.equal(classes.has('download-ready'),false);
 });
 

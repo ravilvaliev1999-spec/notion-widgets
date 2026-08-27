@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -11,13 +12,55 @@ const frontend = fs.readFileSync(path.join(here, '..', 'Index.html'), 'utf8');
 const wrapper = fs.readFileSync(path.join(root, 'apps-script-embed.html'), 'utf8');
 const wrapperJs = fs.readFileSync(path.join(root, 'apps-script-embed.js'), 'utf8');
 const createCourier = fs.readFileSync(path.join(root, 'create-courier.html'), 'utf8');
+const earlyBootstrap = wrapper.match(/<script id="earlyWidgetBootstrap">([\s\S]*?)<\/script>/)?.[1] || '';
 
 test('public wrapper isolates Apps Script from multi-login cookies', () => {
   assert.match(wrapper, /<iframe[^>]+id="widget"[^>]+credentialless|<iframe[^>]+credentialless[^>]+id="widget"/);
+  assert.match(wrapper, /<iframe[^>]+loading="eager"[^>]+fetchpriority="high"/);
   assert.match(wrapper, /referrerpolicy="no-referrer"/);
-  assert.match(wrapper, /script src="apps-script-embed\.js\?v=44"/);
+  assert.match(wrapper, /script src="apps-script-embed\.js\?v=45"/);
   assert.match(wrapper, /class="skeleton"/);
   assert.match(wrapper, /body\.widget-ready iframe\{opacity:1\}/);
+  assert.match(wrapper, /\.widget-action-ready \.skeleton\{opacity:0;visibility:hidden\}/);
+  assert.match(wrapper, /class="skeleton-pencil"/);
+  assert.doesNotMatch(wrapper, /class="[^"]*chevron/);
+});
+
+test('wrapper starts the credentialless Apps Script frame before its deferred runtime arrives', () => {
+  assert.ok(earlyBootstrap);
+  assert.ok(wrapper.indexOf('id="earlyWidgetBootstrap"') < wrapper.indexOf('src="apps-script-embed.js?v=45"'));
+  const hash = crypto.createHash('sha256').update(earlyBootstrap).digest('base64');
+  assert.match(wrapper, new RegExp(`script-src 'self' 'sha256-${hash.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
+
+  const widget = { src: '' };
+  const bytes = Uint8Array.from({ length: 16 }, (_value, index) => index + 1);
+  const earlyListeners = {};
+  const windowObject = { addEventListener(type, listener) { earlyListeners[type] = listener; } };
+  vm.runInNewContext(earlyBootstrap, {
+    window: windowObject,
+    document: { getElementById(id) { return id === 'widget' ? widget : null; } },
+    location: { hash: `#task=3c62d627-39a1-80a1-aac7-ec19ffc9ef8e&accessToken=${'a'.repeat(64)}&release=test` },
+    crypto: { getRandomValues(target) { target.set(bytes); return target; } },
+    URL, URLSearchParams, Uint8Array, Array, String
+  });
+  const earlyUrl = new URL(widget.src);
+  assert.equal(earlyUrl.origin, 'https://script.google.com');
+  assert.deepEqual(Array.from(earlyUrl.searchParams.keys()).sort(), ['accessToken', 'embedNonce', 'release', 'task']);
+  assert.equal(earlyUrl.searchParams.get('embedNonce'), windowObject.__notionWidgetEarlyBridge.nonce);
+  assert.match(windowObject.__notionWidgetEarlyBridge.nonce, /^[0-9a-f]{32}$/);
+  earlyListeners.message({origin:'https://evil.example',data:{embedNonce:windowObject.__notionWidgetEarlyBridge.nonce}});
+  earlyListeners.message({origin:'https://script.googleusercontent.com',data:{embedNonce:windowObject.__notionWidgetEarlyBridge.nonce}});
+  assert.equal(windowObject.__notionWidgetEarlyBridge.events.length, 1, 'only the authenticated early Google message is buffered');
+
+  const rejectedWidget = { src: '' };
+  vm.runInNewContext(earlyBootstrap, {
+    window: { addEventListener() {} },
+    document: { getElementById() { return rejectedWidget; } },
+    location: { hash: '#task=invalid&accessToken=invalid' },
+    crypto: { getRandomValues() { throw new Error('invalid parameters must stop before entropy is requested'); } },
+    URL, URLSearchParams, Uint8Array, Array, String
+  });
+  assert.equal(rejectedWidget.src, '');
 });
 
 test('wrapper forwards only validated task runtime parameters', () => {
@@ -27,12 +70,18 @@ test('wrapper forwards only validated task runtime parameters', () => {
   assert.match(wrapperJs, /\^\[0-9a-f\]\{8\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{12\}\$/);
   assert.match(wrapperJs, /\^\[A-Za-z0-9\._~-\]\{32,256\}\$/);
   assert.match(wrapperJs, /new URLSearchParams\(\{ task, accessToken, embedNonce \}\)/);
+  assert.match(wrapperJs, /const embedNonce = earlyEmbedNonce \|\| randomId\(\)\.replace\(\/-\/g, ''\)/);
+  assert.match(wrapperJs, /earlyBridgeEvents = Array\.isArray\(early\.events\) \? early\.events : \[\]/);
+  assert.doesNotMatch(wrapperJs, /early\.events\.slice/);
+  assert.match(wrapperJs, /if \(widget\.src !== widgetUrl\) widget\.src = widgetUrl/);
   assert.doesNotMatch(wrapperJs, /localStorage|sessionStorage|document\.cookie/);
 });
 
 test('wrapper binds one authenticated child channel without relaying local file contents', () => {
   assert.match(wrapperJs, /type === 'notion-widget-v20-bridge-ready'/);
   assert.match(wrapperJs, /bridge = \{ source: event\.source, origin: event\.origin, instanceId: data\.instanceId, authoritative: data\.authoritative === true, actionReady: data\.actionReady === true, folderUrl: allowedDriveFolderUrl\(data\.folderUrl\), preparedCreates:/);
+  assert.match(wrapperJs, /if \(bridge\.authoritative && bridge\.actionReady\) document\.body\.classList\.add\('widget-action-ready'\)/);
+  assert.doesNotMatch(wrapperJs, /classList\.toggle\('widget-action-ready'/);
   assert.match(wrapperJs, /data\.authoritative === true && data\.actionReady === true \? preparedCreateMap\(data\.preparedCreates\) : \{\}/);
   assert.match(wrapperJs, /bridge\.source\.postMessage\(Object\.assign\(\{\}, message, \{ embedNonce \}\), bridge\.origin\)/);
   assert.doesNotMatch(wrapperJs, /postMessage\([^\n]+, '\*'\)/);
@@ -127,6 +176,7 @@ test('wrapper runtime exposes validated native create links without opening a po
   const fatal = new FakeElement();
   fatal.hidden = true;
   const events = [];
+  const bodyClasses = new Set();
   const bridgeSource = { length: 0, frames: [], postMessage(message, origin) { events.push(['post', message, origin]); } };
   widget.contentWindow = { length: 1, frames: [bridgeSource] };
   const windowListeners = {};
@@ -145,7 +195,11 @@ test('wrapper runtime exposes validated native create links without opening a po
     document: {
       visibilityState: 'visible',
       addEventListener() {},
-      body: { classList: { add(value) { events.push(['class',value]); } } },
+      body: { classList: {
+        add(value) { bodyClasses.add(value);events.push(['class',value]); },
+        toggle(value, force) { if(force){bodyClasses.add(value);events.push(['class',value]);return true;}bodyClasses.delete(value);return false; },
+        contains(value) { return bodyClasses.has(value); }
+      } },
       getElementById(id) { return { widget, interactionGrid, fatal }[id]; },
       createElement(tagName) { const element=new FakeElement();element.tagName=String(tagName).toUpperCase();return element; }
     },
@@ -182,6 +236,26 @@ test('wrapper runtime exposes validated native create links without opening a po
       type: 'notion-widget-v20-bridge-ready',
       embedNonce,
       instanceId: '33333333-3333-4333-8333-333333333333',
+      authoritative: false,
+      actionReady: false,
+      folderUrl: 'https://drive.google.com/drive/folders/TaskFolder12345',
+      preparedCreates: [{section:'Docs',reservationId:preparedDocsId,openUrl:preparedDocsUrl}],
+      viewport: {width:868,height:523},
+      geometry: ['Drive', 'Docs', 'Sheets', 'Slides'].map((section, index) => ({
+        section,left:index*220,top:0,width:208,height:70,pencil:{left:index*220+180,top:7,width:22,height:22}
+      }))
+    }
+  });
+  assert.equal(bodyClasses.has('widget-ready'), true, 'cached content may render immediately');
+  assert.equal(bodyClasses.has('widget-action-ready'), false, 'the full-color safe shell must cover disabled primary cards');
+  assert.equal(slots.find((slot)=>slot.dataset.slot==='Docs').children[0].href, undefined, 'cached bootstrap must not enable creation');
+  windowListeners.message({
+    source: bridgeSource,
+    origin,
+    data: {
+      type: 'notion-widget-v20-bridge-ready',
+      embedNonce,
+      instanceId: '33333333-3333-4333-8333-333333333333',
       authoritative: true,
       actionReady: true,
       folderUrl: 'https://drive.google.com/drive/folders/TaskFolder12345',
@@ -199,6 +273,7 @@ test('wrapper runtime exposes validated native create links without opening a po
   });
   assert.equal(interactionGrid.hidden, false);
   assert.ok(events.some((entry)=>entry[0]==='class'&&entry[1]==='widget-ready'));
+  assert.equal(bodyClasses.has('widget-action-ready'), true, 'authoritative action readiness reveals live primary cards');
   const geometryRequest=events.find((entry)=>entry[0]==='post'&&entry[1].type==='notion-widget-v20-primary-geometry-request');
   assert.equal(geometryRequest[1].requestId,1);
   windowListeners.message({source:bridgeSource,origin,data:{type:'notion-widget-v20-primary-geometry',embedNonce,requestId:1,viewport:{width:868,height:523},geometry:['Drive','Docs','Sheets','Slides'].map((section,index)=>({section,left:index*220,top:-105,width:208,height:70,pencil:{left:index*220+180,top:-98,width:22,height:22}}))}});

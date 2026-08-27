@@ -113,6 +113,7 @@ test('fast packages remain limited to genuinely expiring hosted URLs and are iss
   const ttl=Number((backend.match(/W20_FAST_DOWNLOAD_PACKAGE_TTL_SECONDS\s*=\s*(\d+)/)||[])[1]);
   assert.ok(ttl>0&&ttl<=60);
   assert.ok(prepare.indexOf('w20GetCachedDownloadMaterial_')<prepare.indexOf('w19AssertOwnedBinary_'));
+  assert.ok(prepare.indexOf('w20FastPreparedDownloadDrive_')<prepare.indexOf('w19AssertOwnedBinary_'));
   assert.ok(prepare.indexOf('w19AssertMaterialForTask_')<prepare.indexOf('w19AssertOwnedBinary_'));
   assert.ok(prepare.indexOf('w19AssertOwnedBinary_')<prepare.indexOf('w20DriveDownloadUrl_'));
   assert.ok(prepare.indexOf('w20DriveDownloadUrl_')<prepare.indexOf('w20IssueDownloadGrant_'));
@@ -203,17 +204,40 @@ test('download cache hit avoids Notion after capability authorization and always
   assert.match(body, /var task = \{ id: taskId, name: 'Задача' \}/);
 });
 
-test('direct Drive preparation is server-gated by a short cache or live Notion plus current Drive ownership', () => {
+test('direct Drive preparation uses only an exact fresh registry proof or the full current ownership fallback', () => {
   const backend = text('Code.gs');
   const body = backend.slice(backend.indexOf('function apiPrepareDownload'), backend.indexOf('function apiDownload'));
+  const fast = backend.slice(backend.indexOf('function w20FastPreparedDownloadDrive_'), backend.indexOf('function w20DownloadGrantEpochKey_'));
   assert.match(body, /w19AuthorizedConfig_\(input\)/);
   assert.match(body, /taskId !== cfg\.authorizedTaskPageId/);
-  assert.match(body, /w20GetCachedDownloadMaterial_\(taskId, materialId, cfg\)/);
+  assert.match(body, /var cachedMaterial = w20GetCachedDownloadMaterial_\(taskId, materialId, cfg\)/);
   assert.match(body, /if \(!material\)[\s\S]*w19AssertMaterialForTask_\(materialId, taskId, cfg\)/);
-  assert.match(body, /w19AssertOwnedBinary_\(material, task, cfg\)/);
+  assert.match(body, /cachedMaterial \? w20FastPreparedDownloadDrive_\(taskId, materialId, cachedMaterial, cfg\) : null/);
+  assert.match(body, /if \(!drive\) drive = w19AssertOwnedBinary_\(material, task, cfg\)/);
   assert.match(body, /w20DriveDownloadUrl_\(drive\.id, cfg\.allowedEmail\)/);
   assert.match(body, /w20IssueDownloadGrant_\(taskId, materialId, direct, cfg, grantEpoch\)/);
   assert.doesNotMatch(body, /UrlFetchApp|attachmentUrl|attachmentExpiry|Utilities\.base64Encode|DriveApp\.getFileById/);
+
+  assert.match(fast, /w20RegistryReadTaskMeta_\(task\)/);
+  assert.match(fast, /w20RegistryReadTaskResult_\(task, null\)/);
+  assert.match(fast, /w20RegistryActionProof_\(meta, registry, cfg\.rootFolderId\)/);
+  assert.match(fast, /registry\.activeCount !== registryMaterials\.length/);
+  assert.match(fast, /registry\.activeCount !== meta\.snapshotActiveCount/);
+  assert.match(fast, /meta\.folderId !== folderId/);
+  assert.match(fast, /exactCount !== 1/);
+  assert.match(fast, /exact\.widgetOwnedBinary !== true/);
+  assert.match(fast, /exact\.googleFileId !== fileId/);
+  assert.match(fast, /exact\.folderId !== folderId/);
+  assert.match(fast, /w19GetDriveMetadata_\(fileId\)/);
+  assert.match(fast, /drive\.id !== fileId/);
+  assert.match(fast, /drive\.ownedByMe !== true/);
+  assert.match(fast, /materialState !== 'active'/);
+  assert.match(fast, /driveProps\.taskPageId !== compactTask/);
+  assert.match(fast, /compactUuid\(driveProps\.notionPageId\) !== compactPage/);
+  assert.match(fast, /driveParents\.length !== 1 \|\| driveParents\[0\] !== folderId/);
+  assert.match(fast, /application\\\/vnd\\\.google-apps/);
+  assert.match(fast, /size > maxSize/);
+  assert.doesNotMatch(fast, /w19AssertRootFolder_|w19AssertTaskPage_|w19AssertMaterialForTask_|Drive\.Files\.list|w19NotionRequest_/);
 });
 
 test('bootstrap and sync seed the download cache while archive, update and delete invalidate it', () => {
@@ -226,11 +250,56 @@ test('bootstrap and sync seed the download cache while archive, update and delet
   const archive = backend.slice(backend.indexOf('function w19SetArchiveState_'), backend.indexOf('function w19Audit_'));
   assert.match(bootstrap, /w20CacheDownloadMaterials_\(task\.id, pages, cfg\)/);
   assert.match(sync, /w20CacheDownloadMaterials_\(task\.id, pages, cfg\)/);
-  assert.match(upload, /w20CacheDownloadMaterials_\(task\.id, \[pageForDownloadCache\], cfg\)/);
+  assert.match(upload, /w20CacheDownloadMaterials_\(taskId, \[pageForDownloadCache\], cfg\)/);
   assert.doesNotMatch(upload, /w19AssertMaterialForTask_\(outcome\.material\.id/);
   assert.match(update, /w20InvalidateDownloadMaterialCache_\(task\.id, materialId\)/);
   assert.match(remove, /w20InvalidateDownloadMaterialCache_\(task\.id, materialId\)/);
   assert.match(archive, /w20InvalidateDownloadMaterialCache_\(task\.id, materialId\)/);
+});
+
+test('binary upload hot path uses only fresh server registry context and recovery keeps the full durable lookup', () => {
+  const backend = text('Code.gs');
+  const upload = backend.slice(backend.indexOf('function apiUpload'), backend.indexOf('function apiUpdateMaterial'));
+  const schema = upload.indexOf('w19AssertSchema_(cfg);');
+  const taskId = upload.indexOf('w20AssertAuthorizedTaskId_(input && input.taskPageId, cfg)');
+  const idempotency = upload.indexOf('w19WithIdempotency_(idem, function (idempotencyState)');
+  const claim = upload.indexOf('w20RegistryClaimCreateSlot_(taskId, section, cfg.rootFolderId)');
+  const fallbackTask = upload.indexOf('w19AssertTaskPage_(taskId, cfg)');
+
+  assert.ok(schema !== -1 && schema < taskId && taskId < idempotency && idempotency < claim);
+  assert.match(upload, /recoveringAttempt\s*=\s*Boolean\(idempotencyState && idempotencyState\.recovery\)/);
+  assert.match(upload, /freshAttempt\s*=\s*!recoveringAttempt/);
+  assert.match(upload, /freshAttempt \? w20RegistryClaimCreateSlot_\(taskId, section, cfg\.rootFolderId\) : null/);
+  assert.ok(claim < fallbackTask, 'live task GET must exist only behind the registry fallback');
+  assert.match(upload, /task = w20TaskFromRegistryMeta_\(taskId, slot\.taskMeta\)/);
+  assert.match(upload, /folder = \{ id: slotFolderId \}/);
+  assert.match(upload, /position = slotPosition/);
+  assert.match(upload, /if \(!slot\.taskMeta \|\| !slotFolderId \|\| !isFinite\(slotPosition\)/);
+  assert.match(upload, /if \(recoveringAttempt\) \{\s*var existing = w19FindMaterialByIdempotency_\(task\.id, idem, cfg\)/);
+  assert.match(upload, /w19EnsureTaskFolder_\(task, cfg\)/);
+  assert.match(upload, /if \(recoveringAttempt\) \{\s*driveFile = w19FindDriveByIdempotency_\(task\.id, idemHash\)/);
+  assert.match(upload, /if \(position === undefined\) position = w19NextPosition_\(task\.id, section, cfg\)/);
+  assert.doesNotMatch(upload, /input\s*&&\s*input\.(?:folderId|position)|input\.(?:folderId|position)/);
+  assert.match(upload, /w19EffectiveUploadLimit_\(cfg\)/);
+  assert.match(upload, /w19CreateAndSendNotionUpload_\(bytes/);
+  assert.match(upload, /type:\s*'file_upload'/);
+  assert.match(upload, /w19MarkDriveNotionPage_\(driveFile, task\.id, idemHash, page\.id, 'active'\)/);
+  assert.match(upload, /w20MaterialForClient_\(outcome\.material, taskId, cfg\)/);
+});
+
+test('workspace upload limit discovery remains isolated from bootstrap and task sync', () => {
+  const backend = text('Code.gs');
+  const bootstrap = backend.slice(backend.indexOf('function apiBootstrap'), backend.indexOf('function apiCreateGoogle'));
+  const upload = backend.slice(backend.indexOf('function apiUpload'), backend.indexOf('function apiUpdateMaterial'));
+  const sync = backend.slice(backend.indexOf('function apiSyncTask'), backend.indexOf('/* ========================= Admin-only setup'));
+  const limit = backend.slice(backend.indexOf('function w19EffectiveUploadLimit_'), backend.indexOf('function w19AssertTaskPage_'));
+
+  assert.doesNotMatch(bootstrap, /w19EffectiveUploadLimit_|\/v1\/users\/me/);
+  assert.doesNotMatch(sync, /w19EffectiveUploadLimit_|\/v1\/users\/me/);
+  assert.match(upload, /w19EffectiveUploadLimit_\(cfg\)/);
+  assert.match(limit, /w19NotionRequest_\('get', '\/v1\/users\/me', null, cfg\)/);
+  assert.match(limit, /cache\.get\(cacheKey\)/);
+  assert.match(limit, /cache\.put\(cacheKey, String\(effective\), 600\)/);
 });
 
 test('archiving revokes stale download couriers through the private Drive marker', () => {

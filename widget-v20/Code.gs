@@ -766,11 +766,17 @@ function w20EnsurePreparedCreate_(taskId, section, cfg) {
 }
 
 function w20WarmCreatePool_(taskId, cfg) {
-  var prepared = [];
+  var prepared = w20PreparedCreatePoolSnapshot_(taskId);
+  var present = {};
+  prepared.forEach(function (item) { present[item.section] = true; });
   ['Docs', 'Sheets', 'Slides'].forEach(function (section) {
+    if (present[section]) return;
     try {
       var item = w20EnsurePreparedCreate_(taskId, section, cfg);
-      if (item) prepared.push(item);
+      if (item) {
+        prepared.push(item);
+        present[section] = true;
+      }
     } catch (err) {
       w19Audit_('create_reservation_prepare_deferred', { section: section, code: String(err && err.code || 'DRIVE_ERROR') });
     }
@@ -1378,7 +1384,7 @@ function apiUpload(input) {
   return w19ApiResult_(function () {
     var cfg = w19AuthorizedConfig_(input);
     w19AssertSchema_(cfg);
-    var task = w19AssertTaskPage_(input && input.taskPageId, cfg);
+    var taskId = w20AssertAuthorizedTaskId_(input && input.taskPageId, cfg);
     var maxUploadBytes = w19EffectiveUploadLimit_(cfg);
     var name = WidgetV19Core.cleanName(input && input.name, 'Файл');
     var mime = WidgetV19Core.cleanMime(input && input.mimeType);
@@ -1390,41 +1396,66 @@ function apiUpload(input) {
     if (bytes.length > maxUploadBytes) throw new W19Error_('FILE_TOO_LARGE', 'Размер файла превышает лимит ' + w19HumanBytes_(maxUploadBytes) + '.', false);
     var detected = WidgetV19Core.classify({ name: name, mimeType: mime });
     var section = input && input.section ? WidgetV19Core.assertSection(input.section) : detected.section;
-    var idem = w19CanonicalIdempotency_(task.id, 'upload', input && input.idempotencyKey);
+    var idem = w19CanonicalIdempotency_(taskId, 'upload', input && input.idempotencyKey);
     var pageForDownloadCache = null;
     var runtimeDriveMetadata = null;
-    var outcome = w19WithIdempotency_(idem, function () {
+    var outcome = w19WithIdempotency_(idem, function (idempotencyState) {
       return w19WithMutationLock_(function () {
         var idemHash = w19Hash_(idem).slice(0, 40);
-        var existing = w19FindMaterialByIdempotency_(task.id, idem, cfg);
-        if (existing) {
-          pageForDownloadCache = existing;
-          var existingMaterial = w19MaterialFromPage_(existing);
-          if (existingMaterial.googleFileId && existingMaterial.widgetOwned) {
-            var existingDrive = w19GetDriveMetadata_(existingMaterial.googleFileId);
-            if (existingDrive) {
-              runtimeDriveMetadata = existingDrive;
-              w19MarkDriveNotionPage_(existingDrive, task.id, idemHash, existing.id, w20DriveStateForMaterial_(existingMaterial));
+        var recoveringAttempt = Boolean(idempotencyState && idempotencyState.recovery);
+        var freshAttempt = !recoveringAttempt;
+        var slot = freshAttempt ? w20RegistryClaimCreateSlot_(taskId, section, cfg.rootFolderId) : null;
+        var task;
+        var folder;
+        var position;
+        var driveFile = null;
+
+        if (slot) {
+          var slotFolderId = w20SafeDriveId_(slot.taskMeta && slot.taskMeta.folderId);
+          var slotPosition = Number(slot.position);
+          if (!slot.taskMeta || !slotFolderId || !isFinite(slotPosition) || slotPosition < 0 || Math.floor(slotPosition) !== slotPosition) {
+            throw new W19Error_('UPLOAD_CONTEXT_STALE', 'Контекст загрузки требует обновления.', true);
+          }
+          task = w20TaskFromRegistryMeta_(taskId, slot.taskMeta);
+          folder = { id: slotFolderId };
+          position = slotPosition;
+        } else {
+          task = w19AssertTaskPage_(taskId, cfg);
+          if (recoveringAttempt) {
+            var existing = w19FindMaterialByIdempotency_(task.id, idem, cfg);
+            if (existing) {
+              pageForDownloadCache = existing;
+              var existingMaterial = w19MaterialFromPage_(existing);
+              if (existingMaterial.googleFileId && existingMaterial.widgetOwned) {
+                var existingDrive = w19GetDriveMetadata_(existingMaterial.googleFileId);
+                if (existingDrive) {
+                  runtimeDriveMetadata = existingDrive;
+                  w19MarkDriveNotionPage_(existingDrive, task.id, idemHash, existing.id, w20DriveStateForMaterial_(existingMaterial));
+                }
+              }
+              return { material: existingMaterial, duplicate: true };
             }
           }
-          return { material: existingMaterial, duplicate: true };
-        }
 
-        var folder = w19EnsureTaskFolder_(task, cfg);
-        var driveFile = w19FindDriveByIdempotency_(task.id, idemHash);
-        var driveWasExisting = Boolean(driveFile);
-        if (!driveFile) driveFile = w19CreateBinaryFile_(task, folder.id, name, mime, bytes, idemHash);
-        runtimeDriveMetadata = driveFile;
-
-        if (driveWasExisting) {
-          var byFile = w19FindMaterialByGoogleFile_(task.id, driveFile.id, cfg);
-          if (byFile) {
-            pageForDownloadCache = byFile;
-            var byFileMaterial = w19MaterialFromPage_(byFile);
-            w19MarkDriveNotionPage_(driveFile, task.id, idemHash, byFile.id, w20DriveStateForMaterial_(byFileMaterial));
-            return { material: byFileMaterial, duplicate: true };
+          folder = w19EnsureTaskFolder_(task, cfg);
+          if (recoveringAttempt) {
+            driveFile = w19FindDriveByIdempotency_(task.id, idemHash);
+          }
+          if (driveFile) {
+            var byFile = w19FindMaterialByGoogleFile_(task.id, driveFile.id, cfg);
+            if (byFile) {
+              pageForDownloadCache = byFile;
+              var byFileMaterial = w19MaterialFromPage_(byFile);
+              runtimeDriveMetadata = driveFile;
+              w19MarkDriveNotionPage_(driveFile, task.id, idemHash, byFile.id, w20DriveStateForMaterial_(byFileMaterial));
+              return { material: byFileMaterial, duplicate: true };
+            }
           }
         }
+
+        if (!driveFile) driveFile = w19CreateBinaryFile_(task, folder.id, name, mime, bytes, idemHash);
+        runtimeDriveMetadata = driveFile;
+        if (position === undefined) position = w19NextPosition_(task.id, section, cfg);
         var openUrl = driveFile.webViewLink || WidgetV19Core.makeDriveOpenUrl(driveFile.id, detected.format);
         var notionUpload = w19CreateAndSendNotionUpload_(bytes, driveFile.mimeType || mime, driveFile.name || name, cfg);
         var page = w19CreateNotionMaterial_(task, {
@@ -1446,7 +1477,7 @@ function apiUpload(input) {
             type: 'file_upload',
             file_upload: { id: notionUpload.id }
           }],
-          position: w19NextPosition_(task.id, section, cfg),
+          position: position,
           idempotency: idem
         }, cfg);
         pageForDownloadCache = page;
@@ -1456,9 +1487,9 @@ function apiUpload(input) {
     });
     if (outcome && outcome.material && outcome.material.id) {
       outcome.material = w20MaterialWithRuntimeMetadata_(outcome.material, runtimeDriveMetadata);
-      outcome.material = w20MaterialForClient_(outcome.material, task.id, cfg);
-      if (pageForDownloadCache) w20CacheDownloadMaterials_(task.id, [pageForDownloadCache], cfg);
-      w20RegistryUpsert_(task.id, outcome.material);
+      outcome.material = w20MaterialForClient_(outcome.material, taskId, cfg);
+      if (pageForDownloadCache) w20CacheDownloadMaterials_(taskId, [pageForDownloadCache], cfg);
+      w20RegistryUpsert_(taskId, outcome.material);
     }
     return outcome;
   });
@@ -1639,14 +1670,16 @@ function apiPrepareDownload(input) {
     var grantEpoch = w20DownloadGrantEpoch_(taskId, materialId);
     if (grantEpoch === null) throw new W19Error_('BUSY', 'Не удалось проверить состояние скачивания. Повторите через несколько секунд.', true);
     var page = null;
-    var material = w20GetCachedDownloadMaterial_(taskId, materialId, cfg);
+    var cachedMaterial = w20GetCachedDownloadMaterial_(taskId, materialId, cfg);
+    var material = cachedMaterial;
     if (!material) {
       page = w19AssertMaterialForTask_(materialId, taskId, cfg);
       material = w19MaterialFromPage_(page);
       w20CacheDownloadMaterials_(taskId, [page], cfg);
     }
     var task = { id: taskId, name: 'Задача' };
-    var drive = w19AssertOwnedBinary_(material, task, cfg);
+    var drive = cachedMaterial ? w20FastPreparedDownloadDrive_(taskId, materialId, cachedMaterial, cfg) : null;
+    if (!drive) drive = w19AssertOwnedBinary_(material, task, cfg);
     var directUrl = w20DriveDownloadUrl_(drive.id, cfg.allowedEmail);
     if (!directUrl) return { mode: 'proxy', proxyReason: 'metadata' };
     var direct = {
@@ -1923,6 +1956,8 @@ function scheduledSync(event) {
     nextCursor = result.has_more && result.next_cursor ? result.next_cursor : null;
     commitCursor = true;
     w19PruneLedger_();
+    try { w20WarmCreatePool_(cfg.authorizedTaskPageId, cfg); }
+    catch (warmError) { w19Audit_('create_reservation_background_deferred', { code: String(warmError && warmError.code || 'DRIVE_ERROR') }); }
     w19Audit_('scheduled_sync', { checked: (result.results || []).length, ok: ok, errors: errors });
     return { ok: true, checked: (result.results || []).length, synced: ok, errors: errors };
   } finally {
@@ -2642,6 +2677,52 @@ function w20GetCachedDownloadMaterial_(taskId, pageId, cfg) {
     googleFileId: entry.googleFileId,
     folderId: entry.folderId
   };
+}
+
+function w20FastPreparedDownloadDrive_(taskId, pageId, material, cfg) {
+  var task = WidgetV19Core.normalizeUuid(taskId);
+  var page = WidgetV19Core.normalizeUuid(pageId);
+  var compactTask = WidgetV19Core.compactUuid(task);
+  var compactPage = WidgetV19Core.compactUuid(page);
+  var fileId = w20SafeDriveId_(material && material.googleFileId);
+  var folderId = w20SafeDriveId_(material && material.folderId);
+  if (!task || !page || !compactTask || !compactPage || !material ||
+      WidgetV19Core.normalizeUuid(material.id) !== page || material.provider !== 'Google Drive' ||
+      !fileId || fileId !== material.googleFileId || !folderId || folderId !== material.folderId ||
+      (cfg.deniedPageIds && cfg.deniedPageIds[page])) return null;
+
+  var meta = w20RegistryReadTaskMeta_(task);
+  var registry = w20RegistryReadTaskResult_(task, null);
+  var proof = w20RegistryActionProof_(meta, registry, cfg.rootFolderId);
+  var registryMaterials = registry && Array.isArray(registry.materials) ? registry.materials : [];
+  if (!proof.ready || !meta || meta.folderId !== folderId ||
+      registry.activeCount !== registryMaterials.length || registry.activeCount !== meta.snapshotActiveCount) return null;
+
+  var exact = null;
+  var exactCount = 0;
+  registryMaterials.forEach(function (candidate) {
+    if (WidgetV19Core.normalizeUuid(candidate && candidate.id) !== page) return;
+    exact = candidate;
+    exactCount += 1;
+  });
+  if (exactCount !== 1 || !exact || exact.widgetOwnedBinary !== true || exact.provider !== 'Google Drive' ||
+      exact.archived || exact.googleFileId !== fileId || exact.folderId !== folderId) return null;
+
+  var drive = w19GetDriveMetadata_(fileId);
+  var driveProps = drive && drive.appProperties || {};
+  var driveParents = drive && Array.isArray(drive.parents) ? drive.parents : [];
+  var markerOk = driveProps.widgetVersion === W20_DRIVE_MARKER || driveProps.widgetVersion === 'v19';
+  var materialState = String(driveProps.materialState || '').trim().toLowerCase();
+  var rawSize = drive && drive.size !== null && drive.size !== undefined ? String(drive.size).trim() : '';
+  var size = Number(rawSize);
+  var maxSize = Number(cfg.maxUploadBytes);
+  if (!drive || drive.id !== fileId || drive.ownedByMe !== true || drive.trashed || !markerOk ||
+      materialState !== 'active' || driveProps.taskPageId !== compactTask ||
+      WidgetV19Core.compactUuid(driveProps.notionPageId) !== compactPage ||
+      driveParents.length !== 1 || driveParents[0] !== folderId ||
+      /^application\/vnd\.google-apps\./.test(String(drive.mimeType || '')) ||
+      !/^\d+$/.test(rawSize) || !isFinite(size) || size < 0 || !isFinite(maxSize) || maxSize < 0 || size > maxSize) return null;
+  return drive;
 }
 
 function w20DownloadGrantEpochKey_(taskId, pageId) {
