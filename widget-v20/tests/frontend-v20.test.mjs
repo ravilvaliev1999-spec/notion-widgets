@@ -50,6 +50,7 @@ test('every material is rendered as a full-size clone of its service card', () =
 test('saved-card chevrons own edit/open/hide actions and no saved-card pencil remains', () => {
   const cardMarkup = frontend.slice(frontend.indexOf('function materialCardMarkup'), frontend.indexOf('function escapeHtml'));
   const materialCard = frontend.slice(frontend.indexOf('function materialCard(item,count)'), frontend.indexOf('function downloadMaterialFingerprint'));
+  const optimistic = frontend.slice(frontend.indexOf('function beginOptimisticMaterialMutation'), frontend.indexOf('async function saveEdit'));
   const archive = frontend.slice(frontend.indexOf('async function archiveMaterial'), frontend.indexOf('function upsert'));
   assert.match(cardMarkup, /function materialMenuTrigger\(item\)/);
   assert.match(cardMarkup, /button\.dataset\.materialMenuId=/);
@@ -58,10 +59,196 @@ test('saved-card chevrons own edit/open/hide actions and no saved-card pencil re
   assert.doesNotMatch(materialCard, /data-edit-id|editButton|class="gedit"/);
   assert.match(frontend, /data-material-menu-action="edit"[^>]*>\u0418\u0437\u043c\u0435\u043d\u0438\u0442\u044c \u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435 \u0438 \u0440\u0430\u0437\u0434\u0435\u043b/);
   assert.match(frontend, /data-material-menu-action="archive"[^>]*>\u0421\u043a\u0440\u044b\u0442\u044c \u0438\u0437 \u0432\u0438\u0434\u0436\u0435\u0442\u0430/);
-  assert.match(frontend, /if\(action==='edit'\)openEdit\(item\.id,returnFocus\);else if\(action==='archive'\)archiveMaterial\(item\)/);
+  assert.match(frontend, /if\(action==='edit'\)openEdit\(item\.id,returnFocus\);else if\(action==='archive'\)archiveMaterial\(item,focusReturnDescriptor\(returnFocus\)\)/);
   assert.match(archive, /call\('apiArchive',\{taskPageId,pageId:item\.id,idempotencyKey:operation\.value\}\)/);
-  assert.match(archive, /state\.materials=state\.materials\.filter\(material=>material\.id!==item\.id\)/);
+  assert.match(optimistic, /function beginOptimisticMaterialMutation\(item,kind,patch\) \{\s*if\(materialMutationBlockedByOrderSave\(\)\)return null/);
+  assert.match(optimistic, /if\(kind==='hide'\)state\.materials=state\.materials\.filter\(\(material\)=>material\.id!==item\.id\)/);
+  assert.doesNotMatch(archive, /window\.confirm|\bconfirm\(/);
   assert.doesNotMatch(archive, /apiDeletePhysical/);
+});
+
+test('rename is optimistic before the RPC, waits for reorder, and reconciles or rolls back safely', async () => {
+  const source = frontend.slice(frontend.indexOf('function materialMutationBusyKey'), frontend.indexOf('function captureOrder'));
+  function harness(orderSaveRunning=false,queuedOrder=null) {
+    const item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',name:'Старое имя',section:'Docs',provider:'Google Drive',openUrl:'https://docs.google.com/document/d/ExampleDocument123/edit'};
+    const state={materials:[item],busy:new Set()},optimisticMaterialMutations=new Map(),downloadGrants=new Map([[item.id,{}]]),downloadGrantRetryNotBefore=new Map([[item.id,1]]);
+    const modalState={open:false};
+    const fields={editModal:{classList:{contains:(name)=>name==='open'&&modalState.open}},editId:{value:item.id},editName:{value:'Новое имя',focus(){}},editSection:{value:'Slides'},editUrl:{value:item.openUrl},editSubmit:{disabled:false}};
+    const events={closed:[],renders:0,restored:[],toasts:[],cleared:0,primed:[],opened:[],rpc:null};
+    let resolveRpc,rejectRpc;
+    const call=(method,payload)=>{events.rpc={method,payload};return new Promise((resolve,reject)=>{resolveRpc=resolve;rejectRpc=reject;});};
+    const handlers=new Function('state','optimisticMaterialMutations','$','stableIdempotency','modalReturnFocus','downloadGrants','downloadGrantRetryNotBefore','closeModal','render','restoreFocusTarget','toast','call','clearIdempotency','primeDownloadGrant','downloadPrimeGeneration','openEdit','taskPageId','SECTIONS','sectionFor','orderSaveRunning','queuedOrder',`${source};return {saveEdit,archiveMaterial};`)(
+      state,optimisticMaterialMutations,(id)=>fields[id],()=>({slot:'slot',value:'idem-key'}),new Map([['editModal',{materialMenuId:item.id}]]),downloadGrants,downloadGrantRetryNotBefore,
+      (...args)=>events.closed.push(args),()=>{events.renders+=1;},(value)=>events.restored.push(value),(message)=>events.toasts.push(message),call,()=>{events.cleared+=1;},(id)=>events.primed.push(id),3,
+      (id,returnFocus)=>events.opened.push({id,returnFocus}),'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',['Drive','Docs','Sheets','Slides'],(value)=>value.section,orderSaveRunning,queuedOrder
+    );
+    return {item,state,fields,events,handlers,optimisticMaterialMutations,modalState,resolveRpc,rejectRpc,getResolve:()=>resolveRpc,getReject:()=>rejectRpc};
+  }
+
+  const success=harness();
+  const saving=success.handlers.saveEdit({preventDefault(){}});
+  assert.equal(success.state.materials[0].name,'Новое имя');
+  assert.equal(success.state.materials[0].section,'Slides');
+  assert.deepEqual(success.events.closed,[['editModal',false]]);
+  assert.equal(success.events.renders,1,'optimistic render must happen before the RPC settles');
+  assert.equal(success.events.rpc.method,'apiUpdateMaterial');
+  assert.equal(success.optimisticMaterialMutations.has(success.item.id),true);
+  assert.equal(success.state.busy.has(`material:${success.item.id}`),true);
+  success.getResolve()({material:{...success.item,name:'Серверное имя',section:'Slides'}});
+  await saving;
+  assert.equal(success.state.materials[0].name,'Серверное имя');
+  assert.equal(success.optimisticMaterialMutations.size,0);
+  assert.equal(success.state.busy.size,0);
+  assert.equal(success.events.cleared,1);
+  assert.deepEqual(success.events.primed,[success.item.id]);
+
+  const failure=harness();
+  const failed=failure.handlers.saveEdit({preventDefault(){}});
+  assert.equal(failure.state.materials[0].name,'Новое имя');
+  failure.getReject()(new Error('Сервер недоступен'));
+  await failed;
+  assert.equal(failure.state.materials[0].name,'Старое имя');
+  assert.equal(failure.state.materials[0].section,'Docs');
+  assert.equal(failure.optimisticMaterialMutations.size,0);
+  assert.equal(failure.state.busy.size,0);
+  assert.equal(failure.events.opened.length,1,'the edit modal is reopened for a retry');
+  assert.equal(failure.fields.editName.value,'Новое имя');
+  assert.equal(failure.fields.editSection.value,'Slides');
+  assert.match(failure.events.toasts.at(-1),/Сервер недоступен.*Изменения отменены/);
+  assert.equal(failure.events.cleared,0,'failed retry keeps the stable idempotency key');
+
+  const protectedForm=harness(),otherId='cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const protectedSave=protectedForm.handlers.saveEdit({preventDefault(){}});
+  protectedForm.modalState.open=true;
+  protectedForm.fields.editId.value=otherId;
+  protectedForm.fields.editName.value='Другая открытая форма';
+  protectedForm.fields.editSection.value='Sheets';
+  protectedForm.getReject()(new Error('Поздняя ошибка'));await protectedSave;
+  assert.equal(protectedForm.state.materials[0].name,'Старое имя','the failed optimistic card still rolls back');
+  assert.equal(protectedForm.events.opened.length,0,'a late failure must not replace another card already being edited');
+  assert.equal(protectedForm.fields.editId.value,otherId);
+  assert.equal(protectedForm.fields.editName.value,'Другая открытая форма');
+  assert.equal(protectedForm.fields.editSection.value,'Sheets');
+
+  const blocked=harness(true,null);
+  await blocked.handlers.saveEdit({preventDefault(){}});
+  assert.equal(blocked.events.rpc,null,'rename must not start while apiReorder is in flight');
+  assert.equal(blocked.optimisticMaterialMutations.size,0);
+  assert.equal(blocked.state.materials[0].name,'Старое имя');
+  assert.equal(blocked.fields.editSubmit.disabled,false);
+  assert.equal(blocked.events.toasts.at(-1),'Завершаю сохранение порядка…');
+});
+
+test('hide removes immediately, waits for queued reorder, and restores its exact position on failure', async () => {
+  const source = frontend.slice(frontend.indexOf('function materialMutationBusyKey'), frontend.indexOf('function captureOrder'));
+  function harness(orderSaveRunning=false,queuedOrder=null) {
+    const before={id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1',name:'До'},item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',name:'Скрыть',section:'Docs'},after={id:'cccccccc-cccc-4ccc-8ccc-ccccccccccc3',name:'После'};
+    const state={materials:[before,item,after],busy:new Set()},optimisticMaterialMutations=new Map(),events={closed:0,renders:0,toasts:[],cleared:0,restored:[],primed:[],rpc:null};
+    let resolveRpc,rejectRpc;
+    const fields={editId:{value:item.id},editName:{value:item.name,focus(){}},editSection:{value:'Docs'},editUrl:{value:''},editSubmit:{disabled:false}};
+    const handlers=new Function('state','optimisticMaterialMutations','$','stableIdempotency','modalReturnFocus','downloadGrants','downloadGrantRetryNotBefore','closeModal','render','restoreFocusTarget','toast','call','clearIdempotency','primeDownloadGrant','downloadPrimeGeneration','openEdit','taskPageId','SECTIONS','sectionFor','orderSaveRunning','queuedOrder',`${source};return {archiveMaterial};`)(
+      state,optimisticMaterialMutations,(id)=>fields[id],()=>({slot:'slot',value:'idem-key'}),new Map(),new Map(),new Map(),()=>{events.closed+=1;},()=>{events.renders+=1;},(value)=>events.restored.push(value),(message)=>events.toasts.push(message),
+      (method,payload)=>{events.rpc={method,payload};return new Promise((resolve,reject)=>{resolveRpc=resolve;rejectRpc=reject;});},()=>{events.cleared+=1;},(id)=>events.primed.push(id),4,()=>{},
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',['Drive','Docs','Sheets','Slides'],(value)=>value.section,orderSaveRunning,queuedOrder
+    );
+    return {before,item,after,state,events,handlers,optimisticMaterialMutations,getResolve:()=>resolveRpc,getReject:()=>rejectRpc};
+  }
+
+  const success=harness(),focus={materialMenuId:success.item.id};
+  const hiding=success.handlers.archiveMaterial(success.item,focus);
+  assert.deepEqual(success.state.materials.map((item)=>item.id),[success.before.id,success.after.id]);
+  assert.equal(success.events.renders,1,'hide renders before apiArchive resolves');
+  assert.equal(success.events.rpc.method,'apiArchive');
+  assert.equal(success.optimisticMaterialMutations.has(success.item.id),true);
+  success.getResolve()({archived:true});await hiding;
+  assert.deepEqual(success.state.materials.map((item)=>item.id),[success.before.id,success.after.id]);
+  assert.equal(success.optimisticMaterialMutations.size,0);
+  assert.equal(success.events.cleared,1);
+
+  const failure=harness(),failureFocus={materialMenuId:failure.item.id};
+  const failed=failure.handlers.archiveMaterial(failure.item,failureFocus);
+  assert.deepEqual(failure.state.materials.map((item)=>item.id),[failure.before.id,failure.after.id]);
+  failure.getReject()(new Error('Архив недоступен'));await failed;
+  assert.deepEqual(failure.state.materials.map((item)=>item.id),[failure.before.id,failure.item.id,failure.after.id]);
+  assert.equal(failure.optimisticMaterialMutations.size,0);
+  assert.deepEqual(failure.events.restored,[failureFocus]);
+  assert.deepEqual(failure.events.primed,[failure.item.id]);
+  assert.match(failure.events.toasts.at(-1),/Архив недоступен.*Карточка возвращена/);
+  assert.equal(failure.events.cleared,0);
+  assert.doesNotMatch(source,/window\.confirm|\bconfirm\(/);
+  assert.doesNotMatch(source,/apiDeletePhysical/);
+
+  const blocked=harness(false,[{pageId:failure.item.id}]);
+  await blocked.handlers.archiveMaterial(blocked.item,{materialMenuId:blocked.item.id});
+  assert.equal(blocked.events.rpc,null,'hide must not start while a newer reorder snapshot is queued');
+  assert.deepEqual(blocked.state.materials.map((item)=>item.id),[blocked.before.id,blocked.item.id,blocked.after.id]);
+  assert.equal(blocked.optimisticMaterialMutations.size,0);
+  assert.equal(blocked.events.toasts.at(-1),'Завершаю сохранение порядка…');
+});
+
+test('background snapshots and Drive polling cannot overwrite an optimistic rename or revive an optimistic hide', () => {
+  const bootstrap=frontend.slice(frontend.indexOf('function applyBootstrapData'),frontend.indexOf('function readInitialBootstrap'));
+  const drive=frontend.slice(frontend.indexOf('function applyDriveMetadata'),frontend.indexOf('function drivePollResultPageIds'));
+  assert.match(bootstrap,/optimisticMaterialMutations\.forEach\(\(record,itemId\)=>/);
+  assert.match(bootstrap,/if\(index>=0\)\{record\.original=Object\.assign\(\{\},serverMaterials\[index\]\);record\.index=index;\}/);
+  assert.match(bootstrap,/record\.kind==='hide'[\s\S]*serverMaterials\.splice\(index,1\)/);
+  assert.match(bootstrap,/record\.optimistic=Object\.assign\(\{\},record\.original,record\.patch\);serverMaterials\[index\]=record\.optimistic/);
+  assert.match(drive,/if\(optimisticMaterialMutations\.has\(pageId\)\)return/);
+});
+
+test('upsert keeps active optimistic overlays while refreshing the rollback baseline', () => {
+  const source=frontend.slice(frontend.indexOf('function materialMutationBusyKey'),frontend.indexOf('function captureOrder'));
+  const original={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',name:'Исходное имя',section:'Docs',updatedAt:'old'};
+  const state={materials:[original],busy:new Set()},optimisticMaterialMutations=new Map();
+  const handlers=new Function('state','optimisticMaterialMutations','orderSaveRunning','queuedOrder','toast',`${source};return {beginOptimisticMaterialMutation,finishOptimisticMaterialMutation,rollbackOptimisticMaterialMutation,upsert};`)(state,optimisticMaterialMutations,false,null,()=>{});
+
+  const edit=handlers.beginOptimisticMaterialMutation(original,'edit',{name:'Локальное имя',section:'Slides'});
+  const fresh={...original,name:'Серверное имя',updatedAt:'fresh',openUrl:'https://docs.google.com/document/d/Fresh/edit'};
+  handlers.upsert(fresh);
+  assert.equal(state.materials[0].name,'Локальное имя');
+  assert.equal(state.materials[0].section,'Slides');
+  assert.equal(state.materials[0].updatedAt,'fresh');
+  assert.equal(state.materials[0].openUrl,fresh.openUrl);
+  assert.deepEqual(edit.original,fresh,'fresh server data becomes the rollback baseline');
+  handlers.finishOptimisticMaterialMutation(edit);handlers.rollbackOptimisticMaterialMutation(edit);
+  assert.deepEqual(state.materials[0],fresh,'rollback restores the latest server item, not the stale pre-edit item');
+
+  const before={id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1',name:'До'},hidden={id:'dddddddd-dddd-4ddd-8ddd-dddddddddddd',name:'Скрываемый',section:'Docs',updatedAt:'old'},after={id:'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',name:'После'};
+  state.materials=[before,hidden,after];
+  const hide=handlers.beginOptimisticMaterialMutation(hidden,'hide',{}),freshHidden={...hidden,name:'Свежее серверное имя',updatedAt:'fresh'};
+  handlers.upsert(freshHidden);
+  assert.deepEqual(state.materials.map((item)=>item.id),[before.id,after.id],'a server upsert cannot revive a card while hide is pending');
+  assert.deepEqual(hide.original,freshHidden,'hide rollback also learns the latest server baseline');
+  handlers.finishOptimisticMaterialMutation(hide);handlers.rollbackOptimisticMaterialMutation(hide);
+  assert.deepEqual(state.materials,[before,freshHidden,after]);
+
+  const blockedToasts=[],blockedMutations=new Map(),blockedHandlers=new Function('state','optimisticMaterialMutations','orderSaveRunning','queuedOrder','toast',`${source};return {beginOptimisticMaterialMutation};`)(state,blockedMutations,true,null,(message)=>blockedToasts.push(message));
+  assert.equal(blockedHandlers.beginOptimisticMaterialMutation(freshHidden,'edit',{name:'Не применять'}),null);
+  assert.equal(blockedMutations.size,0,'the low-level mutation helper also fails closed during reorder');
+  assert.deepEqual(blockedToasts,['Завершаю сохранение порядка…']);
+});
+
+test('drag and reorder are disabled while any material mutation is optimistic', async () => {
+  const card=frontend.slice(frontend.indexOf('function materialCard(item,count)'),frontend.indexOf('function downloadMaterialFingerprint'));
+  const drag=frontend.slice(frontend.indexOf('function handleDragStart'),frontend.indexOf('function focusReturnDescriptor'));
+  const persist=frontend.slice(frontend.indexOf('async function persistOrder'),frontend.indexOf('function handleGridClick'));
+  assert.match(card,/card\.draggable=state\.authoritative&&!String\(item\.id\)\.startsWith\('pending:'\)&&optimisticMaterialMutations\.size===0/);
+  assert.match(drag,/function handleDragStart\(event\)\{if\(optimisticMaterialMutations\.size\)\{event\.preventDefault\(\);return;\}/);
+  assert.match(drag,/function handleDropReorder\(event\)\{if\(optimisticMaterialMutations\.size\)\{event\.preventDefault\(\);handleDragEnd\(\);return;\}/);
+  assert.match(persist,/async function persistOrder\(\)\{if\(optimisticMaterialMutations\.size\)\{queuedOrder=null;return;\}queuedOrder=captureOrder\(\)/);
+  assert.match(persist,/while\(queuedOrder\)\{if\(optimisticMaterialMutations\.size\)\{queuedOrder=null;return;\}/);
+
+  let prevented=0,targetInspected=0;
+  const start=new Function('optimisticMaterialMutations','state',`${drag.slice(0,drag.indexOf('function handleDragEnd'))};return handleDragStart;`)(new Map([['pending',{}]]),{});
+  start({preventDefault(){prevented+=1;},target:{closest(){targetInspected+=1;return null;}}});
+  assert.equal(prevented,1);
+  assert.equal(targetInspected,0,'blocked drag exits before it can select a card');
+
+  let captures=0,renders=0;
+  const saveOrder=new Function('optimisticMaterialMutations','queuedOrder','captureOrder','render','orderSaveRunning',`${persist};return persistOrder;`)(new Map([['pending',{}]]),null,()=>{captures+=1;return [];},()=>{renders+=1;},false);
+  await saveOrder();
+  assert.equal(captures,0,'blocked reorder cannot serialize an optimistic hide as a deletion');
+  assert.equal(renders,0);
 });
 
 test('saved-card menu restores focus, supports menu keys and survives a card rerender', () => {

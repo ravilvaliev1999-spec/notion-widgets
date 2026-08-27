@@ -391,6 +391,7 @@
   const downloadGrants = new Map();
   const downloadGrantPrimeInFlight = new Map();
   const downloadGrantRetryNotBefore = new Map();
+  const optimisticMaterialMutations = new Map();
   const $ = (id) => document.getElementById(id);
   const bridge = createBridge();
   let toastTimer = 0;
@@ -778,7 +779,7 @@
     const section=sectionFor(item),group=GROUPS[section];
     const directDownloadHref=freshDirectDownloadUrl(item),courierHref=downloadCourierHref(item);
     const directHref=materialOpenHref(item);
-    const href=courierHref||directHref,card=document.createElement('article');card.className=`btn ${group.cls} item-card`;card.dataset.itemId=item.id;card.draggable=state.authoritative&&!String(item.id).startsWith('pending:');
+    const href=courierHref||directHref,card=document.createElement('article');card.className=`btn ${group.cls} item-card`;card.dataset.itemId=item.id;card.draggable=state.authoritative&&!String(item.id).startsWith('pending:')&&optimisticMaterialMutations.size===0;
     const main=document.createElement(href?'a':'button');main.className='material-card-main';main.dataset.itemOpen=item.id;
     if(href){main.href=href;main.target='_blank';main.rel='noopener noreferrer';main.referrerPolicy='no-referrer';}
     else{main.type='button';main.setAttribute('role','link');}
@@ -813,6 +814,12 @@
       if(confirmed){recentCompletedCreates.delete(requestId);rememberCompletedCreate(requestId);return;}
       const index=serverMaterials.findIndex((item)=>item.id===material.id);
       if(index>=0)serverMaterials[index]=material;else serverMaterials.push(material);
+    });
+    optimisticMaterialMutations.forEach((record,itemId)=>{
+      const index=serverMaterials.findIndex((item)=>item.id===itemId);
+      if(index>=0){record.original=Object.assign({},serverMaterials[index]);record.index=index;}
+      if(record.kind==='hide'){if(index>=0)serverMaterials.splice(index,1);return;}
+      if(index>=0){record.optimistic=Object.assign({},record.original,record.patch);serverMaterials[index]=record.optimistic;}else serverMaterials.push(record.optimistic);
     });
     state.materials=serverMaterials;
     state.maxUploadBytes=data.maxUploadBytes||state.maxUploadBytes;
@@ -906,6 +913,7 @@
     let changed=false;
     (Array.isArray(materials)?materials:[]).forEach((update)=>{
       const pageId=normalizeUuid(update&&update.pageId);
+      if(optimisticMaterialMutations.has(pageId))return;
       const item=state.materials.find((candidate)=>candidate.id===pageId&&candidate.googleFileId===update.googleFileId);
       if(!item)return;
       ['name','section','format','openUrl','mimeType','size','driveMd5','downloadName','normalizedUrl','drivePollClaim'].forEach((key)=>{
@@ -1194,6 +1202,7 @@
   function toggleMaterialMenu(id,trigger) {
     const item=state.materials.find((material)=>material.id===id);
     if(!state.authoritative||!item||String(id).startsWith('pending:')){toast('Завершаю синхронизацию…');return;}
+    if(optimisticMaterialMutations.has(id)){toast('Изменения этого документа сохраняются…');return;}
     if(openMaterialMenuId===id){closeMaterialMenu({restoreFocus:true});return;}
     closeMaterialMenu();openMaterialMenuId=id;openMaterialMenuTrigger=trigger;trigger.setAttribute('aria-expanded','true');
     const menu=$('materialMenu'),open=$('materialMenuOpen'),href=materialMenuHref(item);
@@ -1209,7 +1218,7 @@
   function handleMaterialMenuAction(event) {
     const action=event.currentTarget.dataset.materialMenuAction,id=openMaterialMenuId,returnFocus=openMaterialMenuTrigger;
     const item=state.materials.find((material)=>material.id===id);closeMaterialMenu();if(!item)return;
-    if(action==='edit')openEdit(item.id,returnFocus);else if(action==='archive')archiveMaterial(item);
+    if(action==='edit')openEdit(item.id,returnFocus);else if(action==='archive')archiveMaterial(item,focusReturnDescriptor(returnFocus));
   }
 
   function refreshMaterialMenuOpenTarget(target) {
@@ -1616,35 +1625,109 @@
     const external=item.provider==='External URL';$('editUrl').hidden=!external;$('editUrlLabel').hidden=!external;openModal('editModal',returnFocus);setTimeout(()=>$('editName').focus(),40);
   }
 
+  function materialMutationBusyKey(itemId) { return `material:${itemId}`; }
+
+  function materialMutationBlockedByOrderSave() {
+    if(!orderSaveRunning&&!queuedOrder)return false;
+    toast('Завершаю сохранение порядка…');return true;
+  }
+
+  function beginOptimisticMaterialMutation(item,kind,patch) {
+    if(materialMutationBlockedByOrderSave())return null;
+    if(!item||!item.id||optimisticMaterialMutations.has(item.id))return null;
+    const safePatch=Object.assign({},patch||{}),index=state.materials.findIndex((material)=>material.id===item.id);
+    const record={itemId:item.id,kind,patch:safePatch,original:Object.assign({},item),optimistic:Object.assign({},item,safePatch),index};
+    optimisticMaterialMutations.set(item.id,record);state.busy.add(materialMutationBusyKey(item.id));
+    if(kind==='hide')state.materials=state.materials.filter((material)=>material.id!==item.id);
+    else if(index>=0)state.materials[index]=record.optimistic;
+    else state.materials.push(record.optimistic);
+    return record;
+  }
+
+  function optimisticMaterialMutationIsCurrent(record) {
+    return Boolean(record&&optimisticMaterialMutations.get(record.itemId)===record);
+  }
+
+  function finishOptimisticMaterialMutation(record) {
+    if(!optimisticMaterialMutationIsCurrent(record))return false;
+    optimisticMaterialMutations.delete(record.itemId);state.busy.delete(materialMutationBusyKey(record.itemId));return true;
+  }
+
+  function rollbackOptimisticMaterialMutation(record) {
+    if(!record)return;
+    if(record.kind!=='hide'){upsert(record.original);return;}
+    const currentIndex=state.materials.findIndex((material)=>material.id===record.itemId);
+    if(currentIndex>=0)state.materials[currentIndex]=record.original;
+    else state.materials.splice(Math.max(0,Math.min(record.index,state.materials.length)),0,record.original);
+  }
+
   async function saveEdit(event) {
     event.preventDefault();const item=currentItem();if(!item)return;
-    const operation=stableIdempotency('update-material',`${item.id}:${$('editName').value}:${$('editSection').value}:${$('editUrl').value}`);$('editSubmit').disabled=true;
-    const payload={taskPageId,pageId:item.id,name:$('editName').value.trim(),section:$('editSection').value,idempotencyKey:operation.value};if(item.provider==='External URL')payload.url=$('editUrl').value.trim();
-    try { const data=await call('apiUpdateMaterial',payload);clearIdempotency(operation);downloadGrants.delete(item.id);downloadGrantRetryNotBefore.delete(item.id);upsert(data.material);closeModal('editModal');render();primeDownloadGrant(data.material&&data.material.id,downloadPrimeGeneration);toast('Материал обновлён'); }
-    catch(error){toast(error.message);}finally{$('editSubmit').disabled=false;}
+    if(materialMutationBlockedByOrderSave())return;
+    const attempted={name:$('editName').value.trim(),section:$('editSection').value,url:$('editUrl').value.trim()};
+    if(!attempted.name){toast('Введите название документа');$('editName').focus();return;}
+    if(!SECTIONS.includes(attempted.section))attempted.section=sectionFor(item);
+    const operation=stableIdempotency('update-material',`${item.id}:${attempted.name}:${attempted.section}:${attempted.url}`),returnFocus=modalReturnFocus.get('editModal');$('editSubmit').disabled=true;
+    const payload={taskPageId,pageId:item.id,name:attempted.name,section:attempted.section,idempotencyKey:operation.value},patch={name:attempted.name,section:attempted.section};
+    if(item.provider==='External URL'){payload.url=attempted.url;patch.openUrl=attempted.url;}
+    const record=beginOptimisticMaterialMutation(item,'edit',patch);
+    if(!record){$('editSubmit').disabled=false;toast('Изменения этого документа уже сохраняются');return;}
+    downloadGrants.delete(item.id);downloadGrantRetryNotBefore.delete(item.id);closeModal('editModal',false);render();restoreFocusTarget(returnFocus);toast('Изменения применены. Сохраняю…');
+    try {
+      const data=await call('apiUpdateMaterial',payload);clearIdempotency(operation);
+      if(optimisticMaterialMutationIsCurrent(record)){finishOptimisticMaterialMutation(record);upsert(data.material);render();primeDownloadGrant(data.material&&data.material.id,downloadPrimeGeneration);}
+      toast('Материал обновлён');
+    } catch(error) {
+      if(optimisticMaterialMutationIsCurrent(record)){
+        finishOptimisticMaterialMutation(record);rollbackOptimisticMaterialMutation(record);render();
+        const modal=$('editModal'),editingAnother=Boolean(modal&&modal.classList.contains('open')&&$('editId').value&&$('editId').value!==record.itemId);
+        if(!editingAnother){openEdit(record.itemId,returnFocus);if($('editId').value===record.itemId){$('editName').value=attempted.name;$('editSection').value=attempted.section;if(item.provider==='External URL')$('editUrl').value=attempted.url;}}
+        primeDownloadGrant(record.itemId,downloadPrimeGeneration);
+      }
+      toast(`${error.message} Изменения отменены.`);
+    } finally {$('editSubmit').disabled=false;}
   }
 
   function currentItem(){return state.materials.find(item=>item.id===$('editId').value);}
 
   async function archiveCurrent() {
-    const item=currentItem();if(item)await archiveMaterial(item);
+    const item=currentItem(),returnFocus=modalReturnFocus.get('editModal');if(item)await archiveMaterial(item,returnFocus);
   }
 
-  async function archiveMaterial(item) {
-    if(!item||!window.confirm(`Скрыть «${item.name}» из виджета? Запись «Знание» и сам файл останутся.`))return;
+  async function archiveMaterial(item,returnFocus) {
+    if(!item)return;
+    if(materialMutationBlockedByOrderSave())return;
     const operation=stableIdempotency('archive',item.id);
-    try { await call('apiArchive',{taskPageId,pageId:item.id,idempotencyKey:operation.value});clearIdempotency(operation);downloadGrants.delete(item.id);downloadGrantRetryNotBefore.delete(item.id);state.materials=state.materials.filter(material=>material.id!==item.id);closeModal('editModal');render();toast('Материал скрыт из виджета'); }
-    catch(error){toast(error.message);}
+    const record=beginOptimisticMaterialMutation(item,'hide',{});if(!record){toast('Этот документ уже скрывается');return;}
+    downloadGrants.delete(item.id);downloadGrantRetryNotBefore.delete(item.id);closeModal('editModal',false);render();toast('Материал скрыт. Сохраняю…');
+    try {
+      await call('apiArchive',{taskPageId,pageId:item.id,idempotencyKey:operation.value});clearIdempotency(operation);
+      if(optimisticMaterialMutationIsCurrent(record)){finishOptimisticMaterialMutation(record);render();}
+      toast('Материал скрыт из виджета');
+    } catch(error) {
+      if(optimisticMaterialMutationIsCurrent(record)){finishOptimisticMaterialMutation(record);rollbackOptimisticMaterialMutation(record);render();restoreFocusTarget(returnFocus);primeDownloadGrant(record.itemId,downloadPrimeGeneration);}
+      toast(`${error.message} Карточка возвращена.`);
+    }
   }
 
   function upsert(item) {
-    if(!item)return;const index=state.materials.findIndex(existing=>existing.id===item.id);if(index>=0)state.materials[index]=item;else state.materials.push(item);
+    if(!item)return;
+    const record=optimisticMaterialMutations.get(item.id),index=state.materials.findIndex((existing)=>existing.id===item.id);
+    if(record){
+      record.original=Object.assign({},item);
+      if(record.kind==='hide')return;
+      if(index>=0)record.index=index;
+      record.optimistic=Object.assign({},record.original,record.patch);
+      if(index>=0)state.materials[index]=record.optimistic;else state.materials.push(record.optimistic);
+      return;
+    }
+    if(index>=0)state.materials[index]=item;else state.materials.push(item);
   }
 
   function captureOrder(){const items=[];SECTIONS.forEach(section=>activeMaterials(section).filter(item=>!String(item.id).startsWith('pending:')).forEach((item,index)=>{item.position=index;items.push({pageId:item.id,section,position:index});}));return items;}
-  async function persistOrder(){queuedOrder=captureOrder();render();if(orderSaveRunning)return;orderSaveRunning=true;
-    try{while(queuedOrder){const items=queuedOrder;queuedOrder=null;const fingerprint=items.map(item=>`${item.pageId}:${item.section}:${item.position}`).join('|');const operation=stableIdempotency('reorder',fingerprint);try{await call('apiReorder',{taskPageId,items,idempotencyKey:operation.value});clearIdempotency(operation);}catch(error){queuedOrder=null;toast(`${error.message} Обновляю серверный порядок.`);await refresh(true);return;}}}
-    finally{orderSaveRunning=false;if(queuedOrder)persistOrder();}}
+  async function persistOrder(){if(optimisticMaterialMutations.size){queuedOrder=null;return;}queuedOrder=captureOrder();render();if(orderSaveRunning)return;orderSaveRunning=true;
+    try{while(queuedOrder){if(optimisticMaterialMutations.size){queuedOrder=null;return;}const items=queuedOrder;queuedOrder=null;const fingerprint=items.map(item=>`${item.pageId}:${item.section}:${item.position}`).join('|');const operation=stableIdempotency('reorder',fingerprint);try{await call('apiReorder',{taskPageId,items,idempotencyKey:operation.value});clearIdempotency(operation);}catch(error){queuedOrder=null;toast(`${error.message} Обновляю серверный порядок.`);await refresh(true);return;}}}
+    finally{orderSaveRunning=false;if(queuedOrder&&!optimisticMaterialMutations.size)persistOrder();}}
 
   function handleGridClick(event) {
     const upload=event.target.closest('[data-upload-section]');if(upload){event.preventDefault();event.stopPropagation();chooseFiles(upload.dataset.uploadSection);return;}
@@ -1668,10 +1751,10 @@
     if(event.key==='Enter'||event.key===' '){event.preventDefault();event.target.click();}
   }
 
-  function handleDragStart(event){const card=event.target.closest('.item-card[data-item-id]');if(!card)return;state.dragId=card.dataset.itemId;card.classList.add('dragging');event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',state.dragId);}
+  function handleDragStart(event){if(optimisticMaterialMutations.size){event.preventDefault();return;}const card=event.target.closest('.item-card[data-item-id]');if(!card)return;state.dragId=card.dataset.itemId;card.classList.add('dragging');event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',state.dragId);}
   function handleDragEnd(){document.querySelectorAll('.dragging').forEach(element=>element.classList.remove('dragging'));state.dragId=null;}
   function handleDragOver(event){if(!state.dragId)return;const col=event.target.closest('.col');if(col)event.preventDefault();}
-  function handleDropReorder(event){if(!state.dragId)return;event.preventDefault();const col=event.target.closest('.col');if(!col)return;const item=state.materials.find(material=>material.id===state.dragId);if(!item)return;const target=event.target.closest('.item-card[data-item-id]');item.section=col.dataset.section;const peers=activeMaterials(item.section).filter(peer=>peer.id!==item.id);let index=target?peers.findIndex(peer=>peer.id===target.dataset.itemId):peers.length;if(index<0)index=peers.length;peers.splice(index,0,item);peers.forEach((peer,position)=>peer.position=position);handleDragEnd();render();persistOrder();}
+  function handleDropReorder(event){if(optimisticMaterialMutations.size){event.preventDefault();handleDragEnd();return;}if(!state.dragId)return;event.preventDefault();const col=event.target.closest('.col');if(!col)return;const item=state.materials.find(material=>material.id===state.dragId);if(!item)return;const target=event.target.closest('.item-card[data-item-id]');item.section=col.dataset.section;const peers=activeMaterials(item.section).filter(peer=>peer.id!==item.id);let index=target?peers.findIndex(peer=>peer.id===target.dataset.itemId):peers.length;if(index<0)index=peers.length;peers.splice(index,0,item);peers.forEach((peer,position)=>peer.position=position);handleDragEnd();render();persistOrder();}
 
   function focusReturnDescriptor(value) {
     if(value&&value.element)return value;

@@ -574,11 +574,11 @@ test('hosted mock exposes owned files and classifies Google links like backend',
 test('rapid reorder gestures are single-flight and coalesce to the latest snapshot', () => {
   const frontend = text('Index.html');
   const body = frontend.slice(frontend.indexOf('function captureOrder'), frontend.indexOf('function handleGridClick'));
-  assert.match(body, /queuedOrder=captureOrder\(\)/);
+  assert.match(body, /if\(optimisticMaterialMutations\.size\)\{queuedOrder=null;return;\}queuedOrder=captureOrder\(\)/);
   assert.match(body, /if\(orderSaveRunning\)return/);
-  assert.match(body, /while\(queuedOrder\)/);
+  assert.match(body, /while\(queuedOrder\)\{if\(optimisticMaterialMutations\.size\)\{queuedOrder=null;return;\}/);
   assert.ok(body.indexOf('queuedOrder=null') < body.indexOf("await call('apiReorder'"));
-  assert.match(body, /finally\{orderSaveRunning=false;if\(queuedOrder\)persistOrder\(\)/);
+  assert.match(body, /finally\{orderSaveRunning=false;if\(queuedOrder&&!optimisticMaterialMutations\.size\)persistOrder\(\)/);
 });
 
 test('backend and inline frontend scripts are syntactically valid JavaScript', () => {
