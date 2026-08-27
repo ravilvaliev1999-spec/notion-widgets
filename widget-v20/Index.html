@@ -91,6 +91,16 @@
   .btn.green:hover, .btn.green.bridge-hover   { background: var(--green-bg-h);  border-color: var(--border-hover); box-shadow: 0 12px 32px -12px var(--green-glow); }
   .btn.orange:hover, .btn.orange.bridge-hover { background: var(--orange-bg-h); border-color: var(--border-hover); box-shadow: 0 12px 32px -12px var(--orange-glow); }
 
+  .item-card { padding: 0; gap: 0; cursor: default; }
+  .material-card-main {
+    align-self: stretch; min-width: 0; min-height: 56px; padding: 16px 4px 16px 18px;
+    display: flex; flex: 1 1 auto; align-items: center; gap: 12px;
+    border: 0; background: transparent; color: inherit; text-align: left; text-decoration: none; cursor: pointer;
+  }
+  .material-card-main:focus-visible {
+    position: relative; z-index: 2; outline: 2px solid rgba(255,255,255,.4); outline-offset: -3px; border-radius: 11px 0 0 11px;
+  }
+
   .files {
     display: flex; flex-direction: column; gap: 8px;
     max-height: 6000px; overflow: visible;
@@ -121,6 +131,45 @@
   .btn:hover .gedit, .gedit:focus-visible { opacity: 1; }
   .gedit:hover { background: rgba(0,0,0,.5); color: #fff; }
   .gedit svg { width: 11px; height: 11px; }
+
+  .material-menu-trigger {
+    align-self: stretch; flex: 0 0 44px; width: 44px; min-height: 44px; margin: 0; padding: 0;
+    display: grid; place-items: center; border: 0; border-radius: 7px;
+    background: transparent; color: inherit; cursor: pointer; opacity: .65; z-index: 2;
+    transition: opacity 160ms ease, background-color 160ms ease;
+  }
+  .material-menu-trigger:hover, .material-menu-trigger:focus-visible, .material-menu-trigger[aria-expanded="true"] {
+    opacity: 1; background: rgba(255,255,255,.1);
+  }
+  .material-menu-trigger:focus-visible { outline: 2px solid rgba(255,255,255,.4); outline-offset: 1px; }
+  .material-menu-trigger .chevron { margin: 0; pointer-events: none; }
+  .material-menu-trigger[aria-expanded="true"] .chevron { transform: rotate(180deg); }
+  .material-menu-trigger:disabled { opacity: .32; cursor: wait; }
+
+  .material-menu {
+    position: fixed; z-index: 140; width: min(250px,calc(100vw - 20px)); padding: 5px;
+    border: 1px solid rgba(255,255,255,.12); border-radius: 10px;
+    background: rgba(31,31,31,.98); color: #e6e6e4;
+    box-shadow: 0 16px 45px rgba(0,0,0,.45);
+  }
+  .material-menu button, .material-menu a {
+    width: 100%; min-height: 36px; padding: 8px 10px; display: flex; align-items: center;
+    border: 0; border-radius: 7px; background: transparent; color: inherit;
+    font-size: 12.5px; line-height: 1.35; text-align: left; text-decoration: none; cursor: pointer;
+  }
+  .material-menu button:hover, .material-menu button:focus-visible,
+  .material-menu a:hover, .material-menu a:focus-visible { background: rgba(255,255,255,.08); outline: none; }
+  .material-menu .danger { color: #ffb5b5; }
+
+  .choice-list { display: grid; gap: 8px; margin-top: 16px; }
+  .choice-list button {
+    width: 100%; padding: 12px 14px; border: 1px solid rgba(255,255,255,.1); border-radius: 9px;
+    background: #2a2a2a; color: #e6e6e4; text-align: left; cursor: pointer;
+  }
+  .choice-list button:hover { background: #333; }
+  .choice-list strong, .choice-list span { display: block; }
+  .choice-list strong { font-size: 13px; font-weight: 600; }
+  .choice-list span { margin-top: 3px; color: #9b9a97; font-size: 11.5px; }
 
   .fatal {
     margin: 0 0 8px; padding: 10px 12px; border: 1px solid rgba(255,105,105,.38);
@@ -174,17 +223,23 @@
 
   @media (max-width: 720px) {
     .wrap { padding: 0 2px; }
+    .grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
     .btn { padding: 12px 12px; gap: 9px; min-height: 50px; border-radius: 10px; }
+    .item-card { padding: 0; gap: 0; }
+    .material-card-main { min-height: 50px; padding: 12px 2px 12px 12px; gap: 9px; }
     .title { font-size: 13px; }
     .sub { display: none; }
     .icon { width: 22px; height: 22px; }
     .icon svg { width: 14px; height: 14px; }
     .grid { gap: 8px; }
-    .chevron { display: none; }
-    .file-add { padding: 7px 9px; font-size: 11px; min-height: 32px; }
+    .material-menu-trigger .chevron { display: block; }
+    .material-menu button, .material-menu a { min-height: 44px; }
+    .file-add { padding: 7px 9px; font-size: 11px; min-height: 44px; }
   }
   @media (max-width: 460px) {
     .btn { padding: 10px 9px; gap: 7px; min-height: 46px; }
+    .item-card { padding: 0; gap: 0; }
+    .material-card-main { min-height: 46px; padding: 10px 2px 10px 9px; gap: 7px; }
     .title { font-size: 12px; }
     .icon { width: 20px; height: 20px; }
     .count { padding: 2px 5px; min-width: 18px; }
@@ -206,6 +261,19 @@
 
   <input id="fileInput" type="file" multiple hidden />
 
+  <div class="modal-back" id="addDocumentModal" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="addDocumentTitle">
+      <h3 id="addDocumentTitle">Добавить документ</h3>
+      <p class="hint">Выберите, как добавить материал в этот раздел.</p>
+      <input id="addDocumentSection" type="hidden" />
+      <div class="choice-list">
+        <button type="button" data-document-action="link"><strong>Добавить ссылку</strong><span>Google Docs, Sheets, Slides или другая HTTPS‑ссылка</span></button>
+        <button type="button" data-document-action="upload"><strong>Загрузить документ</strong><span>Выбрать файл с компьютера</span></button>
+      </div>
+      <div class="modal-actions"><button type="button" data-close="addDocumentModal">Отмена</button></div>
+    </div>
+  </div>
+
   <div class="modal-back" id="linkModal" aria-hidden="true">
     <form class="modal" id="linkForm" role="dialog" aria-modal="true" aria-labelledby="linkTitle">
       <h3 id="linkTitle">Добавить ссылку</h3>
@@ -222,8 +290,8 @@
 
   <div class="modal-back" id="editModal" aria-hidden="true">
     <form class="modal" id="editForm" role="dialog" aria-modal="true" aria-labelledby="editTitle">
-      <h3 id="editTitle">Материал</h3>
-      <p class="hint">Изменения сохраняются в записи «Знание».</p>
+      <h3 id="editTitle">Изменить документ</h3>
+      <p class="hint">Новое название сохранится в Google Drive и в записи «Знание».</p>
       <input id="editId" type="hidden" />
       <label for="editName">Название</label>
       <input id="editName" type="text" maxlength="180" required />
@@ -232,7 +300,7 @@
       <label for="editUrl" id="editUrlLabel">Ссылка</label>
       <input id="editUrl" type="url" inputmode="url" />
       <div class="modal-actions">
-        <button type="button" class="danger" id="archiveButton">Архивировать</button>
+        <button type="button" class="danger" id="archiveButton">Скрыть из виджета</button>
         <button type="button" data-close="editModal">Отмена</button>
         <button type="submit" class="primary" id="editSubmit">Сохранить</button>
       </div>
@@ -241,6 +309,11 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <span class="sr-only" id="liveStatus" aria-live="polite"></span>
+  <div class="material-menu" id="materialMenu" role="menu" aria-label="Действия с документом" hidden>
+    <a id="materialMenuOpen" role="menuitem" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">Открыть документ</a>
+    <button type="button" role="menuitem" data-material-menu-action="edit">Изменить название и раздел</button>
+    <button type="button" role="menuitem" class="danger" data-material-menu-action="archive">Скрыть из виджета</button>
+  </div>
 
 <script>
 (function() {
@@ -323,6 +396,10 @@
   let toastTimer = 0;
   let orderSaveRunning = false;
   let queuedOrder = null;
+  let openMaterialMenuId = '';
+  let openMaterialMenuTrigger = null;
+  let pendingMaterialMenuFocusId = '';
+  const modalReturnFocus = new Map();
   let backgroundRpcTail = Promise.resolve();
   let geometryRaf = 0;
   let returnRefreshTimer = 0;
@@ -391,7 +468,7 @@
   }
 
   function warmPreparedCreates() {
-    if(createPoolWarmPromise||!runtimeLocationResolved||!taskPageId||!state.bootstrapped||!state.authoritative||!state.actionReady||state.busy.size)return createPoolWarmPromise||Promise.resolve(false);
+    if(createPoolWarmPromise||!runtimeLocationResolved||!taskPageId||!state.bootstrapped||!state.authoritative||!state.actionReady||state.busy.size||Object.keys(state.preparedCreates).length>=3)return createPoolWarmPromise||Promise.resolve(false);
     createPoolWarmPromise=call('apiWarmCreateContext',{taskPageId}).then((data)=>{
       if(!state.bootstrapped||!state.authoritative||!state.actionReady||!(data&&data.ready===true))return false;
       return applyPreparedCreates(data.preparedCreates);
@@ -587,7 +664,16 @@
 
   function cardMarkup(section, title, count, editLabel, editData) {
     const group=GROUPS[section];
-    return `<span class="icon">${group.icon}</span><span class="meta"><span class="title"></span><span class="sub">${escapeHtml(group.sub)}</span></span><span class="count">${count}</span>${chevronSvg}<button type="button" class="gedit" ${editData} aria-label="${escapeHtml(editLabel)}" title="${escapeHtml(editLabel)}">${editIcon}</button>`;
+    return `<span class="icon">${group.icon}</span><span class="meta"><span class="title"></span><span class="sub">${escapeHtml(group.sub)}</span></span><span class="count">${count}</span><button type="button" class="gedit" ${editData} aria-label="${escapeHtml(editLabel)}" title="${escapeHtml(editLabel)}">${editIcon}</button>`;
+  }
+
+  function materialCardMarkup(section,count) {
+    const group=GROUPS[section];
+    return `<span class="icon">${group.icon}</span><span class="meta"><span class="title"></span><span class="sub">${escapeHtml(group.sub)}</span></span><span class="count">${count}</span>`;
+  }
+
+  function materialMenuTrigger(item) {
+    const button=document.createElement('button');button.type='button';button.className='material-menu-trigger';button.dataset.materialMenuId=String(item&&item.id||'');button.setAttribute('aria-haspopup','menu');button.setAttribute('aria-expanded','false');button.setAttribute('aria-label',`Действия: ${item&&item.name||'Без названия'}`);button.title='Действия';button.innerHTML=chevronSvg;return button;
   }
 
   function escapeHtml(value) {
@@ -614,6 +700,7 @@
   }
 
   function render() {
+    closeMaterialMenu({restoreFocus:Boolean(openMaterialMenuId),afterRender:true});
     const actionReady=state.actionReady;
     SECTIONS.forEach((section)=>{
       const col=document.querySelector(`.col[data-section="${section}"]`);
@@ -621,15 +708,15 @@
       const materials=activeMaterials(section);
       const primary=col.querySelector('.group-card');
       primary.querySelector('.count').textContent=materials.length;
-      primary.classList.toggle('busy',state.busy.has(`create:${section}`)||!actionReady);
-      primary.setAttribute('aria-busy',String(state.busy.has(`create:${section}`)||!actionReady));
+      primary.classList.toggle('busy',state.busy.has(`create:${section}`));
+      primary.setAttribute('aria-busy',String(state.busy.has(`create:${section}`)));
       primary.setAttribute('aria-disabled',String(!actionReady));
       const uploadButton=primary.querySelector('[data-upload-section]');if(uploadButton)uploadButton.disabled=!actionReady;
       const files=$(`files-${section}`);files.textContent='';
       materials.forEach((item)=>files.appendChild(materialCard(item,materials.length)));
-      const add=document.createElement('button');add.type='button';add.className='file-add';add.dataset.addLink=section;add.textContent='+ добавить ссылку';add.disabled=!actionReady||state.busy.has(`link:${section}`);add.setAttribute('aria-label',`Добавить ссылку в ${section}`);files.appendChild(add);
+      const add=document.createElement('button');add.type='button';add.className='file-add';add.dataset.addDocument=section;add.textContent='+ добавить документ';add.disabled=!actionReady||state.busy.has(`link:${section}`);add.setAttribute('aria-label',`Добавить документ в ${section}`);files.appendChild(add);
     });
-    postHeight();scheduleEmbedBridgeGeometry();scheduleDownloadGrantRenewal();resumeDeferredActionProofRefresh();
+    restorePendingMaterialMenuFocus();postHeight();scheduleEmbedBridgeGeometry();scheduleDownloadGrantRenewal();resumeDeferredActionProofRefresh();
   }
 
   function scheduleActionProofRefresh(delay) {
@@ -691,17 +778,17 @@
     const section=sectionFor(item),group=GROUPS[section];
     const directDownloadHref=freshDirectDownloadUrl(item),courierHref=downloadCourierHref(item);
     const directHref=materialOpenHref(item);
-    const card=document.createElement(courierHref||directHref?'a':'article');card.className=`btn ${group.cls} item-card`;card.dataset.itemId=item.id;card.tabIndex=0;card.draggable=state.authoritative&&!String(item.id).startsWith('pending:');
-    if(courierHref){card.href=courierHref;card.target='_blank';card.rel='noopener noreferrer';card.referrerPolicy='no-referrer';if(directDownloadHref)card.dataset.downloadDirect='true';else card.dataset.downloadCourier='true';card.classList.add('download-ready');}
-    else if(directHref){card.href=directHref;card.target='_blank';card.rel='noopener noreferrer';card.referrerPolicy='no-referrer';card.dataset.directOpen='true';}
-    else card.setAttribute('role','link');
+    const href=courierHref||directHref,card=document.createElement('article');card.className=`btn ${group.cls} item-card`;card.dataset.itemId=item.id;card.draggable=state.authoritative&&!String(item.id).startsWith('pending:');
+    const main=document.createElement(href?'a':'button');main.className='material-card-main';main.dataset.itemOpen=item.id;
+    if(href){main.href=href;main.target='_blank';main.rel='noopener noreferrer';main.referrerPolicy='no-referrer';}
+    else{main.type='button';main.setAttribute('role','link');}
+    if(courierHref){if(directDownloadHref)main.dataset.downloadDirect='true';else main.dataset.downloadCourier='true';card.classList.add('download-ready');}
+    else if(directHref)main.dataset.directOpen='true';
     if(item.syncStatus==='pending')card.classList.add('pending');if(item.error)card.classList.add('error');
     const action=canPrepareDownload(item)?'Скачать':(item.openUrl?'Открыть':'Повторить');
-    card.setAttribute('aria-label',`${action}: ${item.name||'Без названия'}`);
-    card.setAttribute('aria-busy',String(item.syncStatus==='pending'));
-    card.innerHTML=cardMarkup(section,item.name||'Без названия',count,'Изменить материал',`data-edit-id="${escapeHtml(item.id)}"`);
-    card.querySelector('.title').textContent=item.name||'Без названия';
-    const editButton=card.querySelector('[data-edit-id]');if(editButton)editButton.disabled=!state.authoritative;
+    main.setAttribute('aria-label',`${action}: ${item.name||'Без названия'}`);main.setAttribute('aria-busy',String(item.syncStatus==='pending'));
+    card.setAttribute('aria-busy',String(item.syncStatus==='pending'));main.innerHTML=materialCardMarkup(section,count);main.querySelector('.title').textContent=item.name||'Без названия';
+    const menuButton=materialMenuTrigger(item);menuButton.disabled=!state.authoritative||String(item.id).startsWith('pending:');card.append(main,menuButton);
     return card;
   }
 
@@ -1042,9 +1129,9 @@
     }
   }
 
-  function openLinkModal(section) {
+  function openLinkModal(section,returnFocus) {
     if(!state.actionReady){toast('Завершаю синхронизацию…');return;}
-    $('linkSection').value=section;$('linkUrl').value='';openModal('linkModal');setTimeout(()=>$('linkUrl').focus(),40);
+    $('linkSection').value=section;$('linkUrl').value='';openModal('linkModal',returnFocus);setTimeout(()=>$('linkUrl').focus(),40);
   }
 
   async function addLink(event) {
@@ -1061,6 +1148,102 @@
   function chooseFiles(section) {
     if(!state.actionReady){toast('Завершаю синхронизацию…');return;}
     const input=$('fileInput');input.dataset.section=section;input.click();
+  }
+
+  function openAddDocumentModal(section) {
+    if(!state.actionReady){toast('Завершаю синхронизацию…');return;}
+    $('addDocumentSection').value=SECTIONS.includes(section)?section:'Drive';openModal('addDocumentModal');
+    setTimeout(()=>document.querySelector('[data-document-action="link"]')?.focus(),40);
+  }
+
+  function handleAddDocumentAction(event) {
+    const action=event.currentTarget.dataset.documentAction,section=$('addDocumentSection').value||'Drive',returnFocus=modalReturnFocus.get('addDocumentModal');
+    closeModal('addDocumentModal',false);
+    if(action==='link')openLinkModal(section,returnFocus);else if(action==='upload'){chooseFiles(section);restoreFocusTarget(returnFocus);}
+  }
+
+  function materialMenuHref(item) {
+    if(!item)return '';
+    if(canPrepareDownload(item))return freshDirectDownloadUrl(item)||downloadCourierHref(item);
+    return materialOpenHref(item);
+  }
+
+  function materialMenuTriggerForId(id) {
+    return Array.from(document.querySelectorAll('[data-material-menu-id]')).find((trigger)=>trigger.dataset.materialMenuId===id)||null;
+  }
+
+  function restoreMaterialMenuFocus(id,preferred) {
+    if(!id)return;
+    window.setTimeout(()=>{const trigger=preferred&&preferred.isConnected?preferred:materialMenuTriggerForId(id);if(trigger&&!trigger.disabled)trigger.focus();},0);
+  }
+
+  function restorePendingMaterialMenuFocus() {
+    const id=pendingMaterialMenuFocusId;if(!id)return;pendingMaterialMenuFocusId='';restoreMaterialMenuFocus(id,null);
+  }
+
+  function closeMaterialMenu(options) {
+    const settings=options||{};
+    const menu=$('materialMenu');if(!menu)return;
+    const id=openMaterialMenuId,trigger=openMaterialMenuTrigger||materialMenuTriggerForId(id);
+    const shouldRestore=Boolean(id&&(settings.restoreFocus||(settings.restoreIfFocused&&menu.contains(document.activeElement))));
+    if(trigger)trigger.setAttribute('aria-expanded','false');
+    openMaterialMenuId='';openMaterialMenuTrigger=null;menu.hidden=true;menu.removeAttribute('style');
+    if(shouldRestore){if(settings.afterRender)pendingMaterialMenuFocusId=id;else restoreMaterialMenuFocus(id,trigger);}
+  }
+
+  function toggleMaterialMenu(id,trigger) {
+    const item=state.materials.find((material)=>material.id===id);
+    if(!state.authoritative||!item||String(id).startsWith('pending:')){toast('Завершаю синхронизацию…');return;}
+    if(openMaterialMenuId===id){closeMaterialMenu({restoreFocus:true});return;}
+    closeMaterialMenu();openMaterialMenuId=id;openMaterialMenuTrigger=trigger;trigger.setAttribute('aria-expanded','true');
+    const menu=$('materialMenu'),open=$('materialMenuOpen'),href=materialMenuHref(item);
+    open.removeAttribute('href');open.hidden=!href;if(href){open.href=href;open.textContent=canPrepareDownload(item)?'Скачать документ':'Открыть документ';}
+    menu.hidden=false;
+    const triggerRect=trigger.getBoundingClientRect(),menuRect=menu.getBoundingClientRect(),gap=5;
+    const left=Math.min(Math.max(10,triggerRect.right-menuRect.width),window.innerWidth-menuRect.width-10);
+    const below=triggerRect.bottom+gap,top=below+menuRect.height<=window.innerHeight-10?below:Math.max(10,triggerRect.top-menuRect.height-gap);
+    menu.style.left=`${Math.round(left)}px`;menu.style.top=`${Math.round(top)}px`;
+    const first=menu.querySelector('[role="menuitem"]:not([hidden])');if(first)setTimeout(()=>{if(!menu.hidden&&openMaterialMenuId===id)first.focus();},0);
+  }
+
+  function handleMaterialMenuAction(event) {
+    const action=event.currentTarget.dataset.materialMenuAction,id=openMaterialMenuId,returnFocus=openMaterialMenuTrigger;
+    const item=state.materials.find((material)=>material.id===id);closeMaterialMenu();if(!item)return;
+    if(action==='edit')openEdit(item.id,returnFocus);else if(action==='archive')archiveMaterial(item);
+  }
+
+  function refreshMaterialMenuOpenTarget(target) {
+    const id=openMaterialMenuId,item=state.materials.find((material)=>material.id===id);
+    const href=state.authoritative&&item?materialMenuHref(item):'';
+    target.removeAttribute('href');if(href)target.href=href;
+    return {item,href};
+  }
+
+  function handleMaterialMenuOpenIntent(event) {
+    const current=refreshMaterialMenuOpenTarget(event.currentTarget);
+    if(current.href)return;
+    if(event.cancelable)event.preventDefault();
+    if(canPrepareDownload(current.item))primeDownloadGrant(current.item.id,downloadPrimeGeneration);
+  }
+
+  function handleMaterialMenuOpen(event) {
+    const current=refreshMaterialMenuOpenTarget(event.currentTarget),item=current.item,href=current.href;
+    if(!href){event.preventDefault();const refreshable=canPrepareDownload(item);closeMaterialMenu({restoreFocus:true});if(refreshable)primeDownloadGrant(item.id,downloadPrimeGeneration);toast(refreshable?'Обновляю защищённую ссылку…':'Ссылка на документ пока недоступна');return;}
+    if(item.provider==='Google Drive')recentDrivePageIds.add(item.id);
+    closeMaterialMenu({restoreFocus:true});
+  }
+
+  function handleMaterialMenuKeydown(event) {
+    const menu=$('materialMenu');if(menu.hidden)return;
+    if(event.key==='Escape'||event.key==='Tab'){event.preventDefault();event.stopPropagation();closeMaterialMenu({restoreFocus:true});return;}
+    const items=Array.from(menu.querySelectorAll('[role="menuitem"]:not([hidden])'));if(!items.length)return;
+    let index=items.indexOf(document.activeElement),next=index;
+    if(event.key==='ArrowDown')next=index<0?0:(index+1)%items.length;
+    else if(event.key==='ArrowUp')next=index<0?items.length-1:(index-1+items.length)%items.length;
+    else if(event.key==='Home')next=0;
+    else if(event.key==='End')next=items.length-1;
+    else return;
+    event.preventDefault();event.stopPropagation();items[next].focus();
   }
 
   function isBoundedAncestor(source) {
@@ -1303,13 +1486,13 @@
 
   function refreshDownloadGrantLink(pageId) {
     const item=state.materials.find((candidate)=>candidate.id===pageId),card=document.querySelector(`[data-item-id="${pageId}"]`);
-    if(!item||!card||card.tagName!=='A')return;
+    const main=card&&card.querySelector('[data-item-open]');if(!item||!card||!main||main.tagName!=='A')return;
     const directHref=freshDirectDownloadUrl(item),href=downloadCourierHref(item);
-    if(!href){card.removeAttribute('href');delete card.dataset.downloadDirect;delete card.dataset.downloadCourier;card.classList.remove('download-ready');return;}
-    card.href=href;
+    if(!href){main.removeAttribute('href');delete main.dataset.downloadDirect;delete main.dataset.downloadCourier;card.classList.remove('download-ready');return;}
+    main.href=href;
     card.classList.add('download-ready');
-    if(directHref){card.dataset.downloadDirect='true';delete card.dataset.downloadCourier;}
-    else{card.dataset.downloadCourier='true';delete card.dataset.downloadDirect;}
+    if(directHref){main.dataset.downloadDirect='true';delete main.dataset.downloadCourier;}
+    else{main.dataset.downloadCourier='true';delete main.dataset.downloadDirect;}
   }
 
   function currentDownloadMaterialForPrime(materialId,fingerprint) {
@@ -1426,11 +1609,11 @@
     toast('Ссылка на файл пока недоступна');
   }
 
-  function openEdit(id) {
+  function openEdit(id,returnFocus) {
     if(!state.authoritative){toast('Завершаю синхронизацию…');return;}
     const item=state.materials.find(material=>material.id===id);if(!item||String(id).startsWith('pending:'))return;
     $('editId').value=item.id;$('editName').value=item.name||'';$('editSection').value=sectionFor(item);$('editUrl').value=item.openUrl||'';
-    const external=item.provider==='External URL';$('editUrl').hidden=!external;$('editUrlLabel').hidden=!external;openModal('editModal');setTimeout(()=>$('editName').focus(),40);
+    const external=item.provider==='External URL';$('editUrl').hidden=!external;$('editUrlLabel').hidden=!external;openModal('editModal',returnFocus);setTimeout(()=>$('editName').focus(),40);
   }
 
   async function saveEdit(event) {
@@ -1444,9 +1627,13 @@
   function currentItem(){return state.materials.find(item=>item.id===$('editId').value);}
 
   async function archiveCurrent() {
-    const item=currentItem();if(!item||!window.confirm(`Архивировать «${item.name}»? Сам файл останется в Google Drive.`))return;
+    const item=currentItem();if(item)await archiveMaterial(item);
+  }
+
+  async function archiveMaterial(item) {
+    if(!item||!window.confirm(`Скрыть «${item.name}» из виджета? Запись «Знание» и сам файл останутся.`))return;
     const operation=stableIdempotency('archive',item.id);
-    try { await call('apiArchive',{taskPageId,pageId:item.id,idempotencyKey:operation.value});clearIdempotency(operation);downloadGrants.delete(item.id);downloadGrantRetryNotBefore.delete(item.id);state.materials=state.materials.filter(material=>material.id!==item.id);closeModal('editModal');render();toast('Материал архивирован'); }
+    try { await call('apiArchive',{taskPageId,pageId:item.id,idempotencyKey:operation.value});clearIdempotency(operation);downloadGrants.delete(item.id);downloadGrantRetryNotBefore.delete(item.id);state.materials=state.materials.filter(material=>material.id!==item.id);closeModal('editModal');render();toast('Материал скрыт из виджета'); }
     catch(error){toast(error.message);}
   }
 
@@ -1461,13 +1648,13 @@
 
   function handleGridClick(event) {
     const upload=event.target.closest('[data-upload-section]');if(upload){event.preventDefault();event.stopPropagation();chooseFiles(upload.dataset.uploadSection);return;}
-    const add=event.target.closest('[data-add-link]');if(add){openLinkModal(add.dataset.addLink);return;}
-    const edit=event.target.closest('[data-edit-id]');if(edit){event.preventDefault();event.stopPropagation();openEdit(edit.dataset.editId);return;}
-    const itemCard=event.target.closest('[data-item-id]');if(itemCard){if(itemCard.tagName==='A'){if(itemCard.dataset.downloadDirect==='true'){
-      const item=state.materials.find((material)=>material.id===itemCard.dataset.itemId),freshHref=freshDirectDownloadUrl(item);
-      if(!item||!freshHref){const fallbackHref=item&&downloadCourierHref(item);if(!fallbackHref){itemCard.removeAttribute('href');delete itemCard.dataset.downloadDirect;delete itemCard.dataset.downloadCourier;itemCard.classList.remove('download-ready');event.preventDefault();toast('Обновляю защищённую ссылку…');return;}itemCard.href=fallbackHref;itemCard.dataset.downloadCourier='true';delete itemCard.dataset.downloadDirect;}
-      else if(itemCard.getAttribute('href')!==freshHref)itemCard.href=freshHref;
-    }if(itemCard.dataset.directOpen==='true')recentDrivePageIds.add(itemCard.dataset.itemId);return;}const item=state.materials.find(material=>material.id===itemCard.dataset.itemId);if(item)openExact(item);return;}
+    const add=event.target.closest('[data-add-document]');if(add){event.preventDefault();openAddDocumentModal(add.dataset.addDocument);return;}
+    const menuTrigger=event.target.closest('[data-material-menu-id]');if(menuTrigger){event.preventDefault();event.stopPropagation();toggleMaterialMenu(menuTrigger.dataset.materialMenuId,menuTrigger);return;}
+    const itemOpen=event.target.closest('[data-item-open]');if(itemOpen){const itemCard=itemOpen.closest('[data-item-id]'),item=state.materials.find((material)=>material.id===itemOpen.dataset.itemOpen);if(itemOpen.tagName==='A'&&itemOpen.getAttribute('href')){if(itemOpen.dataset.downloadDirect==='true'){
+      const freshHref=freshDirectDownloadUrl(item);
+      if(!item||!freshHref){const fallbackHref=item&&downloadCourierHref(item);if(!fallbackHref){itemOpen.removeAttribute('href');delete itemOpen.dataset.downloadDirect;delete itemOpen.dataset.downloadCourier;if(itemCard)itemCard.classList.remove('download-ready');event.preventDefault();toast('Обновляю защищённую ссылку…');if(item&&canPrepareDownload(item))primeDownloadGrant(item.id,downloadPrimeGeneration);return;}itemOpen.href=fallbackHref;itemOpen.dataset.downloadCourier='true';delete itemOpen.dataset.downloadDirect;}
+      else if(itemOpen.getAttribute('href')!==freshHref)itemOpen.href=freshHref;
+    }if(itemOpen.dataset.directOpen==='true'&&item)recentDrivePageIds.add(item.id);return;}event.preventDefault();if(item)openExact(item);return;}
     const service=event.target.closest('[data-service]');if(!service)return;const section=service.dataset.service;
     if(isEmbedBridgeMode())return;
     if(!state.actionReady){toast('Завершаю синхронизацию…');return;}
@@ -1486,8 +1673,23 @@
   function handleDragOver(event){if(!state.dragId)return;const col=event.target.closest('.col');if(col)event.preventDefault();}
   function handleDropReorder(event){if(!state.dragId)return;event.preventDefault();const col=event.target.closest('.col');if(!col)return;const item=state.materials.find(material=>material.id===state.dragId);if(!item)return;const target=event.target.closest('.item-card[data-item-id]');item.section=col.dataset.section;const peers=activeMaterials(item.section).filter(peer=>peer.id!==item.id);let index=target?peers.findIndex(peer=>peer.id===target.dataset.itemId):peers.length;if(index<0)index=peers.length;peers.splice(index,0,item);peers.forEach((peer,position)=>peer.position=position);handleDragEnd();render();persistOrder();}
 
-  function openModal(id) { const modal=$(id);modal.classList.add('open');modal.setAttribute('aria-hidden','false'); }
-  function closeModal(id) { const modal=$(id);modal.classList.remove('open');modal.setAttribute('aria-hidden','true'); }
+  function focusReturnDescriptor(value) {
+    if(value&&value.element)return value;
+    const element=value&&value.nodeType===1?value:document.activeElement;
+    return {element,materialMenuId:element&&element.dataset&&element.dataset.materialMenuId||'',addDocument:element&&element.dataset&&element.dataset.addDocument||'',itemOpen:element&&element.dataset&&element.dataset.itemOpen||'',service:element&&element.dataset&&element.dataset.service||''};
+  }
+  function focusTargetFromDescriptor(descriptor) {
+    if(!descriptor)return null;if(descriptor.element&&descriptor.element.isConnected)return descriptor.element;
+    if(descriptor.materialMenuId)return materialMenuTriggerForId(descriptor.materialMenuId);
+    const match=(selector,key,value)=>Array.from(document.querySelectorAll(selector)).find((element)=>element.dataset[key]===value)||null;
+    if(descriptor.addDocument)return match('[data-add-document]','addDocument',descriptor.addDocument);
+    if(descriptor.itemOpen)return match('[data-item-open]','itemOpen',descriptor.itemOpen);
+    if(descriptor.service)return match('[data-service]','service',descriptor.service);
+    return null;
+  }
+  function restoreFocusTarget(descriptor) { if(!descriptor)return;window.setTimeout(()=>{const target=focusTargetFromDescriptor(descriptor);if(target&&!target.disabled)target.focus();},0); }
+  function openModal(id,returnFocus) { const modal=$(id);if(!modal.classList.contains('open'))modalReturnFocus.set(id,focusReturnDescriptor(returnFocus));modal.classList.add('open');modal.setAttribute('aria-hidden','false'); }
+  function closeModal(id,restoreFocus) { const modal=$(id),returnFocus=modalReturnFocus.get(id);modalReturnFocus.delete(id);modal.classList.remove('open');modal.setAttribute('aria-hidden','true');if(restoreFocus!==false)restoreFocusTarget(returnFocus); }
   function showFatal(message,retryable) { const box=$('fatal');box.textContent=message;if(retryable){const button=document.createElement('button');button.type='button';button.textContent='Повторить';button.addEventListener('click',bootstrap);box.appendChild(button);}box.hidden=false;postHeight(); }
   function clearFatal(){const box=$('fatal');box.hidden=true;box.textContent='';}
   function toast(message){clearTimeout(toastTimer);$('toast').textContent=message;$('liveStatus').textContent=message;$('toast').classList.add('show');toastTimer=setTimeout(()=>$('toast').classList.remove('show'),3200);}
@@ -1508,9 +1710,14 @@
     $('fileInput').addEventListener('change',(event)=>{const section=event.target.dataset.section||'';uploadFiles(event.target.files,section);event.target.value='';});
     window.addEventListener('message',receiveEmbedBridgeMessage);
     $('linkForm').addEventListener('submit',addLink);$('editForm').addEventListener('submit',saveEdit);$('archiveButton').addEventListener('click',archiveCurrent);
+    document.querySelectorAll('[data-document-action]').forEach(button=>button.addEventListener('click',handleAddDocumentAction));
+    document.querySelectorAll('[data-material-menu-action]').forEach(button=>button.addEventListener('click',handleMaterialMenuAction));
+    const materialMenuOpen=$('materialMenuOpen');materialMenuOpen.addEventListener('pointerdown',handleMaterialMenuOpenIntent);materialMenuOpen.addEventListener('contextmenu',handleMaterialMenuOpenIntent);materialMenuOpen.addEventListener('click',handleMaterialMenuOpen);materialMenuOpen.addEventListener('auxclick',handleMaterialMenuOpen);$('materialMenu').addEventListener('keydown',handleMaterialMenuKeydown);
     document.querySelectorAll('[data-close]').forEach(button=>button.addEventListener('click',()=>closeModal(button.dataset.close)));
     document.querySelectorAll('.modal-back').forEach(modal=>modal.addEventListener('click',(event)=>{if(event.target===modal)closeModal(modal.id);}));
-    document.addEventListener('keydown',(event)=>{if(event.key==='Escape')document.querySelectorAll('.modal-back.open').forEach(modal=>closeModal(modal.id));});
+    document.addEventListener('click',(event)=>{if(!event.target.closest('#materialMenu,[data-material-menu-id]'))closeMaterialMenu();});
+    document.addEventListener('keydown',(event)=>{if(event.key==='Escape'){if(!$('materialMenu').hidden){event.preventDefault();closeMaterialMenu({restoreFocus:true});}document.querySelectorAll('.modal-back.open').forEach(modal=>closeModal(modal.id));}});
+    window.addEventListener('resize',()=>closeMaterialMenu({restoreIfFocused:true}));window.addEventListener('scroll',()=>closeMaterialMenu({restoreIfFocused:true}),true);
     const refreshOnReturn=()=>{
       if(!state.authoritative)return Promise.resolve(false);
       if(returnRefreshPromise)return returnRefreshPromise;

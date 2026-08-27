@@ -8,7 +8,23 @@
   const interactionGrid = document.getElementById('interactionGrid');
   const fatal = document.getElementById('fatal');
   const createRequests = new Map();
-  const embedNonce = randomId().replace(/-/g, '');
+  let earlyBridgeEvents = [];
+  let earlyBridgeListener = null;
+  const earlyEmbedNonce = (() => {
+    try {
+      const early = window.__notionWidgetEarlyBridge;
+      const value = String(early && early.nonce || '').toLowerCase();
+      if (/^[0-9a-f]{32}$/.test(value)) {
+        earlyBridgeEvents = Array.isArray(early.events) ? early.events : [];
+        earlyBridgeListener = typeof early.listener === 'function' ? early.listener : null;
+      }
+      delete window.__notionWidgetEarlyBridge;
+      return /^[0-9a-f]{32}$/.test(value) ? value : '';
+    } catch (_error) {
+      return '';
+    }
+  })();
+  const embedNonce = earlyEmbedNonce || randomId().replace(/-/g, '');
   let bridge = null;
   let noticeTimer = 0;
   let geometryRequestId = 0;
@@ -377,6 +393,7 @@
       applyPrimaryGeometry(data.geometry, data.viewport);
       fatal.hidden = true;
       document.body.classList.add('widget-ready');
+      if (bridge.authoritative && bridge.actionReady) document.body.classList.add('widget-action-ready');
       completeCreateRequests(data.completedCreateRequestIds);
       refreshAllControlHrefs();
       createRequests.forEach((record) => { if (record.actionStarted && !record.actionAcknowledged && Number(record.ackAttempts || 0) < 2) dispatchCreateAction(record); });
@@ -475,9 +492,13 @@
   }
   installInteractionControls();
   window.addEventListener('message', handleWidgetMessage);
+  if (earlyBridgeListener && typeof window.removeEventListener === 'function') window.removeEventListener('message', earlyBridgeListener);
+  earlyBridgeEvents.forEach(handleWidgetMessage);
+  earlyBridgeEvents = [];
   window.addEventListener('resize', refreshPrimaryGeometry);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshPrimaryGeometry(); });
   if (window.ResizeObserver) new ResizeObserver(refreshPrimaryGeometry).observe(widget);
   window.setInterval(runGeometryHeartbeat, 750);
-  widget.src = `${DEPLOYMENT_URL}?${params.toString()}`;
+  const widgetUrl = `${DEPLOYMENT_URL}?${params.toString()}`;
+  if (widget.src !== widgetUrl) widget.src = widgetUrl;
 })();

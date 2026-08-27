@@ -104,6 +104,128 @@ function installReservationDriveMock(backend) {
   return {files,get creates(){return creates;},get updates(){return updates;},get lists(){return lists;},get gets(){return gets;}};
 }
 
+function installUploadApiHarness({ recovery = false, slot, existingPage = null } = {}) {
+  const backend = loadBackend();
+  const taskId = '3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const cfg = {
+    authorizedTaskPageId: taskId,
+    deniedPageIds: {},
+    rootFolderId: 'TrustedRootFolder123',
+    maxUploadBytes: 8 * 1024 * 1024,
+    dataSourceId: '3822d627-39a1-8018-a2dc-000b95bf5722',
+    notionVersion: '2026-03-11',
+    notionToken: 'test-notion-hmac-secret'
+  };
+  const trustedMeta = {
+    taskName: 'Проверенная задача',
+    folderId: 'TrustedTaskFolder123',
+    context: { sphereIds: [], directionIds: [], projectIds: [], path: '', ancestorIds: '', depth: 0 }
+  };
+  const chosenSlot = slot === undefined ? { taskMeta: trustedMeta, position: 7 } : slot;
+  const driveFile = {
+    id: 'UploadedDriveFile123',
+    name: 'brief.pdf',
+    mimeType: 'application/pdf',
+    size: '3',
+    md5Checksum: 'abc123',
+    webViewLink: 'https://drive.google.com/file/d/UploadedDriveFile123/view'
+  };
+  const createdPage = {
+    id: '3c72d627-39a1-8120-bd0a-f969e6846945',
+    material: {
+      id: '3c72d627-39a1-8120-bd0a-f969e6846945',
+      name: 'brief.pdf',
+      section: 'Docs',
+      format: 'PDF',
+      provider: 'Google Drive',
+      openUrl: driveFile.webViewLink,
+      googleFileId: driveFile.id,
+      folderId: chosenSlot && chosenSlot.taskMeta ? chosenSlot.taskMeta.folderId : 'FallbackTaskFolder123',
+      widgetOwned: true,
+      widgetOwnedBinary: true,
+      syncStatus: 'synced',
+      archived: false,
+      position: chosenSlot ? chosenSlot.position : 23
+    }
+  };
+  const calls = {
+    schema: 0,
+    limit: 0,
+    claim: [],
+    taskAssert: 0,
+    idemLookup: 0,
+    folder: 0,
+    driveLookup: 0,
+    fileLookup: 0,
+    createBinary: [],
+    notionUpload: [],
+    notionCreate: [],
+    nextPosition: 0,
+    driveMetadata: 0,
+    marker: [],
+    cache: [],
+    registry: [],
+    idempotencyKey: ''
+  };
+
+  backend.Utilities.base64Decode = (value) => [...Buffer.from(String(value), 'base64')];
+  backend.w19AuthorizedConfig_ = () => cfg;
+  backend.w19AssertSchema_ = () => { calls.schema += 1; return { ok: true }; };
+  backend.w19EffectiveUploadLimit_ = () => { calls.limit += 1; return 1024; };
+  backend.w19WithIdempotency_ = (key, fn) => {
+    calls.idempotencyKey = key;
+    return fn({ recovery, attemptId: '1185d2e2-4728-4bcd-b22d-67a27a7928c3' });
+  };
+  backend.w19WithMutationLock_ = (fn) => fn();
+  backend.w20RegistryClaimCreateSlot_ = (...args) => { calls.claim.push(args); return chosenSlot; };
+  backend.w19AssertTaskPage_ = (value) => {
+    calls.taskAssert += 1;
+    assert.equal(value, taskId);
+    return { id: taskId, name: 'Проверенная задача', page: { properties: {} } };
+  };
+  backend.w19FindMaterialByIdempotency_ = () => { calls.idemLookup += 1; return existingPage; };
+  backend.w19EnsureTaskFolder_ = () => { calls.folder += 1; return { id: 'FallbackTaskFolder123' }; };
+  backend.w19FindDriveByIdempotency_ = () => { calls.driveLookup += 1; return null; };
+  backend.w19FindMaterialByGoogleFile_ = () => { calls.fileLookup += 1; return null; };
+  backend.w19NextPosition_ = () => { calls.nextPosition += 1; return 23; };
+  backend.w19CreateBinaryFile_ = (...args) => { calls.createBinary.push(args); return driveFile; };
+  backend.w19CreateAndSendNotionUpload_ = (...args) => {
+    calls.notionUpload.push(args);
+    return { id: '43833259-72ae-404e-8441-b6577f3159b4' };
+  };
+  backend.w19CreateNotionMaterial_ = (task, data, receivedCfg) => {
+    calls.notionCreate.push({ task, data, cfg: receivedCfg });
+    createdPage.material.folderId = data.googleFolderId;
+    createdPage.material.position = data.position;
+    createdPage.material.idempotency = data.idempotency;
+    return createdPage;
+  };
+  backend.w19MaterialFromPage_ = (page) => page.material;
+  backend.w19GetDriveMetadata_ = () => { calls.driveMetadata += 1; return driveFile; };
+  backend.w19MarkDriveNotionPage_ = (...args) => { calls.marker.push(args); return true; };
+  backend.w20CacheDownloadMaterials_ = (...args) => calls.cache.push(args);
+  backend.w20RegistryUpsert_ = (...args) => { calls.registry.push(args); return true; };
+
+  return {
+    backend,
+    taskId,
+    cfg,
+    calls,
+    driveFile,
+    createdPage,
+    input: {
+      taskPageId: taskId,
+      idempotencyKey: 'upload-request-0001',
+      name: 'brief.pdf',
+      mimeType: 'application/pdf',
+      dataBase64: 'AQID',
+      section: 'Docs',
+      folderId: 'CallerControlledFolder999',
+      position: 999
+    }
+  };
+}
+
 test('Google Drive metadata is authoritative for title, type and canonical open URL', () => {
   const core = loadCore();
   const doc = core.describeGoogleMetadata({
@@ -495,6 +617,117 @@ test('client materials expose only the create request id, never the canonical id
   assert.match(archiveState, /w20MaterialForClient_\(material, task\.id, cfg\)/);
 });
 
+test('archive hides one card while preserving its Notion knowledge and Google Drive file', () => {
+  const backend = loadBackend();
+  const taskId = '3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const pageId = '3c72d627-39a1-4120-8d0a-f969e6846945';
+  const fileId = 'NativeGoogleDoc12345';
+  const folderId = 'OwnedTaskFolder12345';
+  const compactTask = backend.WidgetV19Core.compactUuid(taskId);
+  const compactPage = backend.WidgetV19Core.compactUuid(pageId);
+  const copy = (value) => JSON.parse(JSON.stringify(value));
+  let notionPage = {
+    id: pageId,
+    in_trash: false,
+    url: `https://www.notion.so/${compactPage}`,
+    last_edited_time: '2026-08-27T00:00:00.000Z',
+    properties: {
+      'Name': { title: [{ type: 'text', text: { content: 'Документ для знаний' }, plain_text: 'Документ для знаний' }] },
+      'Тип': { select: { name: 'Знание' } },
+      'Внутри': { relation: [{ id: taskId }] },
+      'Ссылка': { url: `https://docs.google.com/document/d/${fileId}/edit` },
+      'Вложения': { files: [] },
+      'Формат знания': { select: { name: 'Файл' } },
+      'Архив': { checkbox: false },
+      '[SYS] Формат файла': { select: { name: 'Google Docs' } },
+      '[SYS] Раздел виджета': { select: { name: 'Docs' } },
+      '[SYS] Google File ID': { rich_text: [{ type: 'text', text: { content: fileId }, plain_text: fileId }] },
+      '[SYS] Google Folder ID': { rich_text: [{ type: 'text', text: { content: folderId }, plain_text: folderId }] },
+      '[SYS] Позиция': { number: 3 },
+      '[SYS] Sync status': { select: { name: 'synced' } },
+      '[SYS] Idempotency key': { rich_text: [] }
+    }
+  };
+  const driveFiles = new Map([[fileId, {
+    id: fileId,
+    name: 'Документ для знаний',
+    appProperties: {
+      widgetVersion: 'v20',
+      taskPageId: compactTask,
+      notionPageId: compactPage,
+      materialState: 'active'
+    }
+  }]]);
+  let notionPatch = null;
+  let driveDeleteCalls = 0;
+  let registryRemoval = null;
+
+  backend.w19AuthorizedConfig_ = () => ({});
+  backend.w19AssertTaskPage_ = () => ({ id: taskId });
+  backend.w19AssertMaterialForTask_ = (actualPageId, actualTaskId, _cfg, allowArchived) => {
+    assert.equal(actualPageId, pageId);
+    assert.equal(actualTaskId, taskId);
+    assert.equal(allowArchived, true);
+    return copy(notionPage);
+  };
+  backend.w19WithIdempotency_ = (_key, operation) => operation({});
+  backend.w19WithMutationLock_ = (operation) => operation();
+  backend.w20InvalidateDownloadMaterialCache_ = () => true;
+  backend.w19UpdateNotionPage_ = (actualPageId, properties) => {
+    assert.equal(actualPageId, pageId);
+    notionPatch = copy(properties);
+    notionPage.properties = { ...notionPage.properties, ...copy(properties) };
+    notionPage.last_edited_time = '2026-08-27T00:00:01.000Z';
+    return copy(notionPage);
+  };
+  backend.w20RegistryRemove_ = (actualTaskId, actualPageId) => {
+    registryRemoval = { taskId: actualTaskId, pageId: actualPageId };
+    return true;
+  };
+  backend.Drive = { Files: {
+    get(actualFileId) {
+      const file = driveFiles.get(String(actualFileId));
+      if (!file) throw new Error('not found');
+      return copy(file);
+    },
+    update(resource, actualFileId) {
+      const file = driveFiles.get(String(actualFileId));
+      if (!file) throw new Error('not found');
+      assert.deepEqual(Object.keys(resource), ['appProperties']);
+      file.appProperties = copy(resource.appProperties);
+      return copy(file);
+    },
+    delete() {
+      driveDeleteCalls += 1;
+      throw new Error('archive must never delete the Drive file');
+    }
+  } };
+
+  const result = backend.apiArchive({
+    taskPageId: taskId,
+    accessToken: 'capability_token_not_logged_or_returned',
+    pageId,
+    idempotencyKey: 'hide-material-once-001'
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.data.archived, true);
+  assert.equal(result.data.material.id, pageId);
+  assert.equal(result.data.material.archived, true);
+  assert.equal(result.data.material.syncStatus, 'archived');
+  assert.deepEqual(notionPatch, {
+    'Архив': { checkbox: true },
+    '[SYS] Sync status': { select: { name: 'archived' } }
+  });
+  assert.equal(notionPage.in_trash, false);
+  assert.equal(notionPage.properties.Name.title[0].plain_text, 'Документ для знаний');
+  assert.equal(driveDeleteCalls, 0);
+  assert.equal(driveFiles.has(fileId), true);
+  assert.equal(driveFiles.get(fileId).name, 'Документ для знаний');
+  assert.equal(driveFiles.get(fileId).appProperties.materialState, 'archived');
+  assert.deepEqual(registryRemoval, { taskId, pageId });
+});
+
 test('repeated Docs creation with one request id executes the document creation once', () => {
   const backend = loadBackend();
   const values = {};
@@ -757,6 +990,7 @@ test('create pool prepares one exact owned file per Google section and reuses it
   assert.equal(second.ok,true,JSON.stringify(second));
   assert.deepEqual(JSON.parse(JSON.stringify(second.data.preparedCreates)),JSON.parse(JSON.stringify(first.data.preparedCreates)));
   assert.equal(drive.creates,3,'second warm must reuse the exact files');
+  assert.equal(drive.gets,0,'a complete property snapshot must not trigger Drive metadata reads');
 });
 
 test('authoritative bootstrap reuses stored prepared descriptors without another Drive call', () => {
@@ -1077,6 +1311,15 @@ test('scheduled sync rejects browser calls that are neither owner nor the instal
   assert.match(guard, /event && event\.triggerUid/);
   assert.match(guard, /trigger\.getHandlerFunction\(\) === 'scheduledSync'/);
   assert.match(guard, /trigger\.getUniqueId\(\)/);
+});
+
+test('scheduled sync replenishes only missing create reservations on a best-effort path', () => {
+  const scheduled = backendSource.slice(backendSource.indexOf('function scheduledSync'), backendSource.indexOf('function w19ClaimScheduledSync_'));
+  const warm = backendSource.slice(backendSource.indexOf('function w20WarmCreatePool_'), backendSource.indexOf('function w20ReadClaimedReservation_'));
+  assert.match(scheduled, /try \{ w20WarmCreatePool_\(cfg\.authorizedTaskPageId, cfg\); \}/);
+  assert.match(scheduled, /catch \(warmError\) \{ w19Audit_\('create_reservation_background_deferred'/);
+  assert.match(warm, /var prepared = w20PreparedCreatePoolSnapshot_\(taskId\)/);
+  assert.match(warm, /if \(present\[section\]\) return/);
 });
 
 test('background rename trigger uses a five-minute cadence to stay below shared API limits', () => {
@@ -2054,6 +2297,121 @@ test('hosted URLs are not exposed for unrelated materials', () => {
   assert.equal(material.hostedAttachment, false);
 });
 
+test('fresh binary upload uses only the authoritative registry task, folder and atomic position', () => {
+  const harness = installUploadApiHarness();
+  const response = harness.backend.apiUpload(harness.input);
+
+  assert.equal(response.ok, true, JSON.stringify(response));
+  assert.equal(harness.calls.schema, 1);
+  assert.equal(harness.calls.limit, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.calls.claim)), [[harness.taskId, 'Docs', harness.cfg.rootFolderId]]);
+  assert.equal(harness.calls.taskAssert, 0, 'hot upload must not GET the task');
+  assert.equal(harness.calls.idemLookup, 0, 'fresh hot upload must not query duplicate knowledge');
+  assert.equal(harness.calls.folder, 0, 'hot upload must not ensure the task folder');
+  assert.equal(harness.calls.driveLookup, 0, 'fresh hot upload must not query duplicate Drive files');
+  assert.equal(harness.calls.fileLookup, 0, 'fresh hot upload must not query by Drive file id');
+  assert.equal(harness.calls.nextPosition, 0, 'hot upload must use the atomic registry position');
+  assert.equal(harness.calls.createBinary.length, 1);
+  assert.equal(harness.calls.createBinary[0][0].id, harness.taskId);
+  assert.equal(harness.calls.createBinary[0][0].name, 'Проверенная задача');
+  assert.equal(harness.calls.createBinary[0][1], 'TrustedTaskFolder123');
+  assert.deepEqual(Array.from(harness.calls.createBinary[0][4]), [1, 2, 3]);
+  assert.equal(harness.calls.notionUpload.length, 1);
+  assert.equal(harness.calls.notionCreate.length, 1);
+  assert.equal(harness.calls.notionCreate[0].data.googleFolderId, 'TrustedTaskFolder123');
+  assert.equal(harness.calls.notionCreate[0].data.position, 7);
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.calls.notionCreate[0].data.attachments)), [{
+    name: 'brief.pdf',
+    type: 'file_upload',
+    file_upload: { id: '43833259-72ae-404e-8441-b6577f3159b4' }
+  }]);
+  assert.equal(harness.calls.idempotencyKey, '3c62d62739a180a1aac7ec19ffc9ef8e|upload|upload-request-0001');
+  assert.equal(harness.calls.notionCreate[0].data.idempotency, harness.calls.idempotencyKey);
+  assert.equal(Object.hasOwn(response.data.material, 'idempotency'), false, 'full internal key must not reach the client');
+  assert.equal(response.data.material.folderId, 'TrustedTaskFolder123');
+  assert.equal(response.data.material.position, 7);
+  assert.equal(harness.calls.marker.length, 1);
+  assert.equal(harness.calls.cache.length, 1);
+  assert.equal(harness.calls.registry.length, 1);
+});
+
+test('upload recovery always runs the durable duplicate lookup and returns the same Drive and Notion object', () => {
+  const pageId = '3c72d627-39a1-8120-bd0a-f969e6846945';
+  const existingPage = {
+    id: pageId,
+    material: {
+      id: pageId,
+      name: 'brief.pdf',
+      section: 'Docs',
+      format: 'PDF',
+      provider: 'Google Drive',
+      openUrl: 'https://drive.google.com/file/d/UploadedDriveFile123/view',
+      googleFileId: 'UploadedDriveFile123',
+      folderId: 'FallbackTaskFolder123',
+      widgetOwned: true,
+      widgetOwnedBinary: true,
+      syncStatus: 'synced',
+      archived: false,
+      position: 4,
+      idempotency: '3c62d62739a180a1aac7ec19ffc9ef8e|upload|upload-request-0001'
+    }
+  };
+  const harness = installUploadApiHarness({ recovery: true, existingPage });
+  const response = harness.backend.apiUpload(harness.input);
+
+  assert.equal(response.ok, true, JSON.stringify(response));
+  assert.equal(response.data.duplicate, true);
+  assert.equal(response.data.material.id, pageId);
+  assert.equal(response.data.material.googleFileId, 'UploadedDriveFile123');
+  assert.equal(harness.calls.claim.length, 0, 'recovery must never claim a fresh registry slot');
+  assert.equal(harness.calls.taskAssert, 1);
+  assert.equal(harness.calls.idemLookup, 1);
+  assert.equal(harness.calls.driveMetadata, 1);
+  assert.equal(harness.calls.marker.length, 1);
+  assert.equal(harness.calls.folder, 0);
+  assert.equal(harness.calls.driveLookup, 0);
+  assert.equal(harness.calls.fileLookup, 0);
+  assert.equal(harness.calls.nextPosition, 0);
+  assert.equal(harness.calls.createBinary.length, 0);
+  assert.equal(harness.calls.notionUpload.length, 0);
+  assert.equal(harness.calls.notionCreate.length, 0);
+  assert.equal(harness.calls.cache.length, 1);
+});
+
+test('stale upload action proof falls back to live task, folder and position checks without fresh-attempt duplicate queries', () => {
+  const harness = installUploadApiHarness({ slot: null });
+  const response = harness.backend.apiUpload(harness.input);
+
+  assert.equal(response.ok, true, JSON.stringify(response));
+  assert.equal(harness.calls.claim.length, 1);
+  assert.equal(harness.calls.taskAssert, 1);
+  assert.equal(harness.calls.idemLookup, 0);
+  assert.equal(harness.calls.folder, 1);
+  assert.equal(harness.calls.driveLookup, 0);
+  assert.equal(harness.calls.fileLookup, 0);
+  assert.equal(harness.calls.createBinary.length, 1);
+  assert.equal(harness.calls.createBinary[0][1], 'FallbackTaskFolder123');
+  assert.equal(harness.calls.nextPosition, 1);
+  assert.equal(harness.calls.notionCreate[0].data.googleFolderId, 'FallbackTaskFolder123');
+  assert.equal(harness.calls.notionCreate[0].data.position, 23);
+});
+
+test('malformed fresh upload slot fails closed without falling through to caller or live task context', () => {
+  const harness = installUploadApiHarness({ slot: { taskMeta: { folderId: 'bad' }, position: 7 } });
+  const response = harness.backend.apiUpload(harness.input);
+
+  assert.equal(response.ok, false);
+  assert.equal(response.error.code, 'UPLOAD_CONTEXT_STALE');
+  assert.equal(harness.calls.claim.length, 1);
+  assert.equal(harness.calls.taskAssert, 0);
+  assert.equal(harness.calls.idemLookup, 0);
+  assert.equal(harness.calls.folder, 0);
+  assert.equal(harness.calls.nextPosition, 0);
+  assert.equal(harness.calls.createBinary.length, 0);
+  assert.equal(harness.calls.notionUpload.length, 0);
+  assert.equal(harness.calls.notionCreate.length, 0);
+});
+
 test('hosted Notion attachments are attached on creation and preserved during Drive sync', () => {
   const upload = backendSource.slice(backendSource.indexOf('function apiUpload'), backendSource.indexOf('function apiUpdateMaterial'));
   const create = backendSource.slice(backendSource.indexOf('function w19CreateNotionMaterial_'), backendSource.indexOf('function w19AppendContextProperties_'));
@@ -2064,7 +2422,7 @@ test('hosted Notion attachments are attached on creation and preserved during Dr
   assert.match(upload, /var outcome = w19WithIdempotency_/);
   assert.doesNotMatch(upload, /w19AssertMaterialForTask_\(outcome\.material\.id/);
   assert.match(upload, /pageForDownloadCache = page/);
-  assert.match(upload, /w20CacheDownloadMaterials_\(task\.id, \[pageForDownloadCache\], cfg\)/);
+  assert.match(upload, /w20CacheDownloadMaterials_\(taskId, \[pageForDownloadCache\], cfg\)/);
   assert.match(create, /Array\.isArray\(data\.attachments\)/);
   assert.match(sync, /driveData\.sourceUrl\s*&&\s*!material\.widgetOwnedBinary\s*&&\s*!material\.hostedAttachment/);
 });
@@ -2201,6 +2559,145 @@ test('download API is restricted to widget-owned binary files below the configur
   assert.match(guard, /driveParents\.indexOf\(folder\.id\) === -1/);
   assert.match(guard, /DOWNLOAD_NATIVE_GOOGLE_FILE/);
   assert.match(guard, /size > cfg\.maxUploadBytes/);
+});
+
+function installFastPrepareDownloadFixture(backend, options = {}) {
+  const taskId = '3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const pageId = '3c72d627-39a1-81e1-971f-c6b30665ce55';
+  const folderId = 'OwnedTaskFolder12345';
+  const rootFolderId = 'OwnedRootFolder12345';
+  const fileId = 'OwnedBinaryFile12345';
+  const compactTask = backend.WidgetV19Core.compactUuid(taskId);
+  const compactPage = backend.WidgetV19Core.compactUuid(pageId);
+  const nowIso = new Date().toISOString();
+  const cfg = {
+    authorizedTaskPageId: taskId,
+    dataSourceId: '3822d627-39a1-8018-a2dc-000b95bf5722',
+    rootFolderId,
+    maxUploadBytes: 1024,
+    allowedEmail: 'owner@example.com',
+    deniedPageIds: {}
+  };
+  const cached = { id: pageId, provider: 'Google Drive', googleFileId: fileId, folderId };
+  const meta = {
+    authoritative: true,
+    snapshotActiveCount: 1,
+    taskValidatedAt: nowIso,
+    snapshotValidatedAt: nowIso,
+    folderId,
+    rootFolderId,
+    folderVerified: true,
+    folderValidatedAt: nowIso
+  };
+  const registry = {
+    ok: true,
+    integrityOk: true,
+    activeCount: 1,
+    materials: [{
+      id: pageId,
+      provider: 'Google Drive',
+      googleFileId: fileId,
+      folderId,
+      widgetOwned: true,
+      widgetOwnedBinary: true,
+      archived: false,
+      syncStatus: 'synced'
+    }]
+  };
+  const drive = {
+    id: fileId,
+    name: 'report.pdf',
+    mimeType: 'application/pdf',
+    size: '123',
+    ownedByMe: true,
+    trashed: false,
+    parents: [folderId],
+    appProperties: {
+      widgetVersion: 'v20',
+      taskPageId: compactTask,
+      notionPageId: compactPage,
+      materialState: 'active'
+    }
+  };
+  const calls = { driveGets: 0, notion: 0, root: 0, fallback: 0 };
+  backend.w19AuthorizedConfig_ = () => cfg;
+  backend.w20DownloadGrantEpoch_ = () => 0;
+  backend.w20GetCachedDownloadMaterial_ = () => cached;
+  backend.w20RegistryReadTaskMeta_ = () => meta;
+  backend.w20RegistryReadTaskResult_ = () => registry;
+  backend.w19AssertMaterialForTask_ = () => { calls.notion += 1; throw new Error('hot cache must not query Notion'); };
+  backend.w19AssertRootFolder_ = () => { calls.root += 1; throw new Error('hot proof must not query the root folder'); };
+  backend.Drive = { Files: { get(receivedFileId) {
+    calls.driveGets += 1;
+    assert.equal(receivedFileId, fileId, 'the fast path may GET only the cached exact file id');
+    return JSON.parse(JSON.stringify(drive));
+  } } };
+  backend.w19AssertOwnedBinary_ = () => {
+    calls.fallback += 1;
+    if (options.rejectFallback) {
+      throw new backend.W19Error_('DOWNLOAD_NOT_OWNED', 'full ownership fallback rejected the file', false);
+    }
+    return { ...drive, id: fileId, ownedByMe: true, trashed: false, parents: [folderId] };
+  };
+  backend.w20IssueDownloadGrant_ = () => ({
+    mode: 'grant',
+    downloadGrant: 'a'.repeat(96),
+    expiresAt: new Date(Date.now() + 60_000).toISOString()
+  });
+  return { taskId, pageId, folderId, rootFolderId, fileId, cfg, cached, meta, registry, drive, calls };
+}
+
+test('prepare download hot cache plus exact fresh registry proof performs one exact Drive file GET', () => {
+  const backend = loadBackend();
+  const fixture = installFastPrepareDownloadFixture(backend);
+  const result = backend.apiPrepareDownload({ taskPageId: fixture.taskId, pageId: fixture.pageId });
+
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.data.mode, 'grant');
+  assert.equal(fixture.calls.driveGets, 1);
+  assert.equal(fixture.calls.notion, 0);
+  assert.equal(fixture.calls.root, 0);
+  assert.equal(fixture.calls.fallback, 0);
+  assert.equal(result.data.directDownloadUrl, backend.w20DriveDownloadUrl_(fixture.fileId, fixture.cfg.allowedEmail));
+});
+
+test('prepare download stale or mismatched registry proof uses the full ownership fallback', () => {
+  for (const scenario of ['stale proof', 'registry file mismatch', 'registry ownership mismatch']) {
+    const backend = loadBackend();
+    const fixture = installFastPrepareDownloadFixture(backend);
+    if (scenario === 'stale proof') {
+      const stale = new Date(Date.now() - 10 * 60_000).toISOString();
+      fixture.meta.taskValidatedAt = stale;
+      fixture.meta.snapshotValidatedAt = stale;
+    } else if (scenario === 'registry file mismatch') {
+      fixture.registry.materials[0].googleFileId = 'DifferentOwnedFile12345';
+    } else {
+      fixture.registry.materials[0].widgetOwnedBinary = false;
+    }
+
+    const result = backend.apiPrepareDownload({ taskPageId: fixture.taskId, pageId: fixture.pageId });
+    assert.equal(result.ok, true, `${scenario}: ${JSON.stringify(result)}`);
+    assert.equal(fixture.calls.driveGets, 0, `${scenario}: rejected proof must not use the fast file GET`);
+    assert.equal(fixture.calls.fallback, 1, `${scenario}: the existing full guard remains mandatory`);
+    assert.equal(fixture.calls.notion, 0, `${scenario}: the cache hit still avoids Notion`);
+  }
+});
+
+test('prepare download fast path fails closed on invalid live file id, marker or parent proof', () => {
+  for (const scenario of ['file id', 'marker', 'parent']) {
+    const backend = loadBackend();
+    const fixture = installFastPrepareDownloadFixture(backend, { rejectFallback: true });
+    if (scenario === 'file id') fixture.drive.id = 'DifferentOwnedFile12345';
+    if (scenario === 'marker') fixture.drive.appProperties.widgetVersion = 'untrusted';
+    if (scenario === 'parent') fixture.drive.parents = [fixture.folderId, 'UnexpectedParent12345'];
+
+    const result = backend.apiPrepareDownload({ taskPageId: fixture.taskId, pageId: fixture.pageId });
+    assert.equal(result.ok, false, `${scenario}: ${JSON.stringify(result)}`);
+    assert.equal(result.error.code, 'DOWNLOAD_NOT_OWNED');
+    assert.equal(fixture.calls.driveGets, 1, `${scenario}: exact live metadata must be checked once`);
+    assert.equal(fixture.calls.fallback, 1, `${scenario}: invalid fast metadata must fall back and reject`);
+    assert.equal(fixture.calls.notion, 0);
+  }
 });
 
 test('prepare download revalidates server ownership before issuing an account-bound Drive grant', () => {
