@@ -13,16 +13,21 @@ const wrapper = fs.readFileSync(path.join(root, 'apps-script-embed.html'), 'utf8
 const wrapperJs = fs.readFileSync(path.join(root, 'apps-script-embed.js'), 'utf8');
 const createCourier = fs.readFileSync(path.join(root, 'create-courier.html'), 'utf8');
 const earlyBootstrap = wrapper.match(/<script id="earlyWidgetBootstrap">([\s\S]*?)<\/script>/)?.[1] || '';
+const earlySnapshot = frontend.match(/<meta id="initialBootstrap"[\s\S]*?\/>\s*<script>\s*([\s\S]*?)<\/script>/)?.[1] || '';
 
 test('public wrapper isolates Apps Script from multi-login cookies', () => {
   assert.match(wrapper, /<iframe[^>]+id="widget"[^>]+credentialless|<iframe[^>]+credentialless[^>]+id="widget"/);
   assert.match(wrapper, /<iframe[^>]+loading="eager"[^>]+fetchpriority="high"/);
   assert.match(wrapper, /referrerpolicy="no-referrer"/);
-  assert.match(wrapper, /j\.src='apps-script-embed\.js\?v=46'/);
+  assert.match(wrapper, /<link rel="preload" href="apps-script-embed\.js\?v=47" as="script" fetchpriority="high">/);
+  assert.match(wrapper, /j\.src='apps-script-embed\.js\?v=47'/);
   assert.doesNotMatch(wrapper, /<script[^>]+src="apps-script-embed\.js/);
   assert.match(wrapper, /class="skeleton"/);
   assert.match(wrapper, /body\.widget-ready iframe\{opacity:1\}/);
-  assert.match(wrapper, /\.widget-action-ready \.skeleton\{opacity:0;visibility:hidden\}/);
+  assert.match(wrapper, /\.snapshot-ready \.skeleton,\.widget-action-ready \.skeleton,\.widget-action-ready \.snapshot-grid\{opacity:0;visibility:hidden\}/);
+  assert.match(wrapper, /\.snapshot-grid\{[^}]*pointer-events:auto/);
+  assert.match(wrapper, /id="snapshotGrid"[^>]+hidden/);
+  assert.equal((wrapper.match(/data-snapshot-section="(?:Drive|Docs|Sheets|Slides)"/g)||[]).length,4);
   assert.match(wrapper, /class="skeleton-pencil"/);
   assert.doesNotMatch(wrapper, /class="[^"]*chevron/);
 });
@@ -41,7 +46,8 @@ test('wrapper paints before starting the credentialless Apps Script frame and ru
   const windowObject = {
     addEventListener(type, listener) { earlyListeners[type] = listener; },
     requestAnimationFrame(callback) { frames.push(callback); return frames.length; },
-    setTimeout(callback, delay) { timers.push({ callback, delay }); return timers.length; }
+    setTimeout(callback, delay) { const timer={callback,delay,cancelled:false};timers.push(timer);return timer; },
+    clearTimeout(timer) { if(timer)timer.cancelled=true; }
   };
   vm.runInNewContext(earlyBootstrap, {
     window: windowObject,
@@ -59,33 +65,59 @@ test('wrapper paints before starting the credentialless Apps Script frame and ru
   assert.equal(scripts.length, 0, 'the runtime must not delay the outer iframe load event');
   earlyListeners.load();
   assert.equal(widget.src, '', 'the heavyweight work must wait until Notion can paint the shell');
+  assert.equal(scripts.length, 1, 'the preloaded runtime may restore encrypted real cards while the nested frame stays deferred');
+  assert.equal(windowObject.__notionWidgetDeferChild, true);
+  const watchdog=timers.find((timer)=>timer.delay===200);
+  assert.ok(watchdog,'hidden frames must still start the child within a bounded delay');
   assert.equal(frames.length, 1);
   frames[0]();
   assert.equal(frames.length, 2);
-  assert.equal(timers.length, 0, 'one paint is not enough to start the nested frame');
+  assert.equal(timers.some((timer)=>timer.delay===0&&!timer.cancelled), false, 'one paint is not enough to start the nested frame');
   frames[1]();
-  assert.equal(timers.length, 1);
-  assert.equal(timers[0].delay, 0);
-  timers[0].callback();
+  assert.equal(watchdog.cancelled,true,'the two-paint path cancels its hidden-frame watchdog');
+  const childStart=timers.find((timer)=>timer.delay===0&&!timer.cancelled);
+  assert.ok(childStart);
+  childStart.callback();
+  assert.equal(windowObject.__notionWidgetDeferChild, false);
   const earlyUrl = new URL(widget.src);
   assert.equal(earlyUrl.origin, 'https://script.google.com');
   assert.deepEqual(Array.from(earlyUrl.searchParams.keys()).sort(), ['accessToken', 'embedNonce', 'release', 'task']);
   assert.equal(earlyUrl.searchParams.get('embedNonce'), windowObject.__notionWidgetEarlyBridge.nonce);
   assert.match(windowObject.__notionWidgetEarlyBridge.nonce, /^[0-9a-f]{32}$/);
   assert.equal(scripts.length, 1);
-  assert.equal(scripts[0].src, 'apps-script-embed.js?v=46');
+  assert.equal(scripts[0].src, 'apps-script-embed.js?v=47');
   assert.equal(scripts[0].async, true);
   assert.equal(scripts[0].fetchPriority, 'high');
   earlyListeners.message({origin:'https://evil.example',data:{embedNonce:windowObject.__notionWidgetEarlyBridge.nonce}});
   earlyListeners.message({origin:'https://script.googleusercontent.com',data:{embedNonce:windowObject.__notionWidgetEarlyBridge.nonce}});
   assert.equal(windowObject.__notionWidgetEarlyBridge.events.length, 1, 'only the authenticated early Google message is buffered');
 
+  const hiddenWidget={src:''},hiddenTimers=[],hiddenFrames=[],hiddenListeners={};
+  vm.runInNewContext(earlyBootstrap,{
+    window:{
+      addEventListener(type,listener){hiddenListeners[type]=listener;},
+      requestAnimationFrame(callback){hiddenFrames.push(callback);return hiddenFrames.length;},
+      setTimeout(callback,delay){const timer={callback,delay,cancelled:false};hiddenTimers.push(timer);return timer;},
+      clearTimeout(timer){if(timer)timer.cancelled=true;}
+    },
+    document:{readyState:'loading',head:{appendChild(){}},createElement(){return {};},getElementById(){return hiddenWidget;}},
+    location:{hash:`#task=3c62d627-39a1-80a1-aac7-ec19ffc9ef8e&accessToken=${'a'.repeat(64)}`},
+    crypto:{getRandomValues(target){target.set(bytes);return target;}},URL,URLSearchParams,Uint8Array,Array,String
+  });
+  hiddenListeners.load();
+  assert.equal(hiddenFrames.length,1,'the hidden simulation intentionally leaves requestAnimationFrame suspended');
+  const hiddenWatchdog=hiddenTimers.find((timer)=>timer.delay===200);
+  hiddenWatchdog.callback();
+  hiddenTimers.find((timer)=>timer.delay===0&&!timer.cancelled).callback();
+  assert.equal(new URL(hiddenWidget.src).origin,'https://script.google.com','the watchdog starts Apps Script without a visible animation frame');
+
   const rejectedWidget = { src: '' }, rejectedTimers = [], rejectedFrames = [], rejectedScripts = [], rejectedListeners = {};
   vm.runInNewContext(earlyBootstrap, {
     window: {
       addEventListener(type, listener) { rejectedListeners[type] = listener; },
       requestAnimationFrame(callback) { rejectedFrames.push(callback); return rejectedFrames.length; },
-      setTimeout(callback, delay) { rejectedTimers.push({ callback, delay }); return rejectedTimers.length; }
+      setTimeout(callback, delay) { const timer={callback,delay,cancelled:false};rejectedTimers.push(timer);return timer; },
+      clearTimeout(timer) { if(timer)timer.cancelled=true; }
     },
     document: {
       readyState: 'loading',
@@ -100,7 +132,7 @@ test('wrapper paints before starting the credentialless Apps Script frame and ru
   rejectedListeners.load();
   rejectedFrames[0]();
   rejectedFrames[1]();
-  rejectedTimers[0].callback();
+  rejectedTimers.find((timer)=>timer.delay===0&&!timer.cancelled).callback();
   assert.equal(rejectedWidget.src, '');
   assert.equal(rejectedScripts.length, 1, 'the runtime still renders the validation error after first paint');
 });
@@ -115,8 +147,53 @@ test('wrapper forwards only validated task runtime parameters', () => {
   assert.match(wrapperJs, /const embedNonce = earlyEmbedNonce \|\| randomId\(\)\.replace\(\/-\/g, ''\)/);
   assert.match(wrapperJs, /earlyBridgeEvents = Array\.isArray\(early\.events\) \? early\.events : \[\]/);
   assert.doesNotMatch(wrapperJs, /early\.events\.slice/);
-  assert.match(wrapperJs, /if \(widget\.src !== widgetUrl\) widget\.src = widgetUrl/);
-  assert.doesNotMatch(wrapperJs, /localStorage|sessionStorage|document\.cookie/);
+  assert.match(wrapperJs, /if \(window\.__notionWidgetDeferChild !== true && widget\.src !== widgetUrl\) widget\.src = widgetUrl/);
+  assert.doesNotMatch(wrapperJs, /sessionStorage|document\.cookie/);
+});
+
+test('wrapper caches only an encrypted passive presentation snapshot', () => {
+  assert.match(wrapperJs, /function safeSnapshotMaterials\(value\)/);
+  assert.match(wrapperJs, /const sourceTop = document\.querySelector\(`\[data-snapshot-section="\$\{section\}"\]`\)/);
+  assert.match(wrapperJs, /const top = sourceTop\.cloneNode\(true\)/);
+  assert.doesNotMatch(wrapper,/snapshot-spacer/);
+  assert.match(wrapperJs, /rows\.push\(\{ name: rawName, section, format: rawFormat \|\| 'Файл', position: Math\.round\(position\) \}\)/);
+  assert.match(wrapperJs, /window\.crypto\.subtle\.encrypt\(\{ name: 'AES-GCM', iv, additionalData: context\.aad \}/);
+  assert.match(wrapperJs, /window\.crypto\.subtle\.decrypt\(\{ name: 'AES-GCM', iv, additionalData: context\.aad \}/);
+  assert.match(wrapperJs, /store\.setItem\(context\.slot, JSON\.stringify\(\{ schema: SNAPSHOT_CACHE_SCHEMA, savedAt, iv: bytesToBase64Url\(iv\), ciphertext: bytesToBase64Url\(ciphertext\) \}\)\)/);
+  assert.match(wrapperJs, /if \(generation !== snapshotPersistGeneration \|\| fingerprint !== lastPersistedSnapshotFingerprint\) return false/);
+  assert.match(wrapperJs, /const generation = \+\+snapshotPersistGeneration/);
+  assert.match(wrapperJs, /SNAPSHOT_CACHE_MAX_AGE_MS = 24 \* 60 \* 60 \* 1000/);
+  assert.match(wrapperJs, /key\.startsWith\('notion-widget-preview-v1:'\)/);
+  assert.doesNotMatch(wrapperJs, /store\.setItem\([^\n]+materials/);
+  assert.doesNotMatch(wrapperJs, /snapshot-card[^\n]+(?:openUrl|googleFileId|notion|accessToken|drivePollClaim)/i);
+  assert.match(frontend, /type:'notion-widget-v20-snapshot-ready',embedNonce:nonce,materials/);
+  assert.match(frontend, /snapshotMaterials:presentationSnapshotMaterials\(\)/);
+  assert.match(frontend, /item\.archived!==true[^\n]+!\['pending','deleting','deleted'\]\.includes/);
+});
+
+test('server-rendered early snapshot posts only passive card presentation fields', () => {
+  assert.ok(earlySnapshot);
+  const nonce='0123456789abcdef0123456789abcdef';
+  const messages=[];
+  const parent={postMessage(message,targetOrigin){messages.push({message,targetOrigin});}};
+  parent.parent=parent;
+  const bootstrap={cached:true,authoritative:false,materials:[
+    {id:'3c72d627-39a1-8120-bd0a-f969e6846945',name:'  Реальный   документ  ',section:'Docs',format:'Google Docs',position:2,openUrl:'https://docs.google.com/document/d/Secret/edit',googleFileId:'Secret',drivePollClaim:'claim',createRequestId:'55555555-5555-4555-8555-555555555555'},
+    {id:'pending:1',name:'Ещё не создан',section:'Docs',format:'Google Docs',position:3,syncStatus:'pending'},
+    {id:'3c72d627-39a1-8120-bd0a-f969e6846946',name:'Скрытый',section:'Drive',format:'PDF',position:1,archived:true}
+  ]};
+  vm.runInNewContext(earlySnapshot,{
+    window:{parent},location:{search:`?embedNonce=${nonce}&accessToken=${'a'.repeat(64)}`},
+    document:{getElementById(){return {dataset:{bootstrap:JSON.stringify(bootstrap)}};}},
+    URLSearchParams,JSON,String,Number,Math,Array,RegExp
+  });
+  assert.equal(messages.length,1);
+  assert.equal(messages[0].targetOrigin,'https://ravilvaliev1999-spec.github.io');
+  const payload=JSON.parse(JSON.stringify(messages[0].message));
+  assert.deepEqual(Object.keys(payload).sort(),['embedNonce','materials','type']);
+  assert.equal(payload.embedNonce,nonce);
+  assert.equal(payload.type,'notion-widget-v20-snapshot-ready');
+  assert.deepEqual(payload.materials,[{name:'Реальный документ',section:'Docs',format:'Google Docs',position:2}]);
 });
 
 test('wrapper binds one authenticated child channel without relaying local file contents', () => {
@@ -125,6 +202,9 @@ test('wrapper binds one authenticated child channel without relaying local file 
   assert.match(wrapperJs, /if \(bridge\.authoritative && bridge\.actionReady\) document\.body\.classList\.add\('widget-action-ready'\)/);
   assert.doesNotMatch(wrapperJs, /classList\.toggle\('widget-action-ready'/);
   assert.match(wrapperJs, /data\.authoritative === true && data\.actionReady === true \? preparedCreateMap\(data\.preparedCreates\) : \{\}/);
+  const bridgeReady=wrapperJs.slice(wrapperJs.indexOf("if (data.type === 'notion-widget-v20-bridge-ready')"),wrapperJs.indexOf("if (!isCurrentBridgeEvent(event))"));
+  assert.ok(bridgeReady.indexOf("classList.add('widget-ready')")<bridgeReady.indexOf('applyPrimaryGeometry('));
+  assert.ok(bridgeReady.indexOf("classList.add('widget-ready')")<bridgeReady.indexOf('acceptSnapshotMaterials('),'the live iframe is revealed before passive snapshot work');
   assert.match(wrapperJs, /bridge\.source\.postMessage\(Object\.assign\(\{\}, message, \{ embedNonce \}\), bridge\.origin\)/);
   assert.doesNotMatch(wrapperJs, /postMessage\([^\n]+, '\*'\)/);
   assert.doesNotMatch(wrapperJs, /type: 'notion-widget-v20-upload-files'|\bFile\b|dataBase64/);
@@ -181,7 +261,7 @@ test('credentialless create uses native anchors and a fragment-only neutral cour
   assert.match(wrapperJs, /numbers\[0\] < -tolerance/);
 });
 
-test('wrapper runtime exposes validated native create links without opening a popup', () => {
+test('wrapper runtime exposes validated native create links without opening a popup', async () => {
   class FakeElement {
     constructor() {
       this.children = [];
@@ -194,6 +274,8 @@ test('wrapper runtime exposes validated native create links without opening a po
       this.tagName = '';
     }
     appendChild(child) { this.children.push(child); return child; }
+    append(...children) { this.children.push(...children); }
+    replaceChildren(...children) { this.children = children; }
     addEventListener(type, listener) { this.listeners[type] = listener; }
     setAttribute(name, value) { this[name] = value; }
     removeAttribute(name) { delete this[name]; }
@@ -217,7 +299,12 @@ test('wrapper runtime exposes validated native create links without opening a po
   };
   const fatal = new FakeElement();
   fatal.hidden = true;
+  const snapshotGrid = new FakeElement();
+  snapshotGrid.hidden = true;
   const events = [];
+  const staleSnapshotSlot='notion-widget-preview-v1:stale-token-slot';
+  const persistedSnapshot = new Map([[staleSnapshotSlot,JSON.stringify({schema:1,savedAt:-100000000,iv:'invalid',ciphertext:'invalid'})]]);
+  let snapshotSetCount=0;
   const bodyClasses = new Set();
   const bridgeSource = { length: 0, frames: [], postMessage(message, origin) { events.push(['post', message, origin]); } };
   widget.contentWindow = { length: 1, frames: [bridgeSource] };
@@ -226,7 +313,8 @@ test('wrapper runtime exposes validated native create links without opening a po
   let now = 10000;
   const timeouts=[];
   const windowObject = {
-    crypto: { randomUUID: (() => { let index=1;return () => `11111111-1111-4111-8111-${String(index++).padStart(12,'0')}`; })(), getRandomValues() {} },
+    crypto: { subtle:crypto.webcrypto.subtle,randomUUID: (() => { let index=1;return () => `11111111-1111-4111-8111-${String(index++).padStart(12,'0')}`; })(), getRandomValues(target) { return crypto.webcrypto.getRandomValues(target); } },
+    localStorage:{get length(){return persistedSnapshot.size;},key(index){return Array.from(persistedSnapshot.keys())[index]||null;},getItem(key){return persistedSnapshot.get(key)||null;},setItem(key,value){snapshotSetCount+=1;persistedSnapshot.set(key,String(value));},removeItem(key){persistedSnapshot.delete(key);}},
     addEventListener(type, listener) { windowListeners[type] = listener; },
     setTimeout(callback,delay) { const timer={callback,delay,cancelled:false};timeouts.push(timer);return timer; },
     setInterval(callback) { intervalCallback=callback; return 2; },
@@ -242,13 +330,16 @@ test('wrapper runtime exposes validated native create links without opening a po
         toggle(value, force) { if(force){bodyClasses.add(value);events.push(['class',value]);return true;}bodyClasses.delete(value);return false; },
         contains(value) { return bodyClasses.has(value); }
       } },
-      getElementById(id) { return { widget, interactionGrid, fatal }[id]; },
+      getElementById(id) { return { widget, interactionGrid, snapshotGrid, fatal }[id]; },
+      querySelector() { return null; },
       createElement(tagName) { const element=new FakeElement();element.tagName=String(tagName).toUpperCase();return element; }
     },
     location: { hash: `#task=3c62d627-39a1-80a1-aac7-ec19ffc9ef8e&accessToken=${'a'.repeat(64)}&release=test` },
     URL,
     URLSearchParams,
     TextEncoder,
+    TextDecoder,
+    atob,
     btoa,
     Uint8Array,
     Array,
@@ -261,6 +352,7 @@ test('wrapper runtime exposes validated native create links without opening a po
     RegExp
   };
   vm.runInNewContext(wrapperJs, context);
+  assert.equal(persistedSnapshot.has(staleSnapshotSlot),false,'expired ciphertext from a rotated token is pruned without decrypting it');
 
   const forwarded = new URL(widget.src).searchParams;
   const embedNonce = forwarded.get('embedNonce');
@@ -280,6 +372,7 @@ test('wrapper runtime exposes validated native create links without opening a po
       instanceId: '33333333-3333-4333-8333-333333333333',
       authoritative: false,
       actionReady: false,
+      snapshotMaterials:[{name:'Конфиденциальное название',section:'Docs',format:'Google Docs',position:0,openUrl:'https://docs.google.com/document/d/MustNotPersist/edit',googleFileId:'MustNotPersist'}],
       folderUrl: 'https://drive.google.com/drive/folders/TaskFolder12345',
       preparedCreates: [{section:'Docs',reservationId:preparedDocsId,openUrl:preparedDocsUrl}],
       viewport: {width:868,height:523},
@@ -289,8 +382,10 @@ test('wrapper runtime exposes validated native create links without opening a po
     }
   });
   assert.equal(bodyClasses.has('widget-ready'), true, 'cached content may render immediately');
+  assert.equal(snapshotGrid.hidden,false,'a real passive snapshot renders before live authority');
   assert.equal(bodyClasses.has('widget-action-ready'), false, 'the full-color safe shell must cover disabled primary cards');
   assert.equal(slots.find((slot)=>slot.dataset.slot==='Docs').children[0].href, undefined, 'cached bootstrap must not enable creation');
+  windowListeners.message({source:bridgeSource,origin,data:{type:'notion-widget-v20-snapshot-ready',embedNonce,materials:[{name:'Последнее подтверждённое название',section:'Docs',format:'Google Docs',position:0}]}});
   windowListeners.message({
     source: bridgeSource,
     origin,
@@ -401,6 +496,22 @@ test('wrapper runtime exposes validated native create links without opening a po
   assert.equal(events.filter((entry)=>entry[0]==='post'&&entry[1].type==='notion-widget-v20-primary-action'&&entry[1].requestId===preparedSlidesId).length,2,'lost acknowledgement retries the same request only once');
   const drivePrimary=slots.find((slot)=>slot.dataset.slot==='Drive').children[0];
   assert.equal(drivePrimary.href,'https://drive.google.com/drive/folders/TaskFolder12345');
+
+  for(let attempt=0;attempt<20&&persistedSnapshot.size===0;attempt+=1)await new Promise((resolve)=>setImmediate(resolve));
+  assert.equal(persistedSnapshot.size,1,'one encrypted presentation envelope is persisted');
+  assert.equal(snapshotSetCount,1,'an overtaken encryption can never write an older snapshot');
+  const [[slotKey,storedEnvelope]]=Array.from(persistedSnapshot.entries());
+  assert.match(slotKey,/^notion-widget-preview-v1:[A-Za-z0-9_-]+$/);
+  assert.doesNotMatch(`${slotKey}\n${storedEnvelope}`,/Конфиденциальное|Последнее подтверждённое|MustNotPersist|docs\.google\.com|a{32}/);
+  const envelope=JSON.parse(storedEnvelope);
+  assert.deepEqual(Object.keys(envelope).sort(),['ciphertext','iv','savedAt','schema']);
+  const task='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e',token='a'.repeat(64),encoder=new TextEncoder();
+  const keyDigest=await crypto.webcrypto.subtle.digest('SHA-256',encoder.encode(`notion-widget-preview-key-v1\u0000${task}\u0000${token}`));
+  const key=await crypto.webcrypto.subtle.importKey('raw',keyDigest,{name:'AES-GCM'},false,['decrypt']);
+  const iv=Buffer.from(envelope.iv,'base64url'),ciphertext=Buffer.from(envelope.ciphertext,'base64url');
+  const plaintext=await crypto.webcrypto.subtle.decrypt({name:'AES-GCM',iv,additionalData:encoder.encode(`notion-widget-preview-v1\u0000${task}\u0000test`)},key,ciphertext);
+  const cachedPayload=JSON.parse(new TextDecoder().decode(plaintext));
+  assert.deepEqual(cachedPayload.materials,[{name:'Последнее подтверждённое название',section:'Docs',format:'Google Docs',position:0}]);
 });
 
 test('v2 create courier clears the fragment, loads the exact GET rendezvous and validates its result', () => {

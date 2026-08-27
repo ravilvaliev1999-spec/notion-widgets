@@ -361,7 +361,13 @@ test('web app routes download and create requests to dedicated couriers', () => 
   assert.match(doGet, /output = createTemplate\.evaluate\(\)/);
   assert.match(doGet, /createTemplateFromFile\('Index'\)/);
   assert.match(doGet, /initialBootstrapJson = 'null'/);
-  assert.match(doGet, /w20BootstrapFromRegistry_\(initialInput, initialCfg, null\)/);
+  assert.match(doGet, /var initialProperties = PropertiesService\.getScriptProperties\(\)\.getProperties\(\)/);
+  assert.match(doGet, /w19AuthorizedConfigFromValues_\(initialInput, initialProperties\)/);
+  assert.match(doGet, /w20BootstrapFromRegistry_\(initialInput, initialCfg, null, \{/);
+  assert.match(doGet, /propertyValues: initialProperties/);
+  assert.match(doGet, /issueDrivePollClaims: false/);
+  assert.match(doGet, /seedDownloadCache: false/);
+  assert.match(doGet, /includeServiceUrl: false/);
   assert.match(doGet, /indexTemplate\.initialBootstrapJson = JSON\.stringify\(initialBootstrap\)/);
   assert.doesNotMatch(doGet, /initialBootstrapJson\s*=\s*JSON\.stringify\([^\n]*accessToken/);
   assert.match(doGet, /XFrameOptionsMode\.ALLOWALL/);
@@ -517,6 +523,22 @@ test('cached bootstrap paints safe registry cards without Notion or Drive calls'
   assert.equal(result.data.materials[0].openUrl,'https://docs.google.com/document/d/NativeGoogleDoc123/edit');
   assert.equal(result.data.materials[0].googleFileId,'NativeGoogleDoc123');
   assert.equal(result.data.folderUrl,'https://drive.google.com/drive/folders/TaskFolder12345');
+
+  const propertySnapshot=props.getProperties();
+  backend.PropertiesService={getScriptProperties:()=>({getProperties:()=>{throw new Error('SSR must reuse its one property snapshot');}})};
+  backend.w20IssueDrivePollClaim_=()=>{throw new Error('SSR must not issue per-card HMAC claims');};
+  backend.w20CacheDownloadRegistryMaterials_=()=>{throw new Error('SSR must not write download cache entries');};
+  backend.ScriptApp={getService:()=>{throw new Error('SSR must not resolve the deployment URL');}};
+  const ssr=backend.w20BootstrapFromRegistry_({taskPageId:taskId},backend.w19AuthorizedConfig_(),null,{
+    propertyValues:propertySnapshot,issueDrivePollClaims:false,seedDownloadCache:false,includeServiceUrl:false
+  });
+  assert.equal(ssr.cached,true);
+  assert.equal(ssr.authoritative,false);
+  assert.equal(ssr.actionReady,true);
+  assert.equal(ssr.serviceUrl,null);
+  assert.equal(ssr.materials.length,1);
+  assert.equal(ssr.materials[0].drivePollClaim,undefined);
+  assert.ok(Array.isArray(ssr.preparedCreates));
 });
 
 test('cached action proof expires after two minutes and fails closed on a registry count mismatch', () => {
@@ -587,6 +609,9 @@ test('interactive bootstrap and list refresh defer per-file Drive metadata sync'
   assert.doesNotMatch(bootstrap,/w19SyncPageList_/);
   assert.doesNotMatch(sync,/w19SyncPageList_/);
   assert.match(bootstrap,/input && input\.forceRefresh === true/);
+  const taskCheckAt=bootstrap.indexOf('var task = w19AssertTaskPage_'),taskValidatedAt=bootstrap.indexOf('var taskValidatedAt = new Date().toISOString()');
+  const materialsAt=bootstrap.indexOf('var pages = w19QueryTaskMaterials_'),snapshotValidatedAt=bootstrap.indexOf('var snapshotValidatedAt = new Date().toISOString()');
+  assert.ok(taskCheckAt>=0&&taskCheckAt<taskValidatedAt&&taskValidatedAt<materialsAt&&materialsAt<snapshotValidatedAt,'task authority must be timestamped before the potentially paginated material query');
 });
 
 test('client materials expose only the create request id, never the canonical idempotency key', () => {
@@ -929,7 +954,12 @@ test('create context warming verifies the task folder once without a Notion requ
   backend.w20WarmCreatePool_=()=>[];
 
   const warmed=backend.apiWarmCreateContext({taskPageId:taskId});
-  assert.deepEqual(JSON.parse(JSON.stringify(warmed)),{ok:true,data:{ready:true,cached:false,preparedCreates:[]}});
+  assert.equal(warmed.ok,true,JSON.stringify(warmed));
+  assert.equal(warmed.data.ready,true);
+  assert.equal(warmed.data.cached,false);
+  assert.equal(warmed.data.folderUrl,'https://drive.google.com/drive/folders/VerifiedFolder123');
+  assert.match(warmed.data.trustedUntil,/^\d{4}-\d{2}-\d{2}T/);
+  assert.deepEqual(JSON.parse(JSON.stringify(warmed.data.preparedCreates)),[]);
   assert.equal(folderChecks,1);
   const meta=backend.w20RegistryReadFreshTaskMeta_(taskId);
   assert.equal(meta.folderId,'VerifiedFolder123');
@@ -938,8 +968,141 @@ test('create context warming verifies the task folder once without a Notion requ
   assert.equal(meta.snapshotValidatedAt,validatedAt);
 
   const cached=backend.apiWarmCreateContext({taskPageId:taskId});
-  assert.deepEqual(JSON.parse(JSON.stringify(cached)),{ok:true,data:{ready:true,cached:true,preparedCreates:[]}});
+  assert.equal(cached.ok,true,JSON.stringify(cached));
+  assert.equal(cached.data.ready,true);
+  assert.equal(cached.data.cached,true);
+  assert.equal(cached.data.folderUrl,'https://drive.google.com/drive/folders/VerifiedFolder123');
+  assert.match(cached.data.trustedUntil,/^\d{4}-\d{2}-\d{2}T/);
+  assert.deepEqual(JSON.parse(JSON.stringify(cached.data.preparedCreates)),[]);
   assert.equal(folderChecks,1);
+});
+
+test('live bootstrap returns saved cards before Drive folder warming and proof-only warm stays off Notion', () => {
+  const backend=loadBackend();
+  const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const pageId='3c72d627-39a1-8120-bd0a-f969e6846945';
+  const cfg={authorizedTaskPageId:taskId,deniedPageIds:{},rootFolderId:'RootFolder12345',maxUploadBytes:8388608};
+  const calls={schema:0,task:0,materials:0,folder:0,pool:0};
+  const material={
+    id:pageId,name:'Готовая карточка',section:'Docs',format:'Google Docs',provider:'Google Drive',
+    openUrl:'https://docs.google.com/document/d/NativeGoogleDoc123/edit',googleFileId:'NativeGoogleDoc123',
+    folderId:'WarmFolder12345',widgetOwned:true,position:0,syncStatus:'synced',archived:false
+  };
+  backend.w19AuthorizedConfig_=()=>cfg;
+  backend.w19AssertSchema_=()=>{calls.schema+=1;};
+  backend.w19AssertTaskPage_=(value)=>{calls.task+=1;assert.equal(value,taskId);return {id:taskId,name:'Задача',page:{properties:{}}};};
+  backend.w19QueryTaskMaterials_=(value)=>{calls.materials+=1;assert.equal(value,taskId);return [material];};
+  backend.w19MaterialFromPage_=(value)=>value;
+  backend.w20MaterialForClient_=(value)=>({...value});
+  backend.w20CacheDownloadMaterials_=()=>{};
+  backend.w20TaskContextSnapshot_=()=>({path:'Основная / Задача',ancestorIds:'ancestor',depth:2});
+  backend.w19EnsureTaskFolder_=(task)=>{calls.folder+=1;assert.equal(task.id,taskId);assert.equal(task.name,'Задача');return {id:'WarmFolder12345'};};
+  backend.w20WarmCreatePool_=()=>{calls.pool+=1;throw new Error('proof-only warm must not pre-create Drive files');};
+  backend.ScriptApp={getService:()=>({getUrl:()=> 'https://script.google.com/macros/s/abcdefghijklmnopqrstuvwxyz0123456789_-AB/exec'})};
+
+  const boot=backend.apiBootstrap({taskPageId:taskId,forceRefresh:true});
+  assert.equal(boot.ok,true,JSON.stringify(boot));
+  assert.equal(boot.data.cached,false);
+  assert.equal(boot.data.authoritative,true);
+  assert.equal(boot.data.actionReady,false);
+  assert.equal(boot.data.folderUrl,null);
+  assert.equal(boot.data.materials.length,1);
+  assert.equal(boot.data.materials[0].name,'Готовая карточка');
+  assert.deepEqual(calls,{schema:1,task:1,materials:1,folder:0,pool:0},'card readiness must not wait for Drive folder verification');
+
+  backend.w19AssertSchema_=()=>{throw new Error('proof-only warm must not inspect Notion schema');};
+  backend.w19AssertTaskPage_=()=>{throw new Error('proof-only warm must not fetch the Notion task');};
+  backend.w19QueryTaskMaterials_=()=>{throw new Error('proof-only warm must not query Notion materials');};
+  const warmed=backend.apiWarmCreateContext({taskPageId:taskId,proofOnly:true});
+  assert.equal(warmed.ok,true,JSON.stringify(warmed));
+  assert.equal(warmed.data.ready,true);
+  assert.equal(warmed.data.cached,false);
+  assert.equal(warmed.data.folderUrl,'https://drive.google.com/drive/folders/WarmFolder12345');
+  assert.match(warmed.data.trustedUntil,/^\d{4}-\d{2}-\d{2}T/);
+  assert.deepEqual(JSON.parse(JSON.stringify(warmed.data.preparedCreates)),[]);
+  assert.equal(calls.folder,1);
+  assert.equal(calls.pool,0);
+});
+
+test('authoritative bootstrap derives cards, proof and prepared descriptors from one post-replace property snapshot', () => {
+  const backend=loadBackend();
+  const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const pageId='3c72d627-39a1-8120-bd0a-f969e6846945';
+  const rootFolderId='RootFolder12345',taskFolderId='TaskFolder12345';
+  const reservationId='1185d2e2-4728-4bcd-b22d-67a27a7928c3';
+  const values={};
+  let replacementReturned=false,postReplaceFullReads=0,postReplaceSingleReads=0;
+  const props={
+    getProperties:()=>{
+      if(replacementReturned)postReplaceFullReads+=1;
+      return {...values};
+    },
+    getProperty:(key)=>{
+      if(replacementReturned)postReplaceSingleReads+=1;
+      return Object.prototype.hasOwnProperty.call(values,key)?values[key]:null;
+    },
+    setProperty:(key,value)=>{values[key]=String(value);},
+    setProperties:(next)=>{Object.assign(values,next);},
+    deleteProperty:(key)=>{delete values[key];}
+  };
+  backend.PropertiesService={getScriptProperties:()=>props};
+  const validatedAt=new Date().toISOString();
+  assert.equal(backend.w20RegistryWriteTaskMeta_(taskId,{
+    taskName:'Задача',folderId:taskFolderId,rootFolderId,folderVerified:true,folderValidatedAt:validatedAt
+  }),true);
+  values[backend.w20CreateReservationKey_(taskId,'Docs')]=JSON.stringify({
+    schema:1,status:'prepared',taskId:taskId.replaceAll('-',''),section:'Docs',reservationId,
+    at:Date.now(),fileId:'PreparedGoogleDoc123',preparedName:'Новый Google документ'
+  });
+
+  const replaceTaskResult=backend.w20RegistryReplaceTaskResult_;
+  backend.w20RegistryReplaceTaskResult_=(...args)=>{
+    const result=replaceTaskResult(...args);
+    replacementReturned=true;
+    return result;
+  };
+  backend.w19AuthorizedConfig_=()=>({
+    authorizedTaskPageId:taskId,deniedPageIds:{},rootFolderId,maxUploadBytes:8388608,
+    notionToken:'test-notion-hmac-secret'
+  });
+  backend.w19AssertSchema_=()=>{};
+  backend.w19AssertTaskPage_=()=>({id:taskId,name:'Задача',page:{properties:{}}});
+  backend.w19QueryTaskMaterials_=()=>[{
+    id:pageId,name:'Документ',section:'Docs',format:'Google Docs',provider:'Google Drive',
+    openUrl:'https://docs.google.com/document/d/ConfirmedGoogleDoc123/edit',googleFileId:'ConfirmedGoogleDoc123',
+    folderId:taskFolderId,widgetOwned:true,position:0,syncStatus:'synced',archived:false
+  }];
+  backend.w19MaterialFromPage_=(page)=>page;
+  backend.w20CacheDownloadMaterials_=()=>{};
+  backend.w20TaskContextSnapshot_=()=>({path:'Основная / Задача',ancestorIds:'ancestor',depth:2});
+  backend.ScriptApp={getService:()=>({getUrl:()=> 'https://script.google.com/macros/s/abcdefghijklmnopqrstuvwxyz0123456789_-AB/exec'})};
+
+  const response=backend.apiBootstrap({taskPageId:taskId,forceRefresh:true});
+  assert.equal(response.ok,true,JSON.stringify(response));
+  assert.equal(response.data.authoritative,true);
+  assert.equal(response.data.actionReady,true);
+  assert.match(response.data.trustedUntil,/^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(response.data.materials.length,1);
+  assert.match(response.data.materials[0].drivePollClaim,/^\d{10}\.[a-f0-9]{64}$/);
+  assert.deepEqual(JSON.parse(JSON.stringify(response.data.preparedCreates)),[{
+    section:'Docs',reservationId,openUrl:'https://docs.google.com/document/d/PreparedGoogleDoc123/edit'
+  }]);
+  assert.equal(postReplaceFullReads,1,'meta confirmation, client cards and prepared descriptors must share one full property snapshot');
+  assert.equal(postReplaceSingleReads,0,'the authoritative path must not reread task meta after its full snapshot');
+
+  const materialKey=backend.w20RegistryKey_(taskId,pageId);
+  values[materialKey]=JSON.stringify(backend.w20RegistryTombstone_(taskId,pageId));
+  postReplaceFullReads=0;postReplaceSingleReads=0;
+  const mismatch=backend.w20RegistryWriteTaskMetaResult_(taskId,{
+    taskValidatedAt:new Date().toISOString(),snapshotValidatedAt:new Date().toISOString(),snapshotActiveCount:1
+  });
+  assert.equal(mismatch.ok,true);
+  assert.equal(mismatch.registry.activeCount,0);
+  assert.equal(mismatch.registry.tombstoneCount,1);
+  assert.equal(mismatch.meta.authoritative,false,'a tombstone/count race must invalidate the action proof');
+  assert.equal(backend.w20RegistryActionProof_(mismatch.meta,mismatch.registry,rootFolderId).ready,false);
+  assert.equal(postReplaceFullReads,1);
+  assert.equal(postReplaceSingleReads,0);
 });
 
 test('create pool prepares one exact owned file per Google section and reuses it on the second warm', () => {
@@ -991,6 +1154,48 @@ test('create pool prepares one exact owned file per Google section and reuses it
   assert.deepEqual(JSON.parse(JSON.stringify(second.data.preparedCreates)),JSON.parse(JSON.stringify(first.data.preparedCreates)));
   assert.equal(drive.creates,3,'second warm must reuse the exact files');
   assert.equal(drive.gets,0,'a complete property snapshot must not trigger Drive metadata reads');
+});
+
+test('sectional create warm validates one Google section, stays off Notion and preserves the batch fallback', () => {
+  const backend=loadBackend();
+  const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const rootFolderId='RootFolder12345',taskFolderId='TaskFolder12345';
+  backend.Utilities.formatDate=()=> '2026-08-27 12:00';
+  const drive=installReservationDriveMock(backend);
+  const replacement=backend.w20RegistryReplaceTaskResult_(taskId,[]);
+  assert.equal(replacement.ok,true);
+  const validatedAt=new Date().toISOString();
+  backend.w20RegistryWriteTaskMeta_(taskId,{
+    taskName:'Задача',folderId:taskFolderId,rootFolderId,folderVerified:true,
+    folderValidatedAt:validatedAt,taskValidatedAt:validatedAt,snapshotValidatedAt:validatedAt,
+    snapshotActiveCount:replacement.activeCount,context:{path:'Основная / Задача',ancestorIds:'ancestor',depth:2}
+  });
+  backend.w19AuthorizedConfig_=()=>({authorizedTaskPageId:taskId,deniedPageIds:{},rootFolderId});
+  let notionCalls=0;
+  backend.w19NotionRequest_=()=>{notionCalls+=1;throw new Error('sectional warm must not call Notion');};
+  backend.w19AssertSchema_=()=>{notionCalls+=1;throw new Error('sectional warm must not inspect schema');};
+  backend.w19AssertTaskPage_=()=>{notionCalls+=1;throw new Error('sectional warm must not fetch the task');};
+
+  const docs=backend.apiWarmCreateContext({taskPageId:taskId,section:'Docs'});
+  assert.equal(docs.ok,true,JSON.stringify(docs));
+  assert.equal(docs.data.ready,true);
+  assert.deepEqual([...docs.data.preparedCreates].map((item)=>item.section),['Docs']);
+  assert.equal(drive.creates,1,'a sectional request must create only its requested reservation');
+  assert.equal(notionCalls,0);
+
+  const driveSection=backend.apiWarmCreateContext({taskPageId:taskId,section:'Drive'});
+  assert.equal(driveSection.ok,false);
+  assert.equal(driveSection.error.code,'INVALID_CREATE_TYPE');
+  const mixed=backend.apiWarmCreateContext({taskPageId:taskId,section:'Docs',proofOnly:true});
+  assert.equal(mixed.ok,false);
+  assert.equal(mixed.error.code,'INVALID_WARM_REQUEST');
+  assert.equal(drive.creates,1,'invalid section requests must not touch Drive');
+
+  const batch=backend.apiWarmCreateContext({taskPageId:taskId});
+  assert.equal(batch.ok,true,JSON.stringify(batch));
+  assert.deepEqual([...batch.data.preparedCreates].map((item)=>item.section),['Docs','Sheets','Slides']);
+  assert.equal(drive.creates,3,'the legacy batch request remains a complete fallback');
+  assert.equal(notionCalls,0);
 });
 
 test('authoritative bootstrap reuses stored prepared descriptors without another Drive call', () => {
@@ -2237,11 +2442,23 @@ test('authoritative bootstrap and sync fail action proof closed when task meta i
       }];
 
       let writes = 0;
-      backend.w20RegistryWriteTaskMeta_ = () => {
-        writes += 1;
-        return metaWriteMode === 'unconfirmed';
-      };
-      if (metaWriteMode === 'unconfirmed') backend.w20RegistryReadTaskMeta_ = () => null;
+      if (apiName === 'apiBootstrap') {
+        const writeTaskMetaResult = backend.w20RegistryWriteTaskMetaResult_;
+        backend.w20RegistryWriteTaskMetaResult_ = (...args) => {
+          writes += 1;
+          if (metaWriteMode === 'failed') {
+            return { ok: false, meta: null, registry: null, propertyValues: null, error: 'LOCK_BUSY' };
+          }
+          const result = writeTaskMetaResult(...args);
+          return { ...result, meta: null };
+        };
+      } else {
+        backend.w20RegistryWriteTaskMeta_ = () => {
+          writes += 1;
+          return metaWriteMode === 'unconfirmed';
+        };
+        if (metaWriteMode === 'unconfirmed') backend.w20RegistryReadTaskMeta_ = () => null;
+      }
 
       const response = backend[apiName]({ taskPageId: taskId, forceRefresh: true });
       assert.equal(response.ok, true, `${apiName}/${metaWriteMode}: ${JSON.stringify(response)}`);
@@ -2595,6 +2812,9 @@ function installFastPrepareDownloadFixture(backend, options = {}) {
     activeCount: 1,
     materials: [{
       id: pageId,
+      name: 'report.pdf',
+      section: 'Drive',
+      format: 'Other File',
       provider: 'Google Drive',
       googleFileId: fileId,
       folderId,
@@ -2623,8 +2843,14 @@ function installFastPrepareDownloadFixture(backend, options = {}) {
   backend.w19AuthorizedConfig_ = () => cfg;
   backend.w20DownloadGrantEpoch_ = () => 0;
   backend.w20GetCachedDownloadMaterial_ = () => cached;
-  backend.w20RegistryReadTaskMeta_ = () => meta;
-  backend.w20RegistryReadTaskResult_ = () => registry;
+  backend.w20FreshRegistryDownloadProof_ = () => {
+    const proof = backend.w20RegistryActionProof_(meta, registry, rootFolderId);
+    const exact = registry.materials.filter((candidate) => backend.WidgetV19Core.normalizeUuid(candidate.id) === pageId);
+    return proof.ready && registry.ok && registry.integrityOk && registry.activeCount === registry.materials.length &&
+      registry.activeCount === meta.snapshotActiveCount && exact.length === 1 ? {
+        taskId: compactTask, pageId: compactPage, meta, registry, proof, material: exact[0]
+      } : null;
+  };
   backend.w19AssertMaterialForTask_ = () => { calls.notion += 1; throw new Error('hot cache must not query Notion'); };
   backend.w19AssertRootFolder_ = () => { calls.root += 1; throw new Error('hot proof must not query the root folder'); };
   backend.Drive = { Files: { get(receivedFileId) {
@@ -2659,6 +2885,67 @@ test('prepare download hot cache plus exact fresh registry proof performs one ex
   assert.equal(fixture.calls.root, 0);
   assert.equal(fixture.calls.fallback, 0);
   assert.equal(result.data.directDownloadUrl, backend.w20DriveDownloadUrl_(fixture.fileId, fixture.cfg.allowedEmail));
+});
+
+test('prepare download cold cache uses one coherent fresh registry snapshot and one exact Drive GET', () => {
+  const backend = loadBackend();
+  const realFreshRegistryDownloadProof = backend.w20FreshRegistryDownloadProof_;
+  const fixture = installFastPrepareDownloadFixture(backend);
+  const values = {};
+  const safe = backend.w20RegistrySafeMaterial_(fixture.taskId, fixture.registry.materials[0]);
+  values[backend.w20RegistryKey_(fixture.taskId, fixture.pageId)] = JSON.stringify(safe);
+  values[backend.w20RegistryMetaKey_(fixture.taskId)] = JSON.stringify(
+    backend.w20RegistryTaskMetaRecord_(fixture.taskId, fixture.meta)
+  );
+  let propertyReads = 0;
+  backend.PropertiesService = { getScriptProperties: () => ({
+    getProperties() { propertyReads += 1; return { ...values }; }
+  }) };
+  backend.w20GetCachedDownloadMaterial_ = () => null;
+  backend.w20FreshRegistryDownloadProof_ = realFreshRegistryDownloadProof;
+  backend.w19AssertMaterialForTask_ = () => { fixture.calls.notion += 1; throw new Error('fresh registry proof must avoid Notion'); };
+
+  const result = backend.apiPrepareDownload({ taskPageId: fixture.taskId, pageId: fixture.pageId });
+
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(propertyReads, 1, 'registry materials and task meta must come from one Properties snapshot');
+  assert.equal(fixture.calls.driveGets, 1);
+  assert.equal(fixture.calls.notion, 0);
+  assert.equal(fixture.calls.root, 0);
+  assert.equal(fixture.calls.fallback, 0);
+});
+
+test('prepare download cold cache rejects stale registry proof and keeps the full fallback', () => {
+  const backend = loadBackend();
+  const realFreshRegistryDownloadProof = backend.w20FreshRegistryDownloadProof_;
+  const fixture = installFastPrepareDownloadFixture(backend);
+  const stale = new Date(Date.now() - 10 * 60_000).toISOString();
+  fixture.meta.taskValidatedAt = stale;
+  fixture.meta.snapshotValidatedAt = stale;
+  const values = {};
+  values[backend.w20RegistryKey_(fixture.taskId, fixture.pageId)] = JSON.stringify(
+    backend.w20RegistrySafeMaterial_(fixture.taskId, fixture.registry.materials[0])
+  );
+  values[backend.w20RegistryMetaKey_(fixture.taskId)] = JSON.stringify(
+    backend.w20RegistryTaskMetaRecord_(fixture.taskId, fixture.meta)
+  );
+  let propertyReads = 0;
+  backend.PropertiesService = { getScriptProperties: () => ({
+    getProperties() { propertyReads += 1; return { ...values }; }
+  }) };
+  backend.w20GetCachedDownloadMaterial_ = () => null;
+  backend.w20FreshRegistryDownloadProof_ = realFreshRegistryDownloadProof;
+  backend.w19AssertMaterialForTask_ = () => { fixture.calls.notion += 1; return { id: fixture.pageId }; };
+  backend.w19MaterialFromPage_ = () => fixture.cached;
+  backend.w20CacheDownloadMaterials_ = () => 1;
+
+  const result = backend.apiPrepareDownload({ taskPageId: fixture.taskId, pageId: fixture.pageId });
+
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(propertyReads, 1);
+  assert.equal(fixture.calls.driveGets, 0, 'a stale proof must not use the exact fast Drive GET');
+  assert.equal(fixture.calls.notion, 1, 'cold stale proof must revalidate through the durable path');
+  assert.equal(fixture.calls.fallback, 1);
 });
 
 test('prepare download stale or mismatched registry proof uses the full ownership fallback', () => {

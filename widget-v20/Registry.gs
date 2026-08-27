@@ -432,17 +432,20 @@ function w20RegistryUpdateSnapshotCountUnlocked_(props, taskId, values) {
   return true;
 }
 
-function w20RegistryWriteTaskMeta_(taskId, meta) {
+function w20RegistryWriteTaskMetaResult_(taskId, meta) {
   var task = WidgetV19Core.normalizeUuid(taskId);
   var key = w20RegistryMetaKey_(task);
-  if (!task || !key) return false;
+  if (!task || !key) return { ok: false, meta: null, registry: null, propertyValues: null, error: 'INVALID_TASK' };
   var source = meta || {};
   var owns = Object.prototype.hasOwnProperty;
   var lock = LockService.getScriptLock();
-  if (!lock.tryLock(5000)) return false;
+  if (!lock.tryLock(5000)) return { ok: false, meta: null, registry: null, propertyValues: null, error: 'LOCK_BUSY' };
   try {
     var props = PropertiesService.getScriptProperties();
-    var existing = w20RegistryParseTaskMeta_(task, props.getProperty(key));
+    var confirmsSnapshot = owns.call(source, 'snapshotValidatedAt') || owns.call(source, 'snapshotActiveCount');
+    var propertyValues = confirmsSnapshot ? props.getProperties() : null;
+    var existing = w20RegistryParseTaskMeta_(task, propertyValues ? propertyValues[key] : props.getProperty(key));
+    var registry = propertyValues ? w20RegistryReadTaskResultFromValues_(task, null, propertyValues) : null;
     var folderId = owns.call(source, 'folderId') ? w20SafeDriveId_(source.folderId) || '' : existing && existing.folderId || '';
     var rootFolderId = owns.call(source, 'rootFolderId') ? w20SafeDriveId_(source.rootFolderId) || '' : existing && existing.rootFolderId || '';
     var folderValidatedAt = owns.call(source, 'folderValidatedAt') ? w20RegistrySafeIso_(source.folderValidatedAt) : existing && existing.folderValidatedAt || '';
@@ -457,7 +460,10 @@ function w20RegistryWriteTaskMeta_(taskId, meta) {
       snapshotValidatedAt = '';
       snapshotActiveCount = null;
     } else {
-      var registry = w20RegistryReadTaskResultFromValues_(task, null, props.getProperties());
+      if (!propertyValues) {
+        propertyValues = props.getProperties();
+        registry = w20RegistryReadTaskResultFromValues_(task, null, propertyValues);
+      }
       if (!registry.ok || !registry.integrityOk || registry.activeCount !== snapshotActiveCount) {
         snapshotValidatedAt = '';
         snapshotActiveCount = null;
@@ -477,10 +483,24 @@ function w20RegistryWriteTaskMeta_(taskId, meta) {
       context: owns.call(source, 'context') ? source.context : existing && existing.context,
       updatedAt: new Date().toISOString()
     };
-    props.setProperty(key, JSON.stringify(w20RegistryTaskMetaRecord_(task, safe)));
-    return true;
-  } catch (_err) { return false; }
+    var stored = JSON.stringify(w20RegistryTaskMetaRecord_(task, safe));
+    props.setProperty(key, stored);
+    if (propertyValues) propertyValues[key] = stored;
+    return {
+      ok: true,
+      meta: w20RegistryParseTaskMeta_(task, stored),
+      registry: registry,
+      propertyValues: propertyValues,
+      error: null
+    };
+  } catch (_err) {
+    return { ok: false, meta: null, registry: null, propertyValues: null, error: 'STORAGE_ERROR' };
+  }
   finally { lock.releaseLock(); }
+}
+
+function w20RegistryWriteTaskMeta_(taskId, meta) {
+  return w20RegistryWriteTaskMetaResult_(taskId, meta).ok;
 }
 
 function w20RegistryWriteFolderProof_(taskId, meta) {
@@ -620,30 +640,40 @@ function w20RegistryFolderId_(taskId, materials) {
   return w20RegistryUniqueFolderId_(w20RegistryReadTask_(taskId, null));
 }
 
-function w20BootstrapFromRegistry_(input, cfg, reason) {
+function w20BootstrapFromRegistry_(input, cfg, reason, options) {
   var taskId = WidgetV19Core.normalizeUuid(input && input.taskPageId);
   if (!taskId || taskId !== cfg.authorizedTaskPageId || (cfg.deniedPageIds && cfg.deniedPageIds[taskId])) {
     throw new W19Error_('WRITE_BARRIER', 'Эта задача не разрешена для резервного запуска.', false);
   }
-  var registry = w20RegistryReadTaskResult_(taskId, cfg);
+  var settings = options || {};
+  var values = settings.propertyValues && typeof settings.propertyValues === 'object' ? settings.propertyValues : null;
+  if (!values) {
+    try { values = PropertiesService.getScriptProperties().getProperties(); }
+    catch (_propertyError) { return null; }
+  }
+  var clientCfg = settings.issueDrivePollClaims === false ? null : cfg;
+  var registry = w20RegistryReadTaskResultFromValues_(taskId, clientCfg, values);
   if (!registry.ok || !registry.integrityOk) return null;
   var stored = registry.materials;
-  var meta = w20RegistryReadTaskMeta_(taskId);
+  var meta = w20RegistryParseTaskMeta_(taskId, values[w20RegistryMetaKey_(taskId)]);
   if (!meta && !stored.length) return null;
   var task = { id: taskId, name: meta && meta.taskName || 'Задача' };
   var folderReady = w20RegistryFolderMetaFresh_(meta, cfg.rootFolderId);
   var actionProof = w20RegistryActionProof_(meta, registry, cfg.rootFolderId);
-  if (actionProof.ready) w20CacheDownloadRegistryMaterials_(taskId, stored, cfg, actionProof.trustedUntil);
+  if (settings.seedDownloadCache !== false) {
+    if (actionProof.ready) w20CacheDownloadRegistryMaterials_(taskId, stored, cfg, actionProof.trustedUntil);
+  }
   return {
     version: W19_VERSION,
     task: task,
     folderUrl: folderReady ? 'https://drive.google.com/drive/folders/' + encodeURIComponent(meta.folderId) : null,
-    serviceUrl: ScriptApp.getService().getUrl(),
+    serviceUrl: settings.includeServiceUrl === false ? null : ScriptApp.getService().getUrl(),
     maxUploadBytes: cfg.maxUploadBytes,
     materials: stored,
     cached: true,
     authoritative: false,
     actionReady: actionProof.ready,
+    preparedCreates: actionProof.ready ? w20PreparedCreatePoolSnapshot_(taskId, values) : [],
     trustedUntil: actionProof.trustedUntil,
     fullySynced: false,
     refreshRequired: true,

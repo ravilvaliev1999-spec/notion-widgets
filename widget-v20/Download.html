@@ -117,6 +117,26 @@
       return {url,name:safeDownloadName(data.name),expiresAt:new Date(expiry).toISOString()};
     }
 
+    function validatedPreparedDrive(data){
+      try{
+        if(!data||data.mode!=='grant'||!/^[a-f0-9]{96}$/.test(String(data.downloadGrant||'')))return null;
+        const raw=String(data.directDownloadUrl||''),name=String(data.directDownloadName||'');
+        const expiresText=String(data.directDownloadExpiresAt||''),grantExpiresText=String(data.expiresAt||'');
+        if(!raw||raw.length>1000||!name||name.length>180||safeDownloadName(name)!==name||expiresText!==grantExpiresText||
+            !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(expiresText))return null;
+        const url=new URL(raw),entries=Array.from(url.searchParams.entries()),keys=entries.map(([key])=>key);
+        const account=url.searchParams.get('authuser')||'',fileId=url.searchParams.get('id')||'';
+        const canonical=`https://drive.google.com/uc?export=download&authuser=${encodeURIComponent(account)}&id=${encodeURIComponent(fileId)}`;
+        const expiry=Date.parse(expiresText),now=Date.now();
+        if(url.protocol!=='https:'||url.hostname!=='drive.google.com'||url.port||url.username||url.password||url.pathname!=='/uc'||url.hash||
+            url.href!==raw||raw!==canonical||entries.length!==3||new Set(keys).size!==3||keys.join('|')!=='export|authuser|id'||
+            url.searchParams.get('export')!=='download'||!/^[A-Za-z0-9_-]{10,200}$/.test(fileId)||
+            !/^[^\s@]{1,64}@[^\s@]{1,189}$/.test(account)||account!==account.toLowerCase()||
+            !Number.isFinite(expiry)||new Date(expiry).toISOString()!==expiresText||expiry<=now+30000||expiry-now>60000)return null;
+        return {url:raw,name,expiresAt:expiresText};
+      }catch(_error){return null;}
+    }
+
     async function startDownload(){
       let objectUrl='';
       try{
@@ -139,6 +159,12 @@
         let grantedResponse=null;
         try{
           const prepareResponse=await callPrepare(input);
+          const prepared=prepareResponse&&prepareResponse.ok?validatedPreparedDrive(prepareResponse.data):null;
+          if(prepared){
+            setStatus('Проверка завершена. Начинаю прямое скачивание…');
+            notifyCourierDirect(prepared);
+            return;
+          }
           const grant=prepareResponse&&prepareResponse.ok&&prepareResponse.data&&String(prepareResponse.data.downloadGrant||'');
           if(prepareResponse&&prepareResponse.ok&&prepareResponse.data&&prepareResponse.data.mode==='grant'&&/^[a-f0-9]{96}$/.test(grant)){
             grantedResponse=await callDownload(Object.assign({},input,{downloadGrant:grant}));

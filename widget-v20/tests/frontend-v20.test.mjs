@@ -71,7 +71,7 @@ test('rename is optimistic before the RPC, waits for reorder, and reconciles or 
   const source = frontend.slice(frontend.indexOf('function materialMutationBusyKey'), frontend.indexOf('function captureOrder'));
   function harness(orderSaveRunning=false,queuedOrder=null) {
     const item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',name:'Старое имя',section:'Docs',provider:'Google Drive',openUrl:'https://docs.google.com/document/d/ExampleDocument123/edit'};
-    const state={materials:[item],busy:new Set()},optimisticMaterialMutations=new Map(),downloadGrants=new Map([[item.id,{}]]),downloadGrantRetryNotBefore=new Map([[item.id,1]]);
+    const state={materials:[item],busy:new Set(),authoritative:true},optimisticMaterialMutations=new Map(),downloadGrants=new Map([[item.id,{}]]),downloadGrantRetryNotBefore=new Map([[item.id,1]]);
     const modalState={open:false};
     const fields={editModal:{classList:{contains:(name)=>name==='open'&&modalState.open}},editId:{value:item.id},editName:{value:'Новое имя',focus(){}},editSection:{value:'Slides'},editUrl:{value:item.openUrl},editSubmit:{disabled:false}};
     const events={closed:[],renders:0,restored:[],toasts:[],cleared:0,primed:[],opened:[],rpc:null};
@@ -137,13 +137,19 @@ test('rename is optimistic before the RPC, waits for reorder, and reconciles or 
   assert.equal(blocked.state.materials[0].name,'Старое имя');
   assert.equal(blocked.fields.editSubmit.disabled,false);
   assert.equal(blocked.events.toasts.at(-1),'Завершаю сохранение порядка…');
+
+  const stale=harness();stale.state.authoritative=false;
+  await stale.handlers.saveEdit({preventDefault(){}});
+  assert.equal(stale.events.rpc,null,'a form opened before authority expires cannot submit a stale rename');
+  assert.equal(stale.state.materials[0].name,'Старое имя');
+  assert.equal(stale.events.toasts.at(-1),'Завершаю синхронизацию…');
 });
 
 test('hide removes immediately, waits for queued reorder, and restores its exact position on failure', async () => {
   const source = frontend.slice(frontend.indexOf('function materialMutationBusyKey'), frontend.indexOf('function captureOrder'));
   function harness(orderSaveRunning=false,queuedOrder=null) {
     const before={id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1',name:'До'},item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',name:'Скрыть',section:'Docs'},after={id:'cccccccc-cccc-4ccc-8ccc-ccccccccccc3',name:'После'};
-    const state={materials:[before,item,after],busy:new Set()},optimisticMaterialMutations=new Map(),events={closed:0,renders:0,toasts:[],cleared:0,restored:[],primed:[],rpc:null};
+    const state={materials:[before,item,after],busy:new Set(),authoritative:true},optimisticMaterialMutations=new Map(),events={closed:0,renders:0,toasts:[],cleared:0,restored:[],primed:[],rpc:null};
     let resolveRpc,rejectRpc;
     const fields={editId:{value:item.id},editName:{value:item.name,focus(){}},editSection:{value:'Docs'},editUrl:{value:''},editSubmit:{disabled:false}};
     const handlers=new Function('state','optimisticMaterialMutations','$','stableIdempotency','modalReturnFocus','downloadGrants','downloadGrantRetryNotBefore','closeModal','render','restoreFocusTarget','toast','call','clearIdempotency','primeDownloadGrant','downloadPrimeGeneration','openEdit','taskPageId','SECTIONS','sectionFor','orderSaveRunning','queuedOrder',`${source};return {archiveMaterial};`)(
@@ -177,6 +183,12 @@ test('hide removes immediately, waits for queued reorder, and restores its exact
   assert.equal(failure.events.cleared,0);
   assert.doesNotMatch(source,/window\.confirm|\bconfirm\(/);
   assert.doesNotMatch(source,/apiDeletePhysical/);
+
+  const stale=harness();stale.state.authoritative=false;
+  await stale.handlers.archiveMaterial(stale.item,{materialMenuId:stale.item.id});
+  assert.equal(stale.events.rpc,null,'a menu opened before authority expires cannot submit a stale hide');
+  assert.deepEqual(stale.state.materials.map((item)=>item.id),[stale.before.id,stale.item.id,stale.after.id]);
+  assert.equal(stale.events.toasts.at(-1),'Завершаю синхронизацию…');
 
   const blocked=harness(false,[{pageId:failure.item.id}]);
   await blocked.handlers.archiveMaterial(blocked.item,{materialMenuId:blocked.item.id});
@@ -233,10 +245,11 @@ test('drag and reorder are disabled while any material mutation is optimistic', 
   const drag=frontend.slice(frontend.indexOf('function handleDragStart'),frontend.indexOf('function focusReturnDescriptor'));
   const persist=frontend.slice(frontend.indexOf('async function persistOrder'),frontend.indexOf('function handleGridClick'));
   assert.match(card,/card\.draggable=state\.authoritative&&!String\(item\.id\)\.startsWith\('pending:'\)&&optimisticMaterialMutations\.size===0/);
-  assert.match(drag,/function handleDragStart\(event\)\{if\(optimisticMaterialMutations\.size\)\{event\.preventDefault\(\);return;\}/);
-  assert.match(drag,/function handleDropReorder\(event\)\{if\(optimisticMaterialMutations\.size\)\{event\.preventDefault\(\);handleDragEnd\(\);return;\}/);
-  assert.match(persist,/async function persistOrder\(\)\{if\(optimisticMaterialMutations\.size\)\{queuedOrder=null;return;\}queuedOrder=captureOrder\(\)/);
-  assert.match(persist,/while\(queuedOrder\)\{if\(optimisticMaterialMutations\.size\)\{queuedOrder=null;return;\}/);
+  assert.match(card,/main\.referrerPolicy='no-referrer';main\.draggable=false/);
+  assert.match(drag,/function handleDragStart\(event\)\{if\(!state\.authoritative\|\|optimisticMaterialMutations\.size\)\{event\.preventDefault\(\);return;\}/);
+  assert.match(drag,/function handleDropReorder\(event\)\{if\(!state\.authoritative\|\|optimisticMaterialMutations\.size\)\{event\.preventDefault\(\);handleDragEnd\(\);return;\}/);
+  assert.match(persist,/async function persistOrder\(\)\{if\(!state\.authoritative\|\|optimisticMaterialMutations\.size\)\{queuedOrder=null;return;\}queuedOrder=captureOrder\(\)/);
+  assert.match(persist,/while\(queuedOrder\)\{if\(!state\.authoritative\|\|optimisticMaterialMutations\.size\)\{queuedOrder=null;return;\}/);
 
   let prevented=0,targetInspected=0;
   const start=new Function('optimisticMaterialMutations','state',`${drag.slice(0,drag.indexOf('function handleDragEnd'))};return handleDragStart;`)(new Map([['pending',{}]]),{});
@@ -245,10 +258,17 @@ test('drag and reorder are disabled while any material mutation is optimistic', 
   assert.equal(targetInspected,0,'blocked drag exits before it can select a card');
 
   let captures=0,renders=0;
-  const saveOrder=new Function('optimisticMaterialMutations','queuedOrder','captureOrder','render','orderSaveRunning',`${persist};return persistOrder;`)(new Map([['pending',{}]]),null,()=>{captures+=1;return [];},()=>{renders+=1;},false);
+  const saveOrder=new Function('state','optimisticMaterialMutations','queuedOrder','captureOrder','render','orderSaveRunning',`${persist};return persistOrder;`)({authoritative:true},new Map([['pending',{}]]),null,()=>{captures+=1;return [];},()=>{renders+=1;},false);
   await saveOrder();
   assert.equal(captures,0,'blocked reorder cannot serialize an optimistic hide as a deletion');
   assert.equal(renders,0);
+
+  const cachedStart=new Function('optimisticMaterialMutations','state',`${drag.slice(0,drag.indexOf('function handleDragEnd'))};return handleDragStart;`)(new Map(),{authoritative:false});
+  cachedStart({preventDefault(){prevented+=1;},target:{closest(){targetInspected+=1;return {draggable:true};}}});
+  assert.equal(targetInspected,0,'a signed cached snapshot cannot start a native anchor drag');
+  const cachedSave=new Function('state','optimisticMaterialMutations','queuedOrder','captureOrder','render','orderSaveRunning',`${persist};return persistOrder;`)({authoritative:false},new Map(),null,()=>{captures+=1;return [];},()=>{renders+=1;},false);
+  await cachedSave();
+  assert.equal(captures,0,'a signed cached snapshot cannot issue a stale reorder');
 });
 
 test('saved-card menu restores focus, supports menu keys and survives a card rerender', () => {
@@ -321,6 +341,9 @@ test('primary cards create Google files and their pencils upload into the matchi
   assert.doesNotMatch(primaryMarkup, /chevronSvg|material-menu-trigger/);
   assert.match(render, /primary\.classList\.toggle\('busy',state\.busy\.has\(`create:\$\{section\}`\)\)/);
   assert.match(render, /primary\.setAttribute\('aria-disabled',String\(!actionReady\)\)/);
+  assert.match(render, /const actionReady=state\.actionReady,mutationReady=state\.authoritative&&actionReady/);
+  assert.match(render, /uploadButton\.disabled=!mutationReady/);
+  assert.match(render, /add\.disabled=!mutationReady\|\|state\.busy\.has/);
   assert.doesNotMatch(render, /classList\.toggle\('busy'[^\n]*!actionReady/);
   assert.match(frontend, /if\(section==='Drive'\)[\s\S]*createGoogle\(section\)/);
   assert.match(frontend, /const payload=\{taskPageId,section,idempotencyKey:operation\.value\}/);
@@ -330,21 +353,60 @@ test('primary cards create Google files and their pencils upload into the matchi
   assert.doesNotMatch(frontend, /seedDownloadFromFile\(data\.material,file\)/);
 });
 
-test('authoritative prepared files open directly and bind the background claim to the same request', () => {
+test('signed prepared files open directly and bind the background claim to the same request', () => {
   assert.match(frontend, /preparedCreates:\{\}/);
   assert.match(frontend, /function safePreparedCreate\(value\)/);
   assert.match(frontend, /url\.hostname!=='docs\.google\.com'/);
   assert.match(frontend, /url\.search\|\|url\.hash/);
   assert.match(frontend, /function warmPreparedCreates\(\)/);
-  assert.match(frontend, /!state\.authoritative\|\|!state\.actionReady/);
+  assert.match(frontend, /!\(state\.authoritative\|\|state\.snapshotTrusted\)\|\|state\.busy\.size/);
   assert.match(frontend, /Object\.keys\(state\.preparedCreates\)\.length>=3/);
+  assert.match(frontend, /const proofOnly=!state\.actionReady/);
+  assert.match(frontend, /call\('apiWarmCreateContext',\{taskPageId,proofOnly:true\}\)/);
+  assert.match(frontend, /Promise\.allSettled\(missing\.map\(\(section\)=>\s*call\('apiWarmCreateContext',\{taskPageId,section\}\)/);
   assert.match(frontend, /call\('apiWarmCreateContext',\{taskPageId\}\)/);
-  assert.match(frontend, /state\.authoritative&&state\.actionReady\?Object\.values\(state\.preparedCreates\)/);
+  assert.match(frontend, /function mergePreparedCreates\(value,expectedSection\)/);
+  assert.match(frontend, /safeTaskFolderUrl\(data&&data\.folderUrl\)/);
+  assert.match(frontend, /state\.snapshotTrusted=true;state\.actionReady=true/);
+  assert.match(frontend, /state\.actionReady\?Object\.values\(state\.preparedCreates\)/);
   assert.match(frontend, /issuedPreparedCreates\.get\(reservationId\)!==data\.section/);
   assert.match(frontend, /type:'notion-widget-v20-primary-started',requestId/);
   assert.match(frontend, /activeBridgeCreateRequests\.get\(data\.section\)===requestId/);
   assert.match(frontend, /if\(bridgeRequest&&bridgeRequest\.reservationId\)payload\.reservationId=bridgeRequest\.reservationId/);
   assert.match(frontend, /prepared&&prepared\.reservationId===bridgeRequest\.reservationId\)delete state\.preparedCreates\[section\]/);
+});
+
+test('fresh cached action proof starts missing Docs, Sheets and Slides warm RPCs in parallel', async () => {
+  const source=frontend.slice(frontend.indexOf('function warmPreparedCreates()'),frontend.indexOf('function resolveRuntimeLocation()'));
+  assert.ok(source.startsWith('function warmPreparedCreates()'));
+  const state={bootstrapped:true,authoritative:false,snapshotTrusted:true,actionReady:true,preparedCreates:{},busy:new Set()};
+  const calls=[],resolvers=new Map();
+  let allStartedResolve;
+  const allStarted=new Promise((resolve)=>{allStartedResolve=resolve;});
+  const call=(method,payload)=>{
+    calls.push({method,payload:{...payload}});
+    if(!payload.section)throw new Error('batch fallback must not run when every sectional warm succeeds');
+    return new Promise((resolve)=>{
+      resolvers.set(payload.section,resolve);
+      if(resolvers.size===3)allStartedResolve();
+    });
+  };
+  const missingPreparedCreateSections=()=>['Docs','Sheets','Slides'].filter((section)=>!state.preparedCreates[section]);
+  const acceptWarmCreateContext=(data,_merge,expectedSection)=>{
+    const item=(data.preparedCreates||[]).find((candidate)=>candidate.section===expectedSection);
+    if(!item)return false;
+    state.preparedCreates[expectedSection]=item;
+    return true;
+  };
+  const factory=new Function('state','runtimeLocationResolved','taskPageId','createPoolWarmPromise','call','missingPreparedCreateSections','acceptWarmCreateContext','scheduleActionProofRetry','window',`${source};return {warmPreparedCreates};`);
+  const warm=factory(state,true,'3c62d627-39a1-80a1-aac7-ec19ffc9ef8e',null,call,missingPreparedCreateSections,acceptWarmCreateContext,()=>{},globalThis).warmPreparedCreates();
+  await Promise.race([allStarted,new Promise((_,reject)=>setTimeout(()=>reject(new Error('sectional warms did not start in parallel')),500))]);
+  assert.deepEqual(calls.map((entry)=>entry.payload.section).sort(),['Docs','Sheets','Slides']);
+  assert.ok(calls.every((entry)=>entry.method==='apiWarmCreateContext'&&!Object.prototype.hasOwnProperty.call(entry.payload,'proofOnly')));
+  for(const [section,resolve] of resolvers)resolve({preparedCreates:[{section,reservationId:`reservation-${section}`,openUrl:`https://example.invalid/${section}`}]});
+  assert.equal(await warm,true);
+  assert.deepEqual(Object.keys(state.preparedCreates).sort(),['Docs','Sheets','Slides']);
+  assert.equal(calls.length,3,'successful sectional calls must not trigger the slower batch fallback');
 });
 
 test('mutation retries use per-session stable idempotency keys without persisting materials', () => {
@@ -516,16 +578,19 @@ test('server-rendered safe registry cards paint before the first client RPC', ()
   assert.match(startup,/data\.authoritative!==false/);
   assert.match(startup,/Array\.isArray\(data\.materials\)/);
   assert.match(startup,/applyBootstrapData\(initialBootstrap,false,\{skipDownloadPrime:true\}\)/);
-  assert.ok(startup.indexOf('applyBootstrapData(initialBootstrap,false')<startup.indexOf('resolveRuntimeLocation().then'));
-  assert.match(frontend,/state\.actionReady=Boolean\(state\.authoritative&&runtimeLocationResolved&&data&&data\.actionReady===true&&state\.trustedUntil>Date\.now\(\)\)/);
+  assert.match(frontend,/let runtimeLocationResolved = Boolean\(taskPageId&&accessToken\)/);
+  assert.match(frontend,/state\.authoritative=Boolean\(authoritative&&data&&data\.authoritative!==false\)/);
+  assert.match(frontend,/state\.snapshotTrusted=bootstrapSnapshotIsTrusted\(data,state\.authoritative\)/);
+  assert.match(frontend,/state\.actionReady=Boolean\(runtimeLocationResolved&&state\.snapshotTrusted\)/);
   assert.match(frontend,/if\(!runtimeLocationResolved\|\|!isEmbedBridgeMode\(\)\|\|!state\.bootstrapped\)return/);
-  assert.ok(startupTail.indexOf('runtimeLocationResolved=true')<startupTail.lastIndexOf('applyBootstrapData(initialBootstrap,false'));
   assert.match(startupTail,/deferInitialDownloadPrimeUntilAuthoritative=true/);
+  assert.match(startupTail,/if\(!state\.bootstrapped\)applyBootstrapData\(initialBootstrap,false,\{skipDownloadPrime:true\}\)/);
+  assert.match(startupTail,/if\(runtimeLocationResolved\)continueStartup\(\)/);
   assert.match(startupTail,/scheduleCachedRefresh\(0\)/);
   assert.match(startupTail,/if\(state\.actionReady\)scheduleDownloadGrantPrime\(downloadPrimeGeneration\)/);
-  assert.ok(startupTail.lastIndexOf('applyBootstrapData(initialBootstrap,false')<startupTail.indexOf('if(state.actionReady)scheduleDownloadGrantPrime'));
+  assert.ok(startupTail.indexOf('applyBootstrapData(initialBootstrap,false')<startupTail.indexOf('if(state.actionReady)scheduleDownloadGrantPrime'));
   assert.ok(startupTail.indexOf('if(state.actionReady)scheduleDownloadGrantPrime')<startupTail.indexOf('scheduleCachedRefresh(0)'));
-  assert.match(frontend,/if\(state\.authoritative\)deferInitialDownloadPrimeUntilAuthoritative=false/);
+  assert.match(frontend,/if\(state\.authoritative\|\|state\.snapshotTrusted\)deferInitialDownloadPrimeUntilAuthoritative=false/);
   assert.match(frontend,/!deferInitialDownloadPrimeUntilAuthoritative\)scheduleDownloadGrantPrime\(downloadPrimeGeneration\)/);
 });
 
@@ -663,6 +728,9 @@ test('Apps Script courier fetches only after its page is opened and forces an ex
   assert.match(downloader, /const precomputed=precomputedResult\(\)/);
   assert.ok(downloader.indexOf('const precomputed=precomputedResult()') < downloader.indexOf('const params=resolveRuntimeParams()'));
   assert.match(downloader, /if\(precomputed\)[\s\S]*notifyCourierDirect\(direct\)/);
+  assert.match(downloader, /function validatedPreparedDrive\(data\)/);
+  assert.match(downloader, /const prepared=prepareResponse&&prepareResponse\.ok\?validatedPreparedDrive\(prepareResponse\.data\):null/);
+  assert.match(downloader, /if\(prepared\)[\s\S]*notifyCourierDirect\(prepared\);[\s\S]*return/);
   assert.match(downloader, /data\.mode==='grant'[\s\S]*downloadGrant:grant/);
   assert.doesNotMatch(downloader, /payload=\{[^\n]+status:'direct'[^\n]+opener\.postMessage/);
   assert.match(downloader, /const MAX_DOWNLOAD_BYTES=20\*1024\*1024/);
@@ -674,6 +742,69 @@ test('Apps Script courier fetches only after its page is opened and forces an ex
   assert.match(downloader, /window\.top&&window\.top!==window/);
   assert.match(downloader, /const SUCCESS_SETTLE_MS=2500/);
   assert.doesNotMatch(downloader, /postMessage\([^\n]*(?:accessToken|base64)/);
+});
+
+test('Apps Script courier uses a canonical prepared Drive URL without a second RPC and falls back on malformed prepared data', async () => {
+  const script=downloader.match(/<script>\s*([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(script);
+  const task='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const pageId='3c72d627-39a1-81e1-971f-c6b30665ce55';
+  const accessToken='t'.repeat(64),downloadTicket='d'.repeat(64);
+  const driveUrl='https://drive.google.com/uc?export=download&authuser=owner%40example.com&id=DriveBinaryFile123';
+
+  async function run(preparedData,downloadData=null){
+    const calls=[];
+    let settle;
+    const completed=new Promise((resolve)=>{settle=resolve;});
+    const runtime={
+      success:null,failure:null,
+      withSuccessHandler(handler){this.success=handler;return this;},
+      withFailureHandler(handler){this.failure=handler;return this;},
+      apiPrepareDownload(input){calls.push({method:'apiPrepareDownload',input});const handler=this.success;queueMicrotask(()=>handler({ok:true,data:preparedData}));},
+      apiDownload(input){calls.push({method:'apiDownload',input});const handler=this.success;queueMicrotask(()=>handler({ok:true,data:downloadData}));}
+    };
+    const nodes={
+      status:{textContent:''},
+      runtimeParams:{dataset:{params:JSON.stringify({task,pageId,accessToken,downloadTicket})}},
+      precomputedResult:{dataset:{result:'null'}}
+    };
+    const top={postMessage(payload){settle(payload);},close(){}};
+    const context={
+      console,Date,JSON,Math,Number,String,RegExp,Set,Array,Object,Promise,URL,Blob,Uint8Array,
+      atob,queueMicrotask,setTimeout,clearTimeout,
+      document:{
+        getElementById:(id)=>nodes[id]||null,
+        createElement:()=>({click(){},remove(){}}),
+        body:{appendChild(){}}
+      },
+      google:{script:{run:runtime}}
+    };
+    context.window=context;
+    context.window.top=top;
+    vm.runInNewContext(script,context,{filename:'Download.html'});
+    const payload=await Promise.race([completed,new Promise((_,reject)=>setTimeout(()=>reject(new Error('download runner timed out')),500))]);
+    return {calls,payload,status:nodes.status.textContent};
+  }
+
+  const expiresAt=new Date(Date.now()+50_000).toISOString();
+  const valid=await run({
+    mode:'grant',downloadGrant:'a'.repeat(96),expiresAt,
+    directDownloadUrl:driveUrl,directDownloadExpiresAt:expiresAt,directDownloadName:'report.xlsx'
+  });
+  assert.deepEqual(valid.calls.map((call)=>call.method),['apiPrepareDownload']);
+  assert.equal(valid.payload.status,'direct');
+  assert.equal(valid.payload.url,driveUrl);
+  assert.equal(valid.payload.name,'report.xlsx');
+
+  const fallbackExpiresAt=new Date(Date.now()+120_000).toISOString();
+  const malformed=await run({
+    mode:'grant',downloadGrant:'b'.repeat(96),expiresAt,
+    directDownloadUrl:`${driveUrl}&extra=1`,directDownloadExpiresAt:expiresAt,directDownloadName:'report.xlsx'
+  },{mode:'direct',url:driveUrl,name:'report.xlsx',expiresAt:fallbackExpiresAt});
+  assert.deepEqual(malformed.calls.map((call)=>call.method),['apiPrepareDownload','apiDownload']);
+  assert.equal(malformed.calls[1].input.downloadGrant,'b'.repeat(96));
+  assert.equal(malformed.payload.status,'direct');
+  assert.equal(malformed.payload.url,driveUrl);
 });
 
 test('create courier uses a credentialless fragment-only handoff and opens only Google file URLs', () => {
@@ -843,7 +974,8 @@ test('native create clicks render one optimistic card and poll only the server l
   const createSource=frontend.slice(frontend.indexOf('async function createGoogle(section,bridgeRequest)'),frontend.indexOf('function openLinkModal'));
   const releaseAt=createSource.indexOf('delete state.preparedCreates[section]'),replyAt=createSource.indexOf('reply({ok:true,openUrl:'),announceAt=createSource.indexOf('announceEmbedBridgeReady();',replyAt);
   assert.ok(releaseAt>=0&&releaseAt<replyAt&&replyAt<announceAt,'the consumed descriptor must disappear before success is announced');
-  assert.match(frontend, /if\(state\.authoritative!==true\|\|state\.actionReady!==true\)/);
+  assert.match(frontend, /if\(state\.actionReady!==true\)/);
+  assert.match(frontend, /authoritative:state\.authoritative\|\|state\.snapshotTrusted/);
   assert.match(frontend, /actionReady:state\.actionReady===true/);
   assert.doesNotMatch(frontend, /actionReady:state\.actionReady===true\|\|state\.authoritative/);
   assert.match(frontend, /state\.materials\.slice\(\)\.reverse\(\)\.filter\(\(item\)=>item&&!String\(item\.id\|\|''\)\.startsWith\('pending:'\)&&item\.syncStatus!=='pending'\)/);
@@ -852,7 +984,7 @@ test('native create clicks render one optimistic card and poll only the server l
   assert.doesNotMatch(frontend, /apiGetCreateStatus[^\n]+idempotencyKey/);
 });
 
-test('action proof is renewed before expiry and authoritative data never bypasses it', () => {
+test('live authority and a fresh signed snapshot proof unlock only their intended actions', () => {
   const action=frontend.slice(frontend.indexOf('function scheduleActionProofRefresh'),frontend.indexOf('function downloadMaterialFingerprint'));
   assert.match(frontend,/const ACTION_READY_RENEW_LEAD_MS = 30000/);
   assert.match(frontend,/const ACTION_READY_RETRY_DELAYS_MS = \[750,1500,3000,7000,15000\]/);
@@ -865,20 +997,37 @@ test('action proof is renewed before expiry and authoritative data never bypasse
   assert.match(action,/actionReadyRefreshAttempt>=ACTION_READY_RETRY_DELAYS_MS\.length/);
   assert.match(action,/state\.busy\.size\)\{actionReadyRefreshDeferredForBusy=true/);
   assert.match(frontend,/resumeDeferredActionProofRefresh\(\)/);
-  assert.match(frontend,/runtimeLocationResolved&&state\.authoritative&&!state\.actionReady&&!\(options&&options\.deferActionProofRetry\)\)scheduleActionProofRetry\(\)/);
+  assert.match(frontend,/runtimeLocationResolved&&state\.authoritative&&!state\.actionReady&&!\(options&&options\.deferActionProofRetry\)\)window\.setTimeout\(\(\)=>warmPreparedCreates\(\),0\)/);
   assert.match(frontend,/applyBootstrapData\(fresh,true,\{deferActionProofRetry:true\}\)/);
   assert.match(frontend,/state\.trustedUntil-Date\.now\(\)<=ACTION_READY_RENEW_LEAD_MS\)\)scheduleActionProofRefresh\(0\)/);
-  assert.match(frontend,/state\.actionReady=Boolean\(state\.authoritative&&runtimeLocationResolved&&data&&data\.actionReady===true&&state\.trustedUntil>Date\.now\(\)\)/);
+  assert.match(frontend,/state\.snapshotTrusted=bootstrapSnapshotIsTrusted\(data,state\.authoritative\)/);
+  assert.match(frontend,/state\.actionReady=Boolean\(runtimeLocationResolved&&state\.snapshotTrusted\)/);
   assert.doesNotMatch(frontend,/state\.actionReady=state\.authoritative\|\|/);
   assert.doesNotMatch(frontend,/const actionReady=state\.actionReady\|\|state\.authoritative/);
+  for (const gate of [
+    /function openLinkModal[\s\S]*if\(!state\.authoritative\|\|!state\.actionReady\)/,
+    /async function addLink[\s\S]*if\(!state\.authoritative\|\|!state\.actionReady\)/,
+    /function chooseFiles[\s\S]*if\(!state\.authoritative\|\|!state\.actionReady\)/,
+    /async function uploadFiles[\s\S]*if\(!state\.authoritative\|\|!state\.actionReady\)/,
+    /function openEdit[\s\S]*if\(!state\.authoritative\)/
+  ]) assert.match(frontend,gate);
+  const saveEditSource=frontend.slice(frontend.indexOf('async function saveEdit'),frontend.indexOf('function currentItem'));
+  const archiveSource=frontend.slice(frontend.indexOf('async function archiveMaterial'),frontend.indexOf('function upsert'));
+  assert.match(saveEditSource,/if\(!state\.authoritative\)\{toast\('Завершаю синхронизацию…'\);return;\}/);
+  assert.match(archiveSource,/if\(!state\.authoritative\)\{toast\('Завершаю синхронизацию…'\);return;\}/);
 
   const proofSource=frontend.slice(frontend.indexOf('function actionProofIsFresh'),frontend.indexOf('function scheduleActionProofRetry'));
-  const proof=new Function(`${proofSource};return actionProofIsFresh;`)();
+  const proofs=new Function(`${proofSource};return {live:actionProofIsFresh,snapshot:bootstrapSnapshotIsTrusted};`)();
   const future=new Date(Date.now()+60000).toISOString();
-  assert.equal(proof({cached:false,authoritative:true,actionReady:true,trustedUntil:future}),true);
-  assert.equal(proof({cached:true,authoritative:false,actionReady:true,trustedUntil:future}),false);
-  assert.equal(proof({cached:false,authoritative:true,actionReady:false,trustedUntil:future}),false);
-  assert.equal(proof({cached:false,authoritative:true,actionReady:true,trustedUntil:new Date(Date.now()-1).toISOString()}),false);
+  assert.equal(proofs.live({cached:false,authoritative:true,actionReady:true,trustedUntil:future}),true);
+  assert.equal(proofs.live({cached:true,authoritative:false,actionReady:true,trustedUntil:future}),false);
+  assert.equal(proofs.live({cached:false,authoritative:true,actionReady:false,trustedUntil:future}),false);
+  assert.equal(proofs.live({cached:false,authoritative:true,actionReady:true,trustedUntil:new Date(Date.now()-1).toISOString()}),false);
+  assert.equal(proofs.snapshot({cached:true,authoritative:false,actionReady:true,trustedUntil:future},false),true,'fresh server registry proof enables native create/read without changing live authority');
+  assert.equal(proofs.snapshot({cached:true,authoritative:false,actionReady:true,trustedUntil:new Date(Date.now()-1).toISOString()},false),false);
+  assert.equal(proofs.snapshot({cached:true,authoritative:true,actionReady:true,trustedUntil:future},false),false,'mixed cached authority flags fail closed');
+  assert.equal(proofs.snapshot({cached:false,authoritative:true,actionReady:true,trustedUntil:future},false),false,'live payload needs the independently derived authority bit');
+  assert.equal(proofs.snapshot({cached:false,authoritative:true,actionReady:true,trustedUntil:future},true),true);
 
   const retrySource=frontend.slice(frontend.indexOf('function scheduleActionProofRetry'),frontend.indexOf('function scheduleActionReadyExpiry'));
   const retryHarness=new Function('state','ACTION_READY_RETRY_DELAYS_MS','scheduleActionProofRefresh',`
