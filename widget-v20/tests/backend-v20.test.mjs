@@ -809,11 +809,12 @@ test('Notion request slots enforce at least 350 ms between outbound attempts', (
   const sleeps = [];
   let now = 1000;
   let releases = 0;
+  let lockHeld = false;
   backend.Date = { now: () => now };
   backend.LockService = {
     getScriptLock: () => ({
-      tryLock: () => true,
-      releaseLock: () => { releases += 1; }
+      tryLock: () => { lockHeld = true; return true; },
+      releaseLock: () => { lockHeld = false; releases += 1; }
     })
   };
   backend.CacheService = {
@@ -826,6 +827,7 @@ test('Notion request slots enforce at least 350 ms between outbound attempts', (
     })
   };
   backend.Utilities.sleep = (ms) => {
+    assert.equal(lockHeld,false,'Notion pacing must not block create-ledger and registry checkpoints');
     sleeps.push(ms);
     now += ms;
   };
@@ -1814,7 +1816,9 @@ test('prepare download revalidates server ownership before issuing an account-bo
   assert.equal(result.data.downloadPackage,undefined,'a permanent Drive URL must stay behind the HMAC grant exchange');
   assert.equal(result.data.packageExpiresAt,undefined);
   assert.equal(backend.w20FastDownloadPackage_(probeDirect,Date.now()),null);
-  assert.equal(result.data.url,undefined,'the priming client must never receive the direct hosted URL');
+  assert.equal(result.data.url,undefined,'the generic direct result shape is reserved for grant redemption');
+  assert.equal(result.data.directDownloadUrl,expectedDriveUrl,'the authenticated priming call may return only the already ownership-checked Drive URL');
+  assert.equal(result.data.directDownloadExpiresAt,result.data.expiresAt,'the in-memory direct URL cannot outlive its HMAC grant');
   assert.equal(backend.w20GetDownloadGrant_(taskId,pageId,result.data.downloadGrant,cfg).url,expectedDriveUrl);
   assert.equal(guardCalls,1);
   cfg.allowedEmail='invalid-account';

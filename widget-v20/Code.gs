@@ -1022,6 +1022,10 @@ function apiPrepareDownload(input) {
       expiresAt: new Date(Date.now() + W20_DRIVE_DIRECT_SOURCE_TTL_SECONDS * 1000).toISOString()
     };
     var issued = w20IssueDownloadGrant_(taskId, materialId, direct, cfg, grantEpoch);
+    if (issued && issued.mode === 'grant' && /^[a-f0-9]{96}$/.test(String(issued.downloadGrant || ''))) {
+      issued.directDownloadUrl = direct.url;
+      issued.directDownloadExpiresAt = issued.expiresAt;
+    }
     if (issued && issued.mode === 'proxy') issued.proxyReason = 'grant';
     return issued;
   });
@@ -1637,20 +1641,22 @@ function w19ReserveNotionRequestSlot_() {
   if (!lock.tryLock(W19_NOTION_RATE_LOCK_WAIT_MS)) {
     throw new W19Error_('NOTION_RATE_LIMIT_BUSY', 'Очередь запросов Notion занята. Повторите через несколько секунд.', true);
   }
+  var waitMs = 0;
   try {
     var cache = CacheService.getScriptCache();
     var now = Date.now();
     var previousAt = Number(cache.get(W19_NOTION_RATE_CACHE_KEY));
-    if (!isFinite(previousAt) || previousAt <= 0 || previousAt > now + W19_NOTION_RATE_INTERVAL_MS) previousAt = 0;
-    var earliestAt = previousAt + W19_NOTION_RATE_INTERVAL_MS;
-    while (previousAt && now < earliestAt) {
-      Utilities.sleep(earliestAt - now);
-      now = Date.now();
+    if (!isFinite(previousAt) || previousAt <= 0) previousAt = 0;
+    if (previousAt > now + W19_NOTION_RATE_LOCK_WAIT_MS) {
+      throw new W19Error_('NOTION_RATE_LIMIT_BUSY', 'Очередь запросов Notion занята. Повторите через несколько секунд.', true);
     }
-    cache.put(W19_NOTION_RATE_CACHE_KEY, String(now), 120);
+    var reservedAt = previousAt ? Math.max(now, previousAt + W19_NOTION_RATE_INTERVAL_MS) : now;
+    waitMs = Math.max(0, reservedAt - now);
+    cache.put(W19_NOTION_RATE_CACHE_KEY, String(reservedAt), 120);
   } finally {
     lock.releaseLock();
   }
+  if (waitMs) Utilities.sleep(waitMs);
 }
 
 function w19NotionRequest_(method, path, body, cfg, requestOptions) {

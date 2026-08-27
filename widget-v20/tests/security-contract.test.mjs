@@ -256,9 +256,11 @@ test('Notion API attempts are globally paced and never hold the rate lock across
   assert.match(helper, /CacheService\.getScriptCache\(\)/);
   assert.match(helper, /lock\.tryLock\(W19_NOTION_RATE_LOCK_WAIT_MS\)/);
   assert.match(helper, /NOTION_RATE_LIMIT_BUSY[\s\S]*true/);
-  assert.match(helper, /earliestAt\s*=\s*previousAt\s*\+\s*W19_NOTION_RATE_INTERVAL_MS/);
-  assert.match(helper, /Utilities\.sleep\(earliestAt\s*-\s*now\)/);
+  assert.match(helper, /reservedAt\s*=\s*previousAt\s*\?\s*Math\.max\(now,\s*previousAt\s*\+\s*W19_NOTION_RATE_INTERVAL_MS\)\s*:\s*now/);
+  assert.match(helper, /waitMs\s*=\s*Math\.max\(0,\s*reservedAt\s*-\s*now\)/);
+  assert.match(helper, /Utilities\.sleep\(waitMs\)/);
   assert.match(helper, /finally\s*\{\s*lock\.releaseLock\(\);\s*\}/);
+  assert.ok(helper.indexOf('lock.releaseLock();') < helper.indexOf('Utilities.sleep(waitMs)'),'rate pacing sleeps only after releasing the shared ledger lock');
   assert.doesNotMatch(helper, /UrlFetchApp|notionToken|Logger|console/);
   assert.ok(request.indexOf('w19ReserveNotionRequestSlot_();') < request.indexOf('UrlFetchApp.fetch(url, options)'));
 });
