@@ -83,7 +83,7 @@ function installReservationDriveMock(backend) {
     create(resource){
       creates+=1;sequence+=1;
       const id=`ReservedGoogleFile${String(sequence).padStart(3,'0')}`;
-      const file={id,name:resource.name,mimeType:resource.mimeType,ownedByMe:true,trashed:false,parents:[...(resource.parents||[])],appProperties:{...(resource.appProperties||{})}};
+      const file={id,name:resource.name,mimeType:resource.mimeType,modifiedTime:new Date().toISOString(),ownedByMe:true,trashed:false,parents:[...(resource.parents||[])],appProperties:{...(resource.appProperties||{})}};
       file.webViewLink=backend.WidgetV19Core.makeDriveOpenUrl(id,resource.mimeType==='application/vnd.google-apps.document'?'Google Docs':resource.mimeType==='application/vnd.google-apps.spreadsheet'?'Google Sheets':'Google Slides');
       files.set(id,file);return copy(file);
     },
@@ -92,6 +92,7 @@ function installReservationDriveMock(backend) {
       updates+=1;
       const file=files.get(String(fileId));if(!file)throw new Error('not found');
       if(Object.prototype.hasOwnProperty.call(resource||{},'name'))file.name=resource.name;
+      if(Object.prototype.hasOwnProperty.call(resource||{},'trashed'))file.trashed=resource.trashed===true;
       for(const [key,value] of Object.entries(resource&&resource.appProperties||{})){
         if(value===null)delete file.appProperties[key];else file.appProperties[key]=String(value);
       }
@@ -102,6 +103,31 @@ function installReservationDriveMock(backend) {
     }
   }};
   return {files,get creates(){return creates;},get updates(){return updates;},get lists(){return lists;},get gets(){return gets;}};
+}
+
+function installReservationV2Harness() {
+  const backend=loadBackend();
+  const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const rootFolderId='RootFolder12345',taskFolderId='TaskFolder12345';
+  const cfg={
+    authorizedTaskPageId:taskId,deniedPageIds:{},rootFolderId,taskFolderId,
+    dataSourceId:'3822d627-39a1-8018-a2dc-000b95bf5722',maxUploadBytes:8388608,
+    notionToken:'test-reservation-v2-hmac-secret'
+  };
+  backend.Utilities.formatDate=()=> '2026-08-28 12:00';
+  const drive=installReservationDriveMock(backend);
+  const replacement=backend.w20RegistryReplaceTaskResult_(taskId,[]);
+  assert.equal(replacement.ok,true);
+  const validatedAt=new Date().toISOString();
+  backend.w20RegistryWriteTaskMeta_(taskId,{
+    taskName:'Задача',folderId:taskFolderId,rootFolderId,folderVerified:true,
+    folderValidatedAt:validatedAt,taskValidatedAt:validatedAt,snapshotValidatedAt:validatedAt,
+    snapshotActiveCount:replacement.activeCount,
+    context:{path:'Основная / Задача',ancestorIds:'ancestor',depth:2,sphereIds:[],directionIds:[],projectIds:[]}
+  });
+  backend.w19AuthorizedConfig_=()=>cfg;
+  backend.w19AssertSchema_=()=>{};
+  return {backend,taskId,rootFolderId,taskFolderId,cfg,drive};
 }
 
 function installUploadApiHarness({ recovery = false, slot, existingPage = null } = {}) {
@@ -1407,6 +1433,271 @@ test('post-CAS reservation failures preserve the reverse claim and can never fal
   assert.equal(rewarmed.ok,true);
   assert.equal([...rewarmed.data.preparedCreates].some((item)=>item.section==='Docs'),false,'claimed heads are never requeued');
   assert.equal(drive.creates,3);
+});
+
+test('reservation v2 prepares one signed 30-day head per client and section with a bounded client set', () => {
+  const {backend,taskId,cfg,drive}=installReservationV2Harness();
+  const clients=[
+    '11111111-1111-4111-8111-111111111111',
+    '22222222-2222-4222-8222-222222222222',
+    '33333333-3333-4333-8333-333333333333',
+    '44444444-4444-4444-8444-444444444444'
+  ];
+  const startedAt=Date.now();
+  const first=backend.apiWarmCreateContext({taskPageId:taskId,clientId:clients[0]});
+  assert.equal(first.ok,true,JSON.stringify(first));
+  assert.equal(first.data.preparedCreates.length,3);
+  assert.equal(drive.creates,3);
+  const clientHash=backend.w20CreateClientHash_(taskId,clients[0]);
+  assert.match(clientHash,/^[a-f0-9]{32}$/);
+  for(const descriptor of first.data.preparedCreates){
+    assert.deepEqual(Object.keys(descriptor).sort(),[
+      'generation','navigateUntil','openUrl','preparedName','reservationId','reservationProof','section'
+    ]);
+    assert.equal(descriptor.generation,1);
+    assert.ok(descriptor.preparedName.length>0&&descriptor.preparedName.length<=180);
+    assert.match(descriptor.reservationProof,/^[a-f0-9]{64}$/);
+    const navigateAt=Date.parse(descriptor.navigateUntil);
+    assert.equal(new Date(navigateAt).toISOString(),descriptor.navigateUntil);
+    assert.ok(navigateAt>=startedAt+backend.W20_CREATE_RESERVATION_V2_TTL_MS-1000);
+    assert.ok(navigateAt<=Date.now()+backend.W20_CREATE_RESERVATION_V2_TTL_MS+1000);
+    assert.equal(descriptor.reservationProof,backend.w20CreateReservationV2Proof_(
+      taskId,clientHash,descriptor.section,descriptor.reservationId,descriptor.openUrl,descriptor.preparedName,
+      descriptor.generation,descriptor.navigateUntil,cfg
+    ));
+    const slot=backend.w20ReadCreateReservationV2_(backend.PropertiesService.getScriptProperties(),
+      backend.w20CreateReservationV2Key_(taskId,clientHash,descriptor.section));
+    assert.equal(slot.status,'prepared');assert.equal(slot.generation,1);assert.equal(slot.reservationId,descriptor.reservationId);
+    assert.equal(slot.preparedName,descriptor.preparedName);
+  }
+  for(const file of drive.files.values()){
+    assert.deepEqual(Object.keys(file.appProperties).sort(),[
+      'createReservationClient','createReservationGeneration','createReservationId','createReservationNavigateUntil',
+      'createReservationSection','createReservationState','materialState','taskPageId','widgetVersion'
+    ]);
+    assert.equal(file.appProperties.createReservationClient,clientHash);
+    assert.equal(file.appProperties.createReservationGeneration,'1');
+    assert.equal(file.appProperties.materialState,'reserved');
+  }
+  const repeated=backend.apiWarmCreateContext({taskPageId:taskId,clientId:clients[0]});
+  assert.equal(repeated.ok,true,JSON.stringify(repeated));
+  assert.deepEqual(JSON.parse(JSON.stringify(repeated.data.preparedCreates)),JSON.parse(JSON.stringify(first.data.preparedCreates)));
+  assert.equal(drive.creates,3,'same client reuses exactly one head per section');
+  for(const clientId of clients.slice(1,3)){
+    const warmed=backend.apiWarmCreateContext({taskPageId:taskId,clientId});
+    assert.equal(warmed.ok,true,JSON.stringify(warmed));assert.equal(warmed.data.preparedCreates.length,3);
+  }
+  assert.equal(drive.creates,9);
+  const capped=backend.apiWarmCreateContext({taskPageId:taskId,clientId:clients[3]});
+  assert.equal(capped.ok,false);assert.equal(capped.error.code,'CREATE_CLIENT_LIMIT');
+  assert.equal(drive.creates,9,'client cap must not evict or create another head');
+});
+
+test('three sectional reservation v2 warms run full cleanup only while provisioning their shared client', () => {
+  const {backend,taskId,drive}=installReservationV2Harness();
+  const clientId='11111111-1111-4111-8111-111111111111';
+  const originalCleanup=backend.w20CleanupExpiredCreateReservationsV2_;
+  let cleanupCalls=0;
+  backend.w20CleanupExpiredCreateReservationsV2_=(...args)=>{
+    cleanupCalls+=1;
+    return originalCleanup(...args);
+  };
+  for(const section of ['Docs','Sheets','Slides']){
+    const warmed=backend.apiWarmCreateContext({taskPageId:taskId,clientId,section});
+    assert.equal(warmed.ok,true,JSON.stringify(warmed));
+    assert.equal(warmed.data.preparedCreates.length,1);
+    assert.equal(warmed.data.preparedCreates[0].section,section);
+  }
+  assert.equal(cleanupCalls,1,'the first locked client provision owns cleanup; active-client sectional warms skip it');
+  assert.equal(drive.creates,3);
+  for(const section of ['Docs','Sheets','Slides']){
+    const repeated=backend.apiWarmCreateContext({taskPageId:taskId,clientId,section});
+    assert.equal(repeated.ok,true,JSON.stringify(repeated));
+  }
+  assert.equal(cleanupCalls,1,'reusing an active client must never rescan every expired reservation');
+  assert.equal(drive.creates,3);
+});
+
+test('reservation v2 claims the exact file once, preserves idempotency and refills with the next generation', () => {
+  const {backend,taskId,taskFolderId,drive}=installReservationV2Harness();
+  const clientId='11111111-1111-4111-8111-111111111111';
+  const pageId='3c72d627-39a1-81e5-a840-ecb1c98cc5c5';
+  const warmed=backend.apiWarmCreateContext({taskPageId:taskId,clientId,section:'Docs'});
+  assert.equal(warmed.ok,true,JSON.stringify(warmed));
+  const descriptor=warmed.data.preparedCreates[0];
+  const reservedFile=[...drive.files.values()].find((file)=>file.appProperties.createReservationId===descriptor.reservationId);
+  assert.ok(reservedFile);reservedFile.name='Имя из Google Docs';
+  let notionCreates=0;
+  backend.w20CreateGoogleNotionPage_=(_task,driveFile,folderId,section,_name,position,idem)=>{
+    notionCreates+=1;
+    assert.equal(driveFile.id,reservedFile.id);assert.equal(folderId,taskFolderId);assert.equal(section,'Docs');
+    return {id:pageId,material:{
+      id:pageId,name:driveFile.name,section,format:'Google Docs',provider:'Google Drive',openUrl:driveFile.webViewLink,
+      googleFileId:driveFile.id,folderId,widgetOwned:true,mimeType:driveFile.mimeType,size:null,driveMd5:'',
+      downloadName:driveFile.name,normalizedUrl:'',knowledgeFormat:'Файл',integrity:'ok',position,
+      syncStatus:'synced',archived:false,idempotency:idem,updatedAt:new Date().toISOString()
+    }};
+  };
+  backend.w19MaterialFromPage_=(page)=>page.material;
+  const input={taskPageId:taskId,clientId,idempotencyKey:descriptor.reservationId,...descriptor};
+  const first=backend.apiCreateGoogle(input);
+  assert.equal(first.ok,true,JSON.stringify(first));assert.equal(first.data.duplicate,false);
+  assert.equal(first.data.material.googleFileId,reservedFile.id);assert.equal(first.data.material.name,'Имя из Google Docs');
+  assert.equal(notionCreates,1);assert.equal(drive.creates,1,'click uses the prepared file and never Drive CREATE');
+  assert.deepEqual(reservedFile.parents,[taskFolderId]);
+  assert.deepEqual(Object.keys(reservedFile.appProperties).sort(),['materialState','notionPageId','taskPageId','widgetIdem','widgetVersion']);
+  const clientHash=backend.w20CreateClientHash_(taskId,clientId);
+  assert.equal(backend.PropertiesService.getScriptProperties().getProperty(backend.w20CreateReservationV2Key_(taskId,clientHash,'Docs')),null,
+    'prepared head is consumed atomically');
+  const canonical=backend.w19CanonicalIdempotency_(taskId,'create-google-Docs',descriptor.reservationId);
+  const claim=backend.w20ReadClaimedReservation_(backend.w19Hash_(canonical));
+  assert.equal(claim.schema,2);assert.equal(claim.status,'done');assert.equal(claim.fileId,reservedFile.id);
+  assert.equal(claim.generation,1);assert.equal(claim.preparedName,descriptor.preparedName);
+  const second=backend.apiCreateGoogle(input);
+  assert.equal(second.ok,true,JSON.stringify(second));assert.equal(second.data.duplicate,true);
+  assert.equal(second.data.material.googleFileId,reservedFile.id);assert.equal(notionCreates,1);assert.equal(drive.creates,1);
+  const refilled=backend.apiWarmCreateContext({taskPageId:taskId,clientId,section:'Docs'});
+  assert.equal(refilled.ok,true,JSON.stringify(refilled));assert.equal(refilled.data.preparedCreates.length,1);
+  assert.equal(refilled.data.preparedCreates[0].generation,2);
+  assert.notEqual(refilled.data.preparedCreates[0].reservationId,descriptor.reservationId);
+  assert.equal(drive.creates,2);
+});
+
+test('reservation v2 rejects malformed, expired and stale tuples without any legacy create fallback', () => {
+  const {backend,taskId,cfg}=installReservationV2Harness();
+  const clientId='11111111-1111-4111-8111-111111111111';
+  const warmed=backend.apiWarmCreateContext({taskPageId:taskId,clientId,section:'Docs'});
+  const descriptor=warmed.data.preparedCreates[0];
+  let legacyCalls=0;
+  for(const name of ['w20CreateGoogleHot_','w20CreateGoogleRecovery_','w19CreateGoogleFile_'])backend[name]=()=>{legacyCalls+=1;throw new Error('legacy fallback forbidden');};
+  const base={taskPageId:taskId,clientId,idempotencyKey:descriptor.reservationId,...descriptor};
+  const badProof=backend.apiCreateGoogle({...base,reservationProof:'0'.repeat(64)});
+  assert.equal(badProof.ok,false);assert.equal(badProof.error.code,'RESERVATION_V2_PROOF_INVALID');
+  const uppercaseProof=backend.apiCreateGoogle({...base,reservationProof:descriptor.reservationProof.toUpperCase()});
+  assert.equal(uppercaseProof.ok,false);assert.equal(uppercaseProof.error.code,'RESERVATION_V2_INVALID');
+  const stringGeneration=backend.apiCreateGoogle({...base,generation:String(descriptor.generation)});
+  assert.equal(stringGeneration.ok,false);assert.equal(stringGeneration.error.code,'RESERVATION_V2_INVALID');
+  const paddedName=backend.apiCreateGoogle({...base,preparedName:` ${descriptor.preparedName} `});
+  assert.equal(paddedName.ok,false);assert.equal(paddedName.error.code,'RESERVATION_V2_INVALID');
+  const missingName={...base};delete missingName.preparedName;
+  const incomplete=backend.apiCreateGoogle(missingName);
+  assert.equal(incomplete.ok,false);assert.equal(incomplete.error.code,'RESERVATION_V2_INVALID');
+  const missingTuple=backend.apiCreateGoogle({taskPageId:taskId,clientId,section:'Docs',idempotencyKey:descriptor.reservationId,reservationId:descriptor.reservationId});
+  assert.equal(missingTuple.ok,false);assert.equal(missingTuple.error.code,'RESERVATION_V2_INVALID');
+  const clientHash=backend.w20CreateClientHash_(taskId,clientId);
+  const stale={...descriptor,generation:descriptor.generation+1};
+  stale.reservationProof=backend.w20CreateReservationV2Proof_(taskId,clientHash,stale.section,stale.reservationId,
+    stale.openUrl,stale.preparedName,stale.generation,stale.navigateUntil,cfg);
+  const staleResult=backend.apiCreateGoogle({taskPageId:taskId,clientId,idempotencyKey:stale.reservationId,...stale});
+  assert.equal(staleResult.ok,false);assert.equal(staleResult.error.code,'RESERVATION_STALE');
+  const expired={...descriptor,navigateUntil:new Date(Date.now()-1000).toISOString()};
+  expired.reservationProof=backend.w20CreateReservationV2Proof_(taskId,clientHash,expired.section,expired.reservationId,
+    expired.openUrl,expired.preparedName,expired.generation,expired.navigateUntil,cfg);
+  const expiredResult=backend.apiCreateGoogle({taskPageId:taskId,clientId,idempotencyKey:expired.reservationId,...expired});
+  assert.equal(expiredResult.ok,false);assert.equal(expiredResult.error.code,'RESERVATION_EXPIRED');
+  const badClient=backend.apiCreateGoogle({...base,clientId:'11111111-1111-1111-1111-111111111111'});
+  assert.equal(badClient.ok,false);assert.equal(badClient.error.code,'CREATE_CLIENT_INVALID');
+  const paddedClient=backend.apiCreateGoogle({...base,clientId:` ${clientId} `});
+  assert.equal(paddedClient.ok,false);assert.equal(paddedClient.error.code,'CREATE_CLIENT_INVALID');
+  assert.equal(legacyCalls,0,'terminal v2 failures never create a replacement file');
+});
+
+test('reservation v2 cleanup trashes only exact expired blanks and terminally detaches quarantined mismatches', () => {
+  const {backend,taskId,rootFolderId,cfg,drive}=installReservationV2Harness();
+  const clientId='11111111-1111-4111-8111-111111111111';
+  const warmed=backend.apiWarmCreateContext({taskPageId:taskId,clientId});
+  assert.equal(warmed.ok,true,JSON.stringify(warmed));
+  const clientHash=backend.w20CreateClientHash_(taskId,clientId);
+  const props=backend.PropertiesService.getScriptProperties();
+  const expire=(section)=>{
+    const key=backend.w20CreateReservationV2Key_(taskId,clientHash,section);
+    const slot=JSON.parse(props.getProperty(key));
+    slot.navigateUntil=Date.now()-1000;
+    slot.reservationProof=backend.w20CreateReservationV2Proof_(taskId,clientHash,slot.section,slot.reservationId,
+      backend.w20CreateReservationOpenUrl_(slot.fileId,slot.section),slot.preparedName,slot.generation,
+      new Date(slot.navigateUntil).toISOString(),cfg);
+    props.setProperty(key,JSON.stringify(slot));
+    const file=drive.files.get(slot.fileId);
+    file.appProperties.createReservationNavigateUntil=String(slot.navigateUntil);
+    return {key,slot,file};
+  };
+  const exact=expire('Sheets');
+  const quarantined=expire('Docs');
+  quarantined.file.appProperties.unexpected='user-change';
+  const edited=expire('Slides');
+  edited.file.modifiedTime=new Date(Date.parse(edited.file.modifiedTime)+1000).toISOString();
+  const userFile={
+    id:'UserOwnedActiveFile123',name:'Пользовательский файл',mimeType:'application/vnd.google-apps.document',
+    ownedByMe:true,trashed:false,parents:[rootFolderId],appProperties:{widgetVersion:'v20',taskPageId:taskId.replaceAll('-',''),materialState:'active'}
+  };
+  drive.files.set(userFile.id,userFile);
+  const removed=backend.w20CleanupExpiredCreateReservationsV2_(taskId,cfg,backend.W20_CREATE_RESERVATION_V2_CLEANUP_LIMIT);
+  assert.equal(removed,1);
+  assert.equal(exact.file.trashed,true);assert.equal(props.getProperty(exact.key),null);
+  assert.equal(quarantined.file.trashed,false);assert.equal(props.getProperty(quarantined.key),null);
+  assert.equal(edited.file.trashed,false);assert.equal(props.getProperty(edited.key),null);
+  assert.equal(userFile.trashed,false,'active or unrelated user files are never cleanup candidates');
+  const nextDocs=backend.apiWarmCreateContext({taskPageId:taskId,clientId,section:'Docs'});
+  const nextSlides=backend.apiWarmCreateContext({taskPageId:taskId,clientId,section:'Slides'});
+  assert.equal(nextDocs.ok,true,JSON.stringify(nextDocs));assert.equal(nextSlides.ok,true,JSON.stringify(nextSlides));
+  assert.equal(nextDocs.data.preparedCreates[0].generation,2);
+  assert.equal(nextSlides.data.preparedCreates[0].generation,2);
+  assert.notEqual(nextDocs.data.preparedCreates[0].reservationId,quarantined.slot.reservationId);
+  assert.notEqual(nextSlides.data.preparedCreates[0].reservationId,edited.slot.reservationId);
+  assert.equal(quarantined.file.trashed,false,'quarantined user content is preserved after the replacement head is prepared');
+  assert.equal(edited.file.trashed,false,'an edited reservation is never deleted while its slot is rotated');
+});
+
+test('reservation v2 cleanup lease serializes a cleaning head and permits stale-lease quarantine recovery', () => {
+  const {backend,taskId,cfg,drive}=installReservationV2Harness();
+  const clientId='11111111-1111-4111-8111-111111111111';
+  const warmed=backend.apiWarmCreateContext({taskPageId:taskId,clientId,section:'Docs'});
+  assert.equal(warmed.ok,true,JSON.stringify(warmed));
+  const descriptor=warmed.data.preparedCreates[0];
+  const clientHash=backend.w20CreateClientHash_(taskId,clientId);
+  const key=backend.w20CreateReservationV2Key_(taskId,clientHash,'Docs');
+  const props=backend.PropertiesService.getScriptProperties();
+  const cleaning=JSON.parse(props.getProperty(key));
+  cleaning.navigateUntil=Date.now()-1000;
+  cleaning.status='cleaning';
+  cleaning.cleanupAttemptId=crypto.randomUUID();
+  cleaning.at=Date.now();
+  delete cleaning.reservationProof;
+  props.setProperty(key,JSON.stringify(cleaning));
+  const file=drive.files.get(cleaning.fileId);
+  file.appProperties.createReservationNavigateUntil=String(cleaning.navigateUntil);
+  file.appProperties.unexpected='preserve-user-change';
+  const getsBefore=drive.gets;
+  assert.equal(backend.w20CleanupExpiredCreateReservationsV2_(taskId,cfg,1),0);
+  assert.equal(drive.gets,getsBefore,'a live cleanup lease prevents a second worker from touching Drive');
+  assert.equal(JSON.parse(props.getProperty(key)).cleanupAttemptId,cleaning.cleanupAttemptId);
+
+  cleaning.at=Date.now()-backend.W20_CREATE_RESERVATION_V2_CLEANUP_LEASE_MS-1;
+  props.setProperty(key,JSON.stringify(cleaning));
+  assert.equal(backend.w20CleanupExpiredCreateReservationsV2_(taskId,cfg,1),0);
+  assert.equal(props.getProperty(key),null,'a stale cleanup lease is taken over and terminally detached');
+  assert.equal(file.trashed,false,'lease recovery never deletes a mismatched file');
+  const replacement=backend.apiWarmCreateContext({taskPageId:taskId,clientId,section:'Docs'});
+  assert.equal(replacement.ok,true,JSON.stringify(replacement));
+  assert.equal(replacement.data.preparedCreates[0].generation,descriptor.generation+1);
+  assert.notEqual(replacement.data.preparedCreates[0].reservationId,descriptor.reservationId);
+});
+
+test('reservation v2 cleanup prunes expired client records even when every head was already claimed', () => {
+  const {backend,taskId,cfg}=installReservationV2Harness();
+  const clientId='11111111-1111-4111-8111-111111111111';
+  const warmed=backend.apiWarmCreateContext({taskPageId:taskId,clientId,section:'Docs'});
+  assert.equal(warmed.ok,true,JSON.stringify(warmed));
+  const clientHash=backend.w20CreateClientHash_(taskId,clientId);
+  const props=backend.PropertiesService.getScriptProperties();
+  const clientKey=backend.w20CreateClientV2Key_(taskId,clientHash);
+  const slotKey=backend.w20CreateReservationV2Key_(taskId,clientHash,'Docs');
+  const record=JSON.parse(props.getProperty(clientKey));
+  record.expiresAt=Date.now()-1;
+  props.setProperty(clientKey,JSON.stringify(record));
+  props.deleteProperty(slotKey);
+  assert.equal(backend.w20CleanupExpiredCreateReservationsV2_(taskId,cfg,1),0);
+  assert.equal(props.getProperty(clientKey),null,'expired no-head clients cannot accumulate without bound');
 });
 
 test('reservationRef survives failed, stale and completed idempotency ledger rewrites', () => {

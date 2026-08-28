@@ -22,6 +22,14 @@ var W20_CREATE_RESERVATION_PREFIX = 'w20:create-reservation:';
 var W20_CREATE_CLAIM_PREFIX = 'w20:create-claim:';
 var W20_CREATE_RESERVATION_SCHEMA = 1;
 var W20_CREATE_RESERVATION_PREPARING_TTL_MS = 2 * 60 * 1000;
+var W20_CREATE_RESERVATION_V2_PREFIX = 'w20:create-reservation:v2:';
+var W20_CREATE_CLIENT_V2_PREFIX = 'w20:create-client:v2:';
+var W20_CREATE_RESERVATION_V2_SCHEMA = 2;
+var W20_CREATE_RESERVATION_V2_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+var W20_CREATE_RESERVATION_V2_CLEANUP_LIMIT = 6;
+var W20_CREATE_RESERVATION_V2_CLEANUP_LEASE_MS = 2 * 60 * 1000;
+var W20_CREATE_RESERVATION_V2_MAX_CLIENTS = 3;
+var W20_CREATE_RESERVATION_V2_PROOF_DOMAIN = 'notion-widget-create-reservation-v2';
 var W19_IDEMPOTENCY_PENDING_TTL_MS = 7 * 60 * 1000;
 var W19_NOTION_RATE_CACHE_KEY = 'w20:notion:last-request-at';
 var W19_NOTION_RATE_INTERVAL_MS = 350;
@@ -119,7 +127,8 @@ function doGet(event) {
       var initialTaskId = WidgetV19Core.normalizeUuid(params.task || params.taskPageId);
       var initialInput = {
         taskPageId: initialTaskId,
-        accessToken: String(params.accessToken || '').slice(0, 300)
+        accessToken: String(params.accessToken || '').slice(0, 300),
+        clientId: String(params.clientId || '').slice(0, 80)
       };
       var initialProperties = PropertiesService.getScriptProperties().getProperties();
       var initialCfg = w19AuthorizedConfigFromValues_(initialInput, initialProperties);
@@ -401,7 +410,7 @@ function apiBootstrap(input) {
         authoritative: true,
         actionReady: actionProof.ready,
         preparedCreates: actionProof.ready && metaWrite.propertyValues ?
-          w20PreparedCreatePoolSnapshot_(task.id, metaWrite.propertyValues) : [],
+          w20PreparedCreatePoolForInput_(task.id, input, cfg, metaWrite.propertyValues) : [],
         trustedUntil: actionProof.trustedUntil,
         fullySynced: true,
         refreshRequired: false
@@ -421,9 +430,146 @@ function w20CreateReservationId_(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(normalized) ? normalized : '';
 }
 
+function w20PreparedCreatePoolForInput_(taskId, input, cfg, propertyValues) {
+  var rawClientId = String(input && input.clientId || '');
+  var clientId = w20CreateClientId_(rawClientId);
+  if (rawClientId && !clientId) return [];
+  return clientId ? w20PreparedCreatePoolV2Snapshot_(taskId, clientId, cfg, propertyValues) :
+    w20PreparedCreatePoolSnapshot_(taskId, propertyValues);
+}
+
 function w20CreateReservationSection_(value) {
   var section = String(value || '');
   return ['Docs', 'Sheets', 'Slides'].indexOf(section) === -1 ? '' : section;
+}
+
+function w20CreateClientId_(value) {
+  var candidate = String(value || '');
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(candidate) ? candidate : '';
+}
+
+function w20CreateClientHash_(taskId, clientId) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  var client = w20CreateClientId_(clientId);
+  return task && client ? w19Hash_('w20:create-client:v2|' + task + '|' + client).slice(0, 32) : '';
+}
+
+function w20CreateReservationV2Key_(taskId, clientHash, section) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  var hash = String(clientHash || '').trim().toLowerCase();
+  var normalizedSection = w20CreateReservationSection_(section);
+  return task && /^[a-f0-9]{32}$/.test(hash) && normalizedSection ?
+    W20_CREATE_RESERVATION_V2_PREFIX + task + ':' + hash + ':' + normalizedSection : '';
+}
+
+function w20CreateClientV2Key_(taskId, clientHash) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  var hash = String(clientHash || '').trim().toLowerCase();
+  return task && /^[a-f0-9]{32}$/.test(hash) ? W20_CREATE_CLIENT_V2_PREFIX + task + ':' + hash : '';
+}
+
+function w20CreateNavigateUntil_(value) {
+  var parsed = typeof value === 'number' ? Number(value) : Date.parse(String(value || ''));
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return 0;
+  return (typeof value === 'number' || new Date(parsed).toISOString() === String(value || '')) ? parsed : 0;
+}
+
+function w20CreatePreparedNameV2_(value) {
+  var normalized = String(value || '').replace(/\s+/g, ' ').trim();
+  return normalized && normalized.length <= 180 ? normalized : '';
+}
+
+function w20CreateReservationV2Payload_(taskId, clientHash, section, reservationId, openUrl, preparedName, generation, navigateUntil) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  var hash = String(clientHash || '').trim().toLowerCase();
+  var normalizedSection = w20CreateReservationSection_(section);
+  var normalizedReservation = w20CreateReservationId_(reservationId);
+  var normalizedName = w20CreatePreparedNameV2_(preparedName);
+  var normalizedGeneration = Number(generation);
+  var normalizedUntil = w20CreateNavigateUntil_(navigateUntil);
+  var expectedOpenUrl = w20CreateReservationOpenUrl_(WidgetV19Core.extractGoogleFileId(openUrl), normalizedSection);
+  if (!task || !/^[a-f0-9]{32}$/.test(hash) || !normalizedSection || !normalizedReservation || !normalizedName ||
+      normalizedName !== String(preparedName || '') ||
+      !Number.isSafeInteger(normalizedGeneration) || normalizedGeneration < 1 || normalizedGeneration > 2147483647 ||
+      !normalizedUntil || !expectedOpenUrl || expectedOpenUrl !== String(openUrl || '')) return '';
+  return [W20_CREATE_RESERVATION_V2_PROOF_DOMAIN, task, hash, normalizedSection, normalizedReservation,
+    expectedOpenUrl, normalizedName, normalizedGeneration, normalizedUntil].join('|');
+}
+
+function w20CreateReservationV2Signature_(payload, cfg) {
+  if (!payload || !cfg || !cfg.notionToken) return '';
+  return Utilities.computeHmacSha256Signature(String(payload), String(cfg.notionToken)).map(function (byte) {
+    var value = byte < 0 ? byte + 256 : byte;
+    return ('0' + value.toString(16)).slice(-2);
+  }).join('');
+}
+
+function w20CreateReservationV2Proof_(taskId, clientHash, section, reservationId, openUrl, preparedName, generation, navigateUntil, cfg) {
+  var payload = w20CreateReservationV2Payload_(taskId, clientHash, section, reservationId, openUrl, preparedName, generation, navigateUntil);
+  return payload ? w20CreateReservationV2Signature_(payload, cfg) : '';
+}
+
+function w20ReadCreateClientV2_(props, key) {
+  var raw = key && props && props.getProperty(key);
+  if (!raw) return null;
+  var value;
+  try { value = JSON.parse(raw); } catch (_parseClientError) { return null; }
+  var task = String(value && value.taskId || '').toLowerCase();
+  var clientHash = String(value && value.clientHash || '').toLowerCase();
+  var at = Number(value && value.at || 0);
+  var expiresAt = Number(value && value.expiresAt || 0);
+  var generations = value && value.generations;
+  if (!value || value.schema !== W20_CREATE_RESERVATION_V2_SCHEMA || !/^[a-f0-9]{32}$/.test(task) ||
+      !/^[a-f0-9]{32}$/.test(clientHash) || !Number.isSafeInteger(at) || at <= 0 ||
+      !Number.isSafeInteger(expiresAt) || expiresAt <= 0 || !generations || typeof generations !== 'object' || Array.isArray(generations)) return null;
+  for (var i = 0; i < 3; i += 1) {
+    var section = ['Docs', 'Sheets', 'Slides'][i];
+    var generation = Number(generations[section] || 0);
+    if (!Number.isSafeInteger(generation) || generation < 0 || generation > 2147483647) return null;
+  }
+  return value;
+}
+
+function w20ReadCreateReservationV2_(props, key) {
+  var raw = key && props && props.getProperty(key);
+  if (!raw) return null;
+  var value;
+  try { value = JSON.parse(raw); } catch (_parseReservationError) { return null; }
+  var status = String(value && value.status || '');
+  var task = String(value && value.taskId || '').toLowerCase();
+  var clientHash = String(value && value.clientHash || '').toLowerCase();
+  var section = w20CreateReservationSection_(value && value.section);
+  var reservationId = w20CreateReservationId_(value && value.reservationId);
+  var at = Number(value && value.at || 0);
+  var generation = Number(value && value.generation || 0);
+  var navigateUntil = Number(value && value.navigateUntil || 0);
+  if (!value || value.schema !== W20_CREATE_RESERVATION_V2_SCHEMA || !/^[a-f0-9]{32}$/.test(task) ||
+      !/^[a-f0-9]{32}$/.test(clientHash) || !section || value.section !== section || !reservationId ||
+      !Number.isSafeInteger(at) || at <= 0 || !Number.isSafeInteger(generation) || generation < 1 || generation > 2147483647 ||
+      !Number.isSafeInteger(navigateUntil) || navigateUntil <= 0 ||
+      ['preparing', 'prepared', 'cleaning', 'claimed', 'done'].indexOf(status) === -1) return null;
+  if (status === 'preparing') {
+    if (!w20CreateReservationId_(value.prepareAttemptId)) return null;
+  } else if (!w20SafeDriveId_(value.fileId) || !w20CreatePreparedNameV2_(value.preparedName) ||
+      w20CreatePreparedNameV2_(value.preparedName) !== value.preparedName) {
+    return null;
+  }
+  if ((status === 'prepared' || status === 'cleaning') && value.preparedModifiedTime &&
+      (!isFinite(Date.parse(String(value.preparedModifiedTime))) ||
+        new Date(Date.parse(String(value.preparedModifiedTime))).toISOString() !== value.preparedModifiedTime)) return null;
+  if (status === 'cleaning' && !w20CreateReservationId_(value.cleanupAttemptId)) return null;
+  if (status === 'prepared' || status === 'claimed' || status === 'done') {
+    if (!/^[a-f0-9]{64}$/.test(String(value.reservationProof || ''))) return null;
+  }
+  if (status === 'claimed' || status === 'done') {
+    if (!/^[a-f0-9]{64}$/.test(String(value.canonicalHash || '')) ||
+        !w20CreateReservationId_(value.createRequestId) || !w20CreateReservationId_(value.attemptId) ||
+        value.createRequestId !== reservationId || !w20SafeDriveId_(value.folderId) ||
+        !Number.isFinite(Number(value.position)) || Number(value.position) < 0) return null;
+    if (status === 'claimed' && value.notionPageId) return null;
+    if (status === 'done' && !WidgetV19Core.normalizeUuid(value.notionPageId)) return null;
+  }
+  return value;
 }
 
 function w20CreateReservationKey_(taskId, section) {
@@ -795,9 +941,629 @@ function w20WarmCreateSection_(taskId, section, cfg) {
   }
 }
 
+function w20CreateReservationForClientV2_(slot, cfg) {
+  if (!slot || slot.status !== 'prepared' || slot.schema !== W20_CREATE_RESERVATION_V2_SCHEMA ||
+      Number(slot.navigateUntil || 0) <= Date.now() + 1000) return null;
+  var openUrl = w20CreateReservationOpenUrl_(slot.fileId, slot.section);
+  var preparedName = w20CreatePreparedNameV2_(slot.preparedName);
+  var navigateUntil = new Date(Number(slot.navigateUntil)).toISOString();
+  var expectedProof = w20CreateReservationV2Proof_(slot.taskId, slot.clientHash, slot.section, slot.reservationId,
+    openUrl, preparedName, slot.generation, navigateUntil, cfg);
+  if (!openUrl || !preparedName || !expectedProof || !WidgetV19Core.safeEqual(expectedProof, String(slot.reservationProof || ''))) return null;
+  return {
+    section: slot.section,
+    reservationId: slot.reservationId,
+    openUrl: openUrl,
+    preparedName: preparedName,
+    generation: Number(slot.generation),
+    navigateUntil: navigateUntil,
+    reservationProof: expectedProof
+  };
+}
+
+function w20PreparedCreateFileV2_(file, taskId, section, reservationId, clientHash, generation, navigateUntil, rootFolderId) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  var normalizedSection = w20CreateReservationSection_(section);
+  var normalizedReservation = w20CreateReservationId_(reservationId);
+  var hash = String(clientHash || '').trim().toLowerCase();
+  var normalizedGeneration = Number(generation);
+  var normalizedUntil = Number(navigateUntil);
+  var root = w20SafeDriveId_(rootFolderId);
+  var props = file && file.appProperties || {};
+  var parents = file && Array.isArray(file.parents) ? file.parents.map(String) : [];
+  var fileId = w20SafeDriveId_(file && file.id);
+  var expectedProperties = {
+    widgetVersion: W20_DRIVE_MARKER,
+    taskPageId: task,
+    createReservationSection: normalizedSection,
+    createReservationId: normalizedReservation,
+    createReservationState: 'prepared',
+    createReservationClient: hash,
+    createReservationGeneration: String(normalizedGeneration),
+    createReservationNavigateUntil: String(normalizedUntil),
+    materialState: 'reserved'
+  };
+  if (!task || !normalizedSection || !normalizedReservation || !/^[a-f0-9]{32}$/.test(hash) ||
+      !Number.isSafeInteger(normalizedGeneration) || normalizedGeneration < 1 || !Number.isSafeInteger(normalizedUntil) || normalizedUntil <= 0 ||
+      !root || !fileId || !file || file.trashed || file.ownedByMe !== true ||
+      file.mimeType !== WidgetV19Core.GOOGLE_MIME[normalizedSection] || parents.length !== 1 || parents[0] !== root ||
+      !w20ExactCreateAppProperties_(props, expectedProperties)) return null;
+  var openUrl = w20CreateReservationOpenUrl_(fileId, normalizedSection);
+  return openUrl ? { file: file, openUrl: openUrl } : null;
+}
+
+function w20CreateClientV2Records_(taskId, values) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  var prefix = task ? W20_CREATE_CLIENT_V2_PREFIX + task + ':' : '';
+  if (!prefix) return [];
+  var source = values && typeof values === 'object' ? values : {};
+  var snapshot = { getProperty: function (key) { return Object.prototype.hasOwnProperty.call(source, key) ? source[key] : null; } };
+  return Object.keys(source).filter(function (key) { return key.indexOf(prefix) === 0; }).map(function (key) {
+    return { key: key, value: w20ReadCreateClientV2_(snapshot, key) };
+  }).filter(function (entry) { return entry.value && entry.value.taskId === task; });
+}
+
+function w20EnsureCreateClientV2_(taskId, clientId, cfg) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  var client = w20CreateClientId_(clientId);
+  var clientHash = w20CreateClientHash_(taskId, client);
+  var key = w20CreateClientV2Key_(taskId, clientHash);
+  if (!task || !client || !clientHash || !key) throw new W19Error_('CREATE_CLIENT_INVALID', 'Идентификатор браузера повреждён.', false);
+  var props = PropertiesService.getScriptProperties();
+  var existing = w20ReadCreateClientV2_(props, key);
+  if (existing && existing.expiresAt > Date.now()) return existing;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) throw new W19Error_('BUSY', 'Сервис занят подготовкой файла.', true);
+  var record = null;
+  var provisioned = false;
+  try {
+    props = PropertiesService.getScriptProperties();
+    existing = w20ReadCreateClientV2_(props, key);
+    var now = Date.now();
+    if (existing && existing.expiresAt > now) return existing;
+    var values = props.getProperties();
+    var active = w20CreateClientV2Records_(taskId, values).filter(function (entry) {
+      return entry.key !== key && Number(entry.value.expiresAt || 0) > now;
+    });
+    if (active.length >= W20_CREATE_RESERVATION_V2_MAX_CLIENTS) {
+      throw new W19Error_('CREATE_CLIENT_LIMIT', 'В этой задаче уже подготовлены файлы для трёх браузеров.', false);
+    }
+    if (props.getProperty(key) && !existing) throw new W19Error_('CREATE_CLIENT_STATE_INVALID', 'Состояние браузера повреждено.', false);
+    record = {
+      schema: W20_CREATE_RESERVATION_V2_SCHEMA,
+      taskId: task,
+      clientHash: clientHash,
+      at: now,
+      expiresAt: now + W20_CREATE_RESERVATION_V2_TTL_MS,
+      generations: existing && existing.generations || { Docs: 0, Sheets: 0, Slides: 0 }
+    };
+    props.setProperty(key, JSON.stringify(record));
+    provisioned = true;
+  } finally {
+    lock.releaseLock();
+  }
+  if (provisioned) {
+    try { w20CleanupExpiredCreateReservationsV2_(taskId, cfg, W20_CREATE_RESERVATION_V2_CLEANUP_LIMIT); }
+    catch (cleanupError) {
+      w19Audit_('create_reservation_v2_cleanup_deferred', { code: String(cleanupError && cleanupError.code || 'CLEANUP_ERROR') });
+    }
+  }
+  return record;
+}
+
+function w20PreparedCreatePoolV2Snapshot_(taskId, clientId, cfg, propertyValues) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  var clientHash = w20CreateClientHash_(taskId, clientId);
+  if (!task || !clientHash || !cfg) return [];
+  var values = propertyValues && typeof propertyValues === 'object' ? propertyValues :
+    PropertiesService.getScriptProperties().getProperties();
+  var snapshot = { getProperty: function (key) { return Object.prototype.hasOwnProperty.call(values, key) ? values[key] : null; } };
+  var prepared = [];
+  ['Docs', 'Sheets', 'Slides'].forEach(function (section) {
+    var slot = w20ReadCreateReservationV2_(snapshot, w20CreateReservationV2Key_(taskId, clientHash, section));
+    if (!slot || slot.status !== 'prepared' || slot.taskId !== task || slot.clientHash !== clientHash || slot.section !== section) return;
+    var descriptor = w20CreateReservationForClientV2_(slot, cfg);
+    if (descriptor) prepared.push(descriptor);
+  });
+  return prepared;
+}
+
+function w20FindPreparedReservationFilesV2_(taskId, section, clientHash, reservationId) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  var normalizedSection = w20CreateReservationSection_(section);
+  var hash = String(clientHash || '').trim().toLowerCase();
+  var normalizedReservation = w20CreateReservationId_(reservationId);
+  if (!task || !normalizedSection || !/^[a-f0-9]{32}$/.test(hash)) return [];
+  var q = "trashed = false and appProperties has { key='widgetVersion' and value='" + W20_DRIVE_MARKER + "' } and " +
+    "appProperties has { key='taskPageId' and value='" + w19DriveQueryEscape_(task) + "' } and " +
+    "appProperties has { key='createReservationSection' and value='" + normalizedSection + "' } and " +
+    "appProperties has { key='createReservationClient' and value='" + hash + "' } and " +
+    "appProperties has { key='createReservationState' and value='prepared' }";
+  if (normalizedReservation) q += " and appProperties has { key='createReservationId' and value='" + normalizedReservation + "' }";
+  var result = w19DriveRetry_(function () {
+    return Drive.Files.list({ q: q, pageSize: 2, spaces: 'drive', fields: 'files(id,name,mimeType,size,md5Checksum,modifiedTime,webViewLink,webContentLink,ownedByMe,trashed,parents,appProperties)' });
+  });
+  return result && Array.isArray(result.files) ? result.files.slice(0, 2) : [];
+}
+
+function w20CreatePreparedReservationFileV2_(expected, cfg) {
+  var recovered = w20FindPreparedReservationFilesV2_(expected.taskId, expected.section, expected.clientHash, expected.reservationId);
+  if (recovered.length === 1) return recovered[0];
+  if (recovered.length > 1) throw new W19Error_('RESERVATION_AMBIGUOUS', 'Обнаружено несколько резервов файла.', false);
+  try {
+    return Drive.Files.create({
+      name: w19DefaultGoogleName_(expected.section),
+      mimeType: WidgetV19Core.GOOGLE_MIME[expected.section],
+      parents: [cfg.rootFolderId],
+      appProperties: {
+        widgetVersion: W20_DRIVE_MARKER,
+        taskPageId: expected.taskId,
+        createReservationSection: expected.section,
+        createReservationId: expected.reservationId,
+        createReservationState: 'prepared',
+        createReservationClient: expected.clientHash,
+        createReservationGeneration: String(expected.generation),
+        createReservationNavigateUntil: String(expected.navigateUntil),
+        materialState: 'reserved'
+      }
+    }, null, { fields: 'id,name,mimeType,size,md5Checksum,modifiedTime,webViewLink,webContentLink,ownedByMe,trashed,parents,appProperties' });
+  } catch (err) {
+    var afterError = [];
+    try { afterError = w20FindPreparedReservationFilesV2_(expected.taskId, expected.section, expected.clientHash, expected.reservationId); }
+    catch (_lookupError) { afterError = []; }
+    if (afterError.length === 1) return afterError[0];
+    throw new W19Error_('RESERVATION_PREPARE_UNCERTAIN', 'Google Drive не подтвердил подготовку резерва.', true);
+  }
+}
+
+function w20StorePreparedReservationV2_(key, expected, file, cfg) {
+  var verified = w20PreparedCreateFileV2_(file, expected.taskId, expected.section, expected.reservationId,
+    expected.clientHash, expected.generation, expected.navigateUntil, cfg.rootFolderId);
+  if (!verified) return null;
+  var openUrl = verified.openUrl;
+  var preparedName = w20CreatePreparedNameV2_(verified.file.name || w19DefaultGoogleName_(expected.section));
+  var preparedModifiedTime = String(verified.file.modifiedTime || '');
+  if (preparedModifiedTime && (!isFinite(Date.parse(preparedModifiedTime)) ||
+      new Date(Date.parse(preparedModifiedTime)).toISOString() !== preparedModifiedTime)) preparedModifiedTime = '';
+  var navigateUntil = new Date(expected.navigateUntil).toISOString();
+  var reservationProof = w20CreateReservationV2Proof_(expected.taskId, expected.clientHash, expected.section,
+    expected.reservationId, openUrl, preparedName, expected.generation, navigateUntil, cfg);
+  if (!preparedName || !reservationProof) return null;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return null;
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var current = w20ReadCreateReservationV2_(props, key);
+    if (!current || current.status !== 'preparing' || current.reservationId !== expected.reservationId ||
+        current.prepareAttemptId !== expected.prepareAttemptId || current.clientHash !== expected.clientHash ||
+        current.generation !== expected.generation || current.navigateUntil !== expected.navigateUntil) return null;
+    var prepared = {
+      schema: W20_CREATE_RESERVATION_V2_SCHEMA,
+      status: 'prepared',
+      taskId: expected.taskId,
+      clientHash: expected.clientHash,
+      section: expected.section,
+      reservationId: expected.reservationId,
+      generation: expected.generation,
+      navigateUntil: expected.navigateUntil,
+      reservationProof: reservationProof,
+      fileId: verified.file.id,
+      preparedName: preparedName,
+      preparedModifiedTime: preparedModifiedTime,
+      at: Date.now()
+    };
+    props.setProperty(key, JSON.stringify(prepared));
+    return { slot: prepared, verified: verified };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function w20EnsurePreparedCreateV2_(taskId, clientId, section, cfg) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  var normalizedSection = w20CreateReservationSection_(section);
+  var clientRecord = w20EnsureCreateClientV2_(taskId, clientId, cfg);
+  var clientHash = clientRecord && clientRecord.clientHash;
+  var key = w20CreateReservationV2Key_(taskId, clientHash, normalizedSection);
+  if (!task || !normalizedSection || !clientHash || !key) return null;
+  var props = PropertiesService.getScriptProperties();
+  var slot = w20ReadCreateReservationV2_(props, key);
+  if (slot && (slot.status === 'cleaning' || slot.status === 'prepared' && slot.navigateUntil <= Date.now() + 1000)) {
+    w20CleanupExpiredCreateReservationsV2_(taskId, cfg, 1);
+    slot = w20ReadCreateReservationV2_(PropertiesService.getScriptProperties(), key);
+    if (slot) return null;
+  }
+  if (slot && slot.status === 'prepared') {
+    var currentFile = w19GetDriveMetadata_(slot.fileId);
+    var verifiedCurrent = w20PreparedCreateFileV2_(currentFile, taskId, normalizedSection, slot.reservationId,
+      clientHash, slot.generation, slot.navigateUntil, cfg.rootFolderId);
+    return verifiedCurrent ? w20CreateReservationForClientV2_(slot, cfg) : null;
+  }
+  if (slot && slot.status === 'preparing') {
+    var recoveredPreparing = w20FindPreparedReservationFilesV2_(taskId, normalizedSection, clientHash, slot.reservationId);
+    if (recoveredPreparing.length === 1) {
+      var promoted = w20StorePreparedReservationV2_(key, slot, recoveredPreparing[0], cfg);
+      return promoted ? w20CreateReservationForClientV2_(promoted.slot, cfg) : null;
+    }
+    if (recoveredPreparing.length > 1 || Date.now() - Number(slot.at || 0) < W20_CREATE_RESERVATION_PREPARING_TTL_MS) return null;
+  }
+  if (props.getProperty(key) && !slot) return null;
+  var prepareLock = LockService.getScriptLock();
+  if (!prepareLock.tryLock(5000)) return null;
+  var preparing;
+  try {
+    var prepareProps = PropertiesService.getScriptProperties();
+    var current = w20ReadCreateReservationV2_(prepareProps, key);
+    if (current && current.status !== 'preparing') return null;
+    if (current && Date.now() - Number(current.at || 0) < W20_CREATE_RESERVATION_PREPARING_TTL_MS) return null;
+    if (!current && prepareProps.getProperty(key)) return null;
+    var clientKey = w20CreateClientV2Key_(taskId, clientHash);
+    var lockedClient = w20ReadCreateClientV2_(prepareProps, clientKey);
+    if (!lockedClient || lockedClient.expiresAt <= Date.now()) return null;
+    var generation = current ? Number(current.generation) : Number(lockedClient.generations[normalizedSection] || 0) + 1;
+    if (!Number.isSafeInteger(generation) || generation > 2147483647) throw new W19Error_('RESERVATION_GENERATION_EXHAUSTED', 'Лимит резервов исчерпан.', false);
+    var now = Date.now();
+    preparing = {
+      schema: W20_CREATE_RESERVATION_V2_SCHEMA,
+      status: 'preparing',
+      taskId: task,
+      clientHash: clientHash,
+      section: normalizedSection,
+      reservationId: current && current.reservationId || Utilities.getUuid().toLowerCase(),
+      prepareAttemptId: Utilities.getUuid().toLowerCase(),
+      generation: generation,
+      navigateUntil: current ? Number(current.navigateUntil) : now + W20_CREATE_RESERVATION_V2_TTL_MS,
+      at: now
+    };
+    lockedClient.generations[normalizedSection] = Math.max(Number(lockedClient.generations[normalizedSection] || 0), generation);
+    lockedClient.expiresAt = Math.max(Number(lockedClient.expiresAt || 0), preparing.navigateUntil);
+    var updates = {};
+    updates[key] = JSON.stringify(preparing);
+    updates[clientKey] = JSON.stringify(lockedClient);
+    prepareProps.setProperties(updates);
+  } finally {
+    prepareLock.releaseLock();
+  }
+  var created = w20CreatePreparedReservationFileV2_(preparing, cfg);
+  var stored = w20StorePreparedReservationV2_(key, preparing, created, cfg);
+  return stored ? w20CreateReservationForClientV2_(stored.slot, cfg) : null;
+}
+
+function w20WarmCreatePoolV2_(taskId, clientId, cfg) {
+  w20EnsureCreateClientV2_(taskId, clientId, cfg);
+  var prepared = [];
+  ['Docs', 'Sheets', 'Slides'].forEach(function (section) {
+    try {
+      var item = w20EnsurePreparedCreateV2_(taskId, clientId, section, cfg);
+      if (item) prepared.push(item);
+    } catch (err) {
+      w19Audit_('create_reservation_v2_prepare_deferred', { section: section, code: String(err && err.code || 'DRIVE_ERROR') });
+    }
+  });
+  return prepared;
+}
+
+function w20WarmCreateSectionV2_(taskId, clientId, section, cfg) {
+  var normalizedSection = w20CreateReservationSection_(section);
+  if (!normalizedSection) throw new W19Error_('INVALID_CREATE_TYPE', 'Можно подготовить только Google Docs, Sheets или Slides.', false);
+  try {
+    var item = w20EnsurePreparedCreateV2_(taskId, clientId, normalizedSection, cfg);
+    return item ? [item] : [];
+  } catch (err) {
+    w19Audit_('create_reservation_v2_prepare_deferred', { section: normalizedSection, code: String(err && err.code || 'DRIVE_ERROR') });
+    return [];
+  }
+}
+
+function w20AcquireCreateReservationV2Cleanup_(key, expected) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return null;
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var current = w20ReadCreateReservationV2_(props, key);
+    if (!current || ['prepared', 'cleaning'].indexOf(current.status) === -1 || current.reservationId !== expected.reservationId ||
+        current.fileId !== expected.fileId || current.clientHash !== expected.clientHash || current.section !== expected.section ||
+        current.generation !== expected.generation || current.navigateUntil !== expected.navigateUntil) return null;
+    var now = Date.now();
+    if (current.status === 'prepared' && current.navigateUntil > now) return null;
+    if (current.status === 'cleaning') {
+      var leaseAge = now - Number(current.at || 0);
+      if (leaseAge >= -60000 && leaseAge < W20_CREATE_RESERVATION_V2_CLEANUP_LEASE_MS) return null;
+    }
+    current.status = 'cleaning';
+    current.cleanupAttemptId = Utilities.getUuid().toLowerCase();
+    current.at = now;
+    delete current.reservationProof;
+    props.setProperty(key, JSON.stringify(current));
+    return current;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function w20RetireCreateReservationV2Cleanup_(key, cleaning) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return false;
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var current = w20ReadCreateReservationV2_(props, key);
+    if (!current || current.status !== 'cleaning' || current.cleanupAttemptId !== cleaning.cleanupAttemptId ||
+        current.reservationId !== cleaning.reservationId || current.fileId !== cleaning.fileId ||
+        current.clientHash !== cleaning.clientHash || current.section !== cleaning.section ||
+        current.generation !== cleaning.generation || current.navigateUntil !== cleaning.navigateUntil) return false;
+    var clientKey = w20CreateClientV2Key_(current.taskId, current.clientHash);
+    var client = w20ReadCreateClientV2_(props, clientKey);
+    if (client) {
+      client.generations[current.section] = Math.max(Number(client.generations[current.section] || 0), current.generation);
+      props.setProperty(clientKey, JSON.stringify(client));
+    }
+    props.deleteProperty(key);
+    return true;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function w20PruneExpiredCreateClientsV2_(taskId) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  if (!task) return 0;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return 0;
+  var removed = 0;
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var values = props.getProperties();
+    var keys = Object.keys(values);
+    w20CreateClientV2Records_(taskId, values).forEach(function (entry) {
+      if (entry.value.expiresAt > Date.now()) return;
+      var slotPrefix = W20_CREATE_RESERVATION_V2_PREFIX + task + ':' + entry.value.clientHash + ':';
+      if (keys.some(function (key) { return key.indexOf(slotPrefix) === 0; })) return;
+      var current = w20ReadCreateClientV2_(props, entry.key);
+      if (current && current.expiresAt <= Date.now()) {
+        props.deleteProperty(entry.key);
+        removed += 1;
+      }
+    });
+  } finally {
+    lock.releaseLock();
+  }
+  return removed;
+}
+
+function w20CleanupExpiredCreateReservationsV2_(taskId, cfg, limit) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  var root = w20SafeDriveId_(cfg && cfg.rootFolderId);
+  var bounded = Math.max(0, Math.min(W20_CREATE_RESERVATION_V2_CLEANUP_LIMIT, Number(limit) || W20_CREATE_RESERVATION_V2_CLEANUP_LIMIT));
+  if (!task || !root || !bounded) return 0;
+  var props = PropertiesService.getScriptProperties();
+  var values = props.getProperties();
+  var prefix = W20_CREATE_RESERVATION_V2_PREFIX + task + ':';
+  var snapshot = { getProperty: function (key) { return Object.prototype.hasOwnProperty.call(values, key) ? values[key] : null; } };
+  var now = Date.now();
+  var candidates = Object.keys(values).filter(function (key) { return key.indexOf(prefix) === 0; }).map(function (key) {
+    return { key: key, slot: w20ReadCreateReservationV2_(snapshot, key) };
+  }).filter(function (entry) {
+    return entry.slot && (entry.slot.status === 'cleaning' || entry.slot.status === 'prepared' && entry.slot.navigateUntil <= now);
+  }).slice(0, bounded);
+  var removed = 0;
+  candidates.forEach(function (entry) {
+    var cleaning = w20AcquireCreateReservationV2Cleanup_(entry.key, entry.slot);
+    if (!cleaning) return;
+    var file;
+    try { file = w19GetDriveMetadata_(cleaning.fileId); }
+    catch (getError) {
+      if (w19IsDriveNotFound_(getError) && w20RetireCreateReservationV2Cleanup_(entry.key, cleaning)) {
+        w19Audit_('create_reservation_v2_cleanup_quarantined', { section: cleaning.section, reservationId: cleaning.reservationId });
+      }
+      return;
+    }
+    if (!w20PreparedCreateFileV2_(file, taskId, cleaning.section, cleaning.reservationId, cleaning.clientHash,
+      cleaning.generation, cleaning.navigateUntil, root) || String(file.name || '') !== cleaning.preparedName ||
+      !cleaning.preparedModifiedTime || String(file.modifiedTime || '') !== cleaning.preparedModifiedTime) {
+      if (w20RetireCreateReservationV2Cleanup_(entry.key, cleaning)) {
+        w19Audit_('create_reservation_v2_cleanup_quarantined', { section: cleaning.section, reservationId: cleaning.reservationId });
+      }
+      return;
+    }
+    var trashed;
+    try {
+      trashed = Drive.Files.update({ trashed: true }, cleaning.fileId, null, {
+        fields: 'id,name,mimeType,ownedByMe,trashed,parents,appProperties'
+      });
+    } catch (_trashError) { return; }
+    if (!trashed || trashed.trashed !== true) return;
+    if (w20RetireCreateReservationV2Cleanup_(entry.key, cleaning)) removed += 1;
+  });
+  w20PruneExpiredCreateClientsV2_(taskId);
+  return removed;
+}
+
+function w20CreateReservationV2DescriptorFromInput_(input, taskId, section, cfg) {
+  var rawClientId = String(input && input.clientId || '');
+  var clientId = w20CreateClientId_(rawClientId);
+  var rawReservationId = String(input && input.reservationId || '');
+  var reservationId = w20CreateReservationId_(rawReservationId);
+  var openUrl = String(input && input.openUrl || '');
+  var rawPreparedName = String(input && input.preparedName || '');
+  var preparedName = w20CreatePreparedNameV2_(rawPreparedName);
+  var generation = input && input.generation;
+  var rawNavigateUntil = input && input.navigateUntil;
+  var navigateUntil = typeof rawNavigateUntil === 'string' ? w20CreateNavigateUntil_(rawNavigateUntil) : 0;
+  var reservationProof = String(input && input.reservationProof || '');
+  var clientHash = w20CreateClientHash_(taskId, clientId);
+  if (!clientId || rawClientId !== clientId || !reservationId || rawReservationId !== reservationId || !openUrl ||
+      !preparedName || rawPreparedName !== preparedName || typeof generation !== 'number' ||
+      !Number.isSafeInteger(generation) || generation < 1 || generation > 2147483647 ||
+      !navigateUntil || !/^[a-f0-9]{64}$/.test(reservationProof)) {
+    throw new W19Error_('RESERVATION_V2_INVALID', 'Данные долгоживущего резерва повреждены.', false);
+  }
+  var payload = w20CreateReservationV2Payload_(taskId, clientHash, section, reservationId, openUrl, preparedName, generation,
+    new Date(navigateUntil).toISOString());
+  var expectedProof = w20CreateReservationV2Signature_(payload, cfg);
+  if (!payload || !expectedProof || !WidgetV19Core.safeEqual(expectedProof, reservationProof)) {
+    throw new W19Error_('RESERVATION_V2_PROOF_INVALID', 'Подпись резерва неверна.', false);
+  }
+  return {
+    clientId: clientId,
+    clientHash: clientHash,
+    section: section,
+    reservationId: reservationId,
+    openUrl: openUrl,
+    preparedName: preparedName,
+    generation: generation,
+    navigateUntil: navigateUntil,
+    reservationProof: reservationProof
+  };
+}
+
+function w20ResolveCreateReservationV2_(taskId, section, requestId, descriptor, idem, clientId) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  var canonicalHash = w19Hash_(idem);
+  var durable = w20ReadClaimedReservation_(canonicalHash);
+  if (durable) {
+    if (durable.schema !== W20_CREATE_RESERVATION_V2_SCHEMA || durable.taskId !== task || durable.section !== section ||
+        durable.createRequestId !== requestId || durable.reservationId !== requestId || durable.canonicalHash !== canonicalHash ||
+        descriptor && (durable.clientHash !== descriptor.clientHash || durable.generation !== descriptor.generation ||
+          durable.navigateUntil !== descriptor.navigateUntil || durable.reservationProof !== descriptor.reservationProof ||
+          durable.preparedName !== descriptor.preparedName || w20CreateReservationOpenUrl_(durable.fileId, section) !== descriptor.openUrl)) {
+      throw new W19Error_('RESERVATION_CONFLICT', 'Запрос уже привязан к другому резерву.', false);
+    }
+    return {
+      clientHash: durable.clientHash,
+      section: durable.section,
+      reservationId: durable.reservationId,
+      openUrl: w20CreateReservationOpenUrl_(durable.fileId, durable.section),
+      preparedName: durable.preparedName,
+      generation: durable.generation,
+      navigateUntil: durable.navigateUntil,
+      reservationProof: durable.reservationProof
+    };
+  }
+  if (!descriptor) {
+    var clientHash = w20CreateClientHash_(taskId, clientId);
+    var existingKey = w20CreateReservationV2Key_(taskId, clientHash, section);
+    var clientKey = w20CreateClientV2Key_(taskId, clientHash);
+    var props = PropertiesService.getScriptProperties();
+    var clientRecord = w20ReadCreateClientV2_(props, clientKey);
+    if (existingKey && (props.getProperty(existingKey) || clientRecord && Number(clientRecord.generations[section] || 0) > 0)) {
+      throw new W19Error_('RESERVATION_REQUIRED', 'Готовый файл требует точный подписанный резерв.', false);
+    }
+    return null;
+  }
+  if (descriptor.reservationId !== requestId) {
+    throw new W19Error_('RESERVATION_REQUEST_MISMATCH', 'Запрос не совпал с одноразовым резервом.', false);
+  }
+  if (descriptor.navigateUntil <= Date.now()) {
+    throw new W19Error_('RESERVATION_EXPIRED', 'Срок действия резерва истёк.', false);
+  }
+  var slotKey = w20CreateReservationV2Key_(taskId, descriptor.clientHash, section);
+  var slot = w20ReadCreateReservationV2_(PropertiesService.getScriptProperties(), slotKey);
+  if (!slot || slot.status !== 'prepared' || slot.taskId !== task || slot.clientHash !== descriptor.clientHash ||
+      slot.section !== section || slot.reservationId !== descriptor.reservationId || slot.generation !== descriptor.generation ||
+      slot.navigateUntil !== descriptor.navigateUntil || slot.reservationProof !== descriptor.reservationProof || slot.preparedName !== descriptor.preparedName ||
+      w20CreateReservationOpenUrl_(slot.fileId, section) !== descriptor.openUrl) {
+    throw new W19Error_('RESERVATION_STALE', 'Резерв файла больше не актуален.', false);
+  }
+  return descriptor;
+}
+
+function w20ClaimCreateReservationV2_(taskId, section, requestId, descriptor, idem, cfg, attemptId) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  var canonicalHash = w19Hash_(idem);
+  var claimKey = w20CreateClaimKey_(canonicalHash);
+  var slotKey = w20CreateReservationV2Key_(taskId, descriptor.clientHash, section);
+  var props = PropertiesService.getScriptProperties();
+  if (requestId !== descriptor.reservationId) throw new W19Error_('RESERVATION_REQUEST_MISMATCH', 'Запрос не совпал с резервом.', false);
+  var durableClaim = w20ReadClaimedReservation_(canonicalHash);
+  if (durableClaim) {
+    if (durableClaim.schema !== W20_CREATE_RESERVATION_V2_SCHEMA || durableClaim.taskId !== task || durableClaim.section !== section ||
+        durableClaim.reservationId !== descriptor.reservationId || durableClaim.createRequestId !== requestId ||
+        durableClaim.canonicalHash !== canonicalHash || durableClaim.clientHash !== descriptor.clientHash ||
+        durableClaim.generation !== descriptor.generation || durableClaim.navigateUntil !== descriptor.navigateUntil ||
+        durableClaim.reservationProof !== descriptor.reservationProof || durableClaim.preparedName !== descriptor.preparedName) {
+      throw new W19Error_('RESERVATION_CONFLICT', 'Резерв уже привязан к другому запросу.', false);
+    }
+    return { claim: durableClaim, taskMeta: null, recovered: true };
+  }
+  var slot = w20ReadCreateReservationV2_(props, slotKey);
+  if (!slot || slot.status !== 'prepared' || slot.reservationId !== descriptor.reservationId ||
+      slot.clientHash !== descriptor.clientHash || slot.generation !== descriptor.generation ||
+      slot.navigateUntil !== descriptor.navigateUntil || slot.reservationProof !== descriptor.reservationProof || slot.preparedName !== descriptor.preparedName ||
+      slot.navigateUntil <= Date.now()) {
+    throw new W19Error_(slot && slot.navigateUntil <= Date.now() ? 'RESERVATION_EXPIRED' : 'RESERVATION_STALE',
+      slot && slot.navigateUntil <= Date.now() ? 'Срок действия резерва истёк.' : 'Резерв файла больше не актуален.', false);
+  }
+  var preparedDrive = w19GetDriveMetadata_(slot.fileId);
+  if (!w20PreparedCreateFileV2_(preparedDrive, taskId, section, descriptor.reservationId, descriptor.clientHash,
+    descriptor.generation, descriptor.navigateUntil, cfg.rootFolderId)) {
+    throw new W19Error_('RESERVATION_FILE_INVALID', 'Резервный файл изменён или недоступен.', false);
+  }
+  var createSlot = w20RegistryClaimCreateSlot_(taskId, section, cfg.rootFolderId);
+  if (!createSlot || !createSlot.taskMeta || !w20SafeDriveId_(createSlot.taskMeta.folderId)) {
+    throw new W19Error_('CREATE_CONTEXT_STALE', 'Контекст задачи требует обновления.', true);
+  }
+  var claim = {
+    schema: W20_CREATE_RESERVATION_V2_SCHEMA,
+    status: 'claimed',
+    taskId: task,
+    clientHash: descriptor.clientHash,
+    section: section,
+    reservationId: descriptor.reservationId,
+    generation: descriptor.generation,
+    navigateUntil: descriptor.navigateUntil,
+    reservationProof: descriptor.reservationProof,
+    fileId: slot.fileId,
+    preparedName: descriptor.preparedName,
+    at: Date.now(),
+    claimedAt: Date.now(),
+    createRequestId: requestId,
+    canonicalHash: canonicalHash,
+    attemptId: String(attemptId || '').toLowerCase(),
+    folderId: createSlot.taskMeta.folderId,
+    position: createSlot.position
+  };
+  if (!w20CreateReservationId_(claim.attemptId)) throw new W19Error_('RESERVATION_INVALID', 'Не удалось привязать резерв.', false);
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) throw new W19Error_('BUSY', 'Сервис занят привязкой файла.', true);
+  try {
+    var lockedProps = PropertiesService.getScriptProperties();
+    var existingClaim = w20ReadCreateReservationV2_(lockedProps, claimKey);
+    if (existingClaim) {
+      if (existingClaim.status === 'claimed' && existingClaim.reservationId === descriptor.reservationId &&
+          existingClaim.createRequestId === requestId && existingClaim.canonicalHash === canonicalHash &&
+          existingClaim.fileId === slot.fileId && existingClaim.clientHash === descriptor.clientHash &&
+          existingClaim.generation === descriptor.generation) return { claim: existingClaim, taskMeta: null, recovered: true };
+      throw new W19Error_('RESERVATION_CONFLICT', 'Резерв уже привязан к другому запросу.', false);
+    }
+    var current = w20ReadCreateReservationV2_(lockedProps, slotKey);
+    if (!current || current.status !== 'prepared' || current.reservationId !== descriptor.reservationId ||
+        current.fileId !== slot.fileId || current.clientHash !== descriptor.clientHash ||
+        current.generation !== descriptor.generation || current.navigateUntil !== descriptor.navigateUntil ||
+        current.reservationProof !== descriptor.reservationProof || current.preparedName !== descriptor.preparedName || current.navigateUntil <= Date.now()) {
+      throw new W19Error_('RESERVATION_STALE', 'Резерв уже изменился.', false);
+    }
+    var ledgerKey = w19IdempotencyLedgerKey_(idem);
+    var ledger = w19ReadLedger_(lockedProps, ledgerKey);
+    if (!ledger || ledger.status !== 'pending' || String(ledger.attemptId || '').toLowerCase() !== claim.attemptId) {
+      throw new W19Error_('RESERVATION_LEDGER_STALE', 'Запрос на создание уже изменился.', true);
+    }
+    ledger.reservationRef = claimKey;
+    var updates = {};
+    updates[claimKey] = JSON.stringify(claim);
+    updates[ledgerKey] = JSON.stringify(ledger);
+    lockedProps.setProperties(updates);
+    lockedProps.deleteProperty(slotKey);
+  } finally {
+    lock.releaseLock();
+  }
+  return { claim: claim, taskMeta: createSlot.taskMeta, recovered: false };
+}
+
 function w20ReadClaimedReservation_(canonicalHash) {
   var key = w20CreateClaimKey_(canonicalHash);
-  return key ? w20ReadCreateReservation_(PropertiesService.getScriptProperties(), key) : null;
+  if (!key) return null;
+  var props = PropertiesService.getScriptProperties();
+  return w20ReadCreateReservationV2_(props, key) || w20ReadCreateReservation_(props, key);
 }
 
 function w20ClaimCreateReservation_(taskId, section, requestId, reservationId, idem, cfg, attemptId) {
@@ -932,7 +1698,11 @@ function w20TransitionClaimedReservationFile_(claim, name, cfg) {
   var current = w19GetDriveMetadata_(claim.fileId);
   var alreadyClaimed = w20ClaimedCreateFile_(current, claim);
   if (alreadyClaimed) return alreadyClaimed.file;
-  if (!w20PreparedCreateFile_(current, claim.taskId, claim.section, claim.reservationId, cfg.rootFolderId)) {
+  var prepared = claim.schema === W20_CREATE_RESERVATION_V2_SCHEMA ?
+    w20PreparedCreateFileV2_(current, claim.taskId, claim.section, claim.reservationId, claim.clientHash,
+      claim.generation, claim.navigateUntil, cfg.rootFolderId) :
+    w20PreparedCreateFile_(current, claim.taskId, claim.section, claim.reservationId, cfg.rootFolderId);
+  if (!prepared) {
     throw new W19Error_('RESERVATION_FILE_INVALID', 'Резервный файл не прошёл точную проверку.', false);
   }
   var updateError = null;
@@ -946,7 +1716,10 @@ function w20TransitionClaimedReservationFile_(claim, name, cfg) {
         materialState: 'active',
         createReservationSection: null,
         createReservationId: null,
-        createReservationState: null
+        createReservationState: null,
+        createReservationClient: null,
+        createReservationGeneration: null,
+        createReservationNavigateUntil: null
       }
     };
     if (String(current.name || '') === String(claim.preparedName || '')) {
@@ -977,8 +1750,10 @@ function w20TaskForClaimedReservation_(taskId, claim, taskMeta, cfg) {
   return w19AssertTaskPage_(taskId, cfg);
 }
 
-function w20CreateGoogleFromReservation_(taskId, section, name, requestId, reservationId, idem, cfg, idempotencyState) {
-  var bound = w20ClaimCreateReservation_(taskId, section, requestId, reservationId, idem, cfg, idempotencyState && idempotencyState.attemptId);
+function w20CreateGoogleFromReservation_(taskId, section, name, requestId, reservationId, idem, cfg, idempotencyState, reservationV2) {
+  var bound = reservationV2 ?
+    w20ClaimCreateReservationV2_(taskId, section, requestId, reservationV2, idem, cfg, idempotencyState && idempotencyState.attemptId) :
+    w20ClaimCreateReservation_(taskId, section, requestId, reservationId, idem, cfg, idempotencyState && idempotencyState.attemptId);
   var claim = bound.claim;
   if (bound.recovered || idempotencyState && idempotencyState.recovery) {
     w19AssertSchema_(cfg);
@@ -1011,15 +1786,14 @@ function w20CreateGoogleFromReservation_(taskId, section, name, requestId, reser
 function w20ReleaseClaimedCreateReservation_(taskId, section, requestId, idem, material) {
   var canonicalHash = w19Hash_(idem);
   var claimKey = w20CreateClaimKey_(canonicalHash);
-  var slotKey = w20CreateReservationKey_(taskId, section);
   var fileId = w20SafeDriveId_(material && material.googleFileId);
   var pageId = WidgetV19Core.normalizeUuid(material && material.id);
-  if (!claimKey || !slotKey || !fileId || !pageId) return false;
+  if (!claimKey || !fileId || !pageId) return false;
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(5000)) return false;
   try {
     var props = PropertiesService.getScriptProperties();
-    var claim = w20ReadCreateReservation_(props, claimKey);
+    var claim = w20ReadCreateReservationV2_(props, claimKey) || w20ReadCreateReservation_(props, claimKey);
     if (!claim || (claim.status !== 'claimed' && claim.status !== 'done') || claim.taskId !== WidgetV19Core.compactUuid(taskId) ||
         claim.section !== section || claim.createRequestId !== requestId || claim.canonicalHash !== canonicalHash || claim.fileId !== fileId) return false;
     var done = {};
@@ -1028,9 +1802,12 @@ function w20ReleaseClaimedCreateReservation_(taskId, section, requestId, idem, m
     done.at = Date.now();
     done.notionPageId = pageId;
     props.setProperty(claimKey, JSON.stringify(done));
-    var slot = w20ReadCreateReservation_(props, slotKey);
-    if (slot && slot.status === 'claimed' && slot.reservationId === claim.reservationId &&
-        slot.createRequestId === requestId && slot.canonicalHash === canonicalHash && slot.fileId === fileId) props.deleteProperty(slotKey);
+    if (claim.schema === W20_CREATE_RESERVATION_SCHEMA) {
+      var slotKey = w20CreateReservationKey_(taskId, section);
+      var slot = w20ReadCreateReservation_(props, slotKey);
+      if (slot && slot.status === 'claimed' && slot.reservationId === claim.reservationId &&
+          slot.createRequestId === requestId && slot.canonicalHash === canonicalHash && slot.fileId === fileId) props.deleteProperty(slotKey);
+    }
     return true;
   } finally {
     lock.releaseLock();
@@ -1063,20 +1840,34 @@ function apiCreateGoogle(input) {
     var requestId = w19ValidateClientKey_(input && input.idempotencyKey).toLowerCase();
     var rawReservationId = String(input && input.reservationId || '').trim();
     var suppliedReservationId = w20CreateReservationId_(rawReservationId);
+    var rawClientId = String(input && input.clientId || '');
+    var clientId = w20CreateClientId_(rawClientId);
+    var hasV2Tuple = Boolean(input && (input.openUrl || input.preparedName || input.generation !== undefined || input.navigateUntil || input.reservationProof));
+    if (rawClientId && !clientId) throw new W19Error_('CREATE_CLIENT_INVALID', 'Идентификатор браузера повреждён.', false);
     if (rawReservationId && !suppliedReservationId) throw new W19Error_('RESERVATION_INVALID', 'Резерв файла повреждён.', false);
     if (suppliedReservationId && suppliedReservationId !== requestId) {
       throw new W19Error_('RESERVATION_REQUEST_MISMATCH', 'Запрос не совпал с одноразовым резервом.', false);
     }
+    if (hasV2Tuple && (!clientId || !suppliedReservationId)) {
+      throw new W19Error_('RESERVATION_V2_INVALID', 'Данные долгоживущего резерва неполные.', false);
+    }
+    if (clientId && suppliedReservationId && !hasV2Tuple) {
+      throw new W19Error_('RESERVATION_V2_INVALID', 'Данные долгоживущего резерва неполные.', false);
+    }
+    var reservationV2 = clientId && suppliedReservationId ?
+      w20CreateReservationV2DescriptorFromInput_(input, taskId, section, cfg) : null;
     var idem = w19CanonicalIdempotency_(taskId, 'create-google-' + section, requestId);
     var knownMaterial = w20RegistryFindCreateRequest_(taskId, section, requestId);
     if (knownMaterial) {
       w20ReleaseClaimedCreateReservation_(taskId, section, requestId, idem, knownMaterial);
       return { material: w20MaterialForClient_(knownMaterial, taskId, cfg), duplicate: true };
     }
-    var reservationId = w20ResolveCreateReservation_(taskId, section, requestId, suppliedReservationId, idem);
+    var resolvedV2 = clientId ? w20ResolveCreateReservationV2_(taskId, section, requestId, reservationV2, idem, clientId) : null;
+    var reservationId = resolvedV2 ? resolvedV2.reservationId :
+      clientId ? '' : w20ResolveCreateReservation_(taskId, section, requestId, suppliedReservationId, idem);
     var outcome = w19WithIdempotency_(idem, function (idempotencyState) {
-      if (reservationId) {
-        return w20CreateGoogleFromReservation_(taskId, section, name, requestId, reservationId, idem, cfg, idempotencyState);
+      if (resolvedV2 || reservationId) {
+        return w20CreateGoogleFromReservation_(taskId, section, name, requestId, reservationId, idem, cfg, idempotencyState, resolvedV2);
       }
       if (!(idempotencyState && idempotencyState.recovery)) {
         var slot = w20RegistryClaimCreateSlot_(taskId, section, cfg.rootFolderId);
@@ -1087,13 +1878,13 @@ function apiCreateGoogle(input) {
     if (outcome && outcome.completed && !outcome.material) {
       var completedMaterial = w20RegistryFindCreateRequest_(taskId, section, requestId);
       if (completedMaterial) outcome = { material: completedMaterial, duplicate: true };
-      else if (reservationId) {
+      else if (resolvedV2 || reservationId) {
         var completedClaim = w20ReadClaimedReservation_(w19Hash_(idem));
         if (!completedClaim) throw new W19Error_('RESERVATION_CLAIM_MISSING', 'Точная привязка резерва недоступна.', false);
         outcome = w20CreateGoogleFromReservation_(taskId, section, name, requestId, reservationId, idem, cfg, {
           recovery: true,
           attemptId: completedClaim.attemptId
-        });
+        }, resolvedV2);
       } else outcome = w20CreateGoogleRecovery_(taskId, section, name, idem, cfg);
     }
     if (outcome && outcome.material) {
@@ -1183,6 +1974,9 @@ function apiWarmCreateContext(input) {
   return w19ApiResult_(function () {
     var cfg = w19AuthorizedConfig_(input);
     var taskId = w20AssertAuthorizedTaskId_(input && input.taskPageId, cfg);
+    var rawClientId = String(input && input.clientId || '');
+    var clientId = w20CreateClientId_(rawClientId);
+    if (rawClientId && !clientId) throw new W19Error_('CREATE_CLIENT_INVALID', 'Идентификатор браузера повреждён.', false);
     var proofOnly = Boolean(input && input.proofOnly === true);
     var requestedSection = '';
     if (input && Object.prototype.hasOwnProperty.call(input, 'section')) {
@@ -1208,8 +2002,11 @@ function apiWarmCreateContext(input) {
       cached: folderWasCached,
       folderUrl: 'https://drive.google.com/drive/folders/' + encodeURIComponent(meta.folderId),
       trustedUntil: proof.trustedUntil,
-      preparedCreates: proofOnly ? w20PreparedCreatePoolSnapshot_(taskId) :
-        requestedSection ? w20WarmCreateSection_(taskId, requestedSection, cfg) : w20WarmCreatePool_(taskId, cfg)
+      preparedCreates: clientId ?
+        (proofOnly ? w20PreparedCreatePoolV2Snapshot_(taskId, clientId, cfg) :
+          requestedSection ? w20WarmCreateSectionV2_(taskId, clientId, requestedSection, cfg) : w20WarmCreatePoolV2_(taskId, clientId, cfg)) :
+        (proofOnly ? w20PreparedCreatePoolSnapshot_(taskId) :
+          requestedSection ? w20WarmCreateSection_(taskId, requestedSection, cfg) : w20WarmCreatePool_(taskId, cfg))
     };
   });
 }
@@ -1987,6 +2784,8 @@ function scheduledSync(event) {
     nextCursor = result.has_more && result.next_cursor ? result.next_cursor : null;
     commitCursor = true;
     w19PruneLedger_();
+    try { w20CleanupExpiredCreateReservationsV2_(cfg.authorizedTaskPageId, cfg, W20_CREATE_RESERVATION_V2_CLEANUP_LIMIT); }
+    catch (cleanupError) { w19Audit_('create_reservation_v2_cleanup_deferred', { code: String(cleanupError && cleanupError.code || 'DRIVE_ERROR') }); }
     try { w20WarmCreatePool_(cfg.authorizedTaskPageId, cfg); }
     catch (warmError) { w19Audit_('create_reservation_background_deferred', { code: String(warmError && warmError.code || 'DRIVE_ERROR') }); }
     w19Audit_('scheduled_sync', { checked: (result.results || []).length, ok: ok, errors: errors });
@@ -3524,7 +4323,7 @@ function w19PruneLedger_() {
     if (key.indexOf(W20_CREATE_CLAIM_PREFIX) === 0) {
       try {
         var claim = JSON.parse(all[key]);
-        if (claim && claim.schema === W20_CREATE_RESERVATION_SCHEMA && claim.status === 'done' &&
+        if (claim && (claim.schema === W20_CREATE_RESERVATION_SCHEMA || claim.schema === W20_CREATE_RESERVATION_V2_SCHEMA) && claim.status === 'done' &&
             Number(claim.at || 0) < cutoff) props.deleteProperty(key);
       } catch (_claimParseError) {}
       return;

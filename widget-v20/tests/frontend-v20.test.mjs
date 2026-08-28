@@ -70,19 +70,21 @@ test('saved-card chevrons own edit/open/hide actions and no saved-card pencil re
 test('rename is optimistic before the RPC, waits for reorder, and reconciles or rolls back safely', async () => {
   const source = frontend.slice(frontend.indexOf('function materialMutationBusyKey'), frontend.indexOf('function captureOrder'));
   function harness(orderSaveRunning=false,queuedOrder=null) {
-    const item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',name:'Старое имя',section:'Docs',provider:'Google Drive',openUrl:'https://docs.google.com/document/d/ExampleDocument123/edit'};
+    const createRequestId='dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',name:'Старое имя',section:'Docs',provider:'Google Drive',openUrl:'https://docs.google.com/document/d/ExampleDocument123/edit',createRequestId};
     const state={materials:[item],busy:new Set(),authoritative:true},optimisticMaterialMutations=new Map(),downloadGrants=new Map([[item.id,{}]]),downloadGrantRetryNotBefore=new Map([[item.id,1]]);
+    const recentCompletedCreates=new Map([[createRequestId,item]]);
     const modalState={open:false};
     const fields={editModal:{classList:{contains:(name)=>name==='open'&&modalState.open}},editId:{value:item.id},editName:{value:'Новое имя',focus(){}},editSection:{value:'Slides'},editUrl:{value:item.openUrl},editSubmit:{disabled:false}};
     const events={closed:[],renders:0,restored:[],toasts:[],cleared:0,primed:[],opened:[],rpc:null};
     let resolveRpc,rejectRpc;
     const call=(method,payload)=>{events.rpc={method,payload};return new Promise((resolve,reject)=>{resolveRpc=resolve;rejectRpc=reject;});};
-    const handlers=new Function('state','optimisticMaterialMutations','$','stableIdempotency','modalReturnFocus','downloadGrants','downloadGrantRetryNotBefore','closeModal','render','restoreFocusTarget','toast','call','clearIdempotency','primeDownloadGrant','downloadPrimeGeneration','openEdit','taskPageId','SECTIONS','sectionFor','orderSaveRunning','queuedOrder',`${source};return {saveEdit,archiveMaterial};`)(
-      state,optimisticMaterialMutations,(id)=>fields[id],()=>({slot:'slot',value:'idem-key'}),new Map([['editModal',{materialMenuId:item.id}]]),downloadGrants,downloadGrantRetryNotBefore,
+    const handlers=new Function('state','optimisticMaterialMutations','recentCompletedCreates','$','stableIdempotency','modalReturnFocus','downloadGrants','downloadGrantRetryNotBefore','closeModal','render','restoreFocusTarget','toast','call','clearIdempotency','primeDownloadGrant','downloadPrimeGeneration','openEdit','taskPageId','SECTIONS','sectionFor','orderSaveRunning','queuedOrder',`${source};return {saveEdit,archiveMaterial};`)(
+      state,optimisticMaterialMutations,recentCompletedCreates,(id)=>fields[id],()=>({slot:'slot',value:'idem-key'}),new Map([['editModal',{materialMenuId:item.id}]]),downloadGrants,downloadGrantRetryNotBefore,
       (...args)=>events.closed.push(args),()=>{events.renders+=1;},(value)=>events.restored.push(value),(message)=>events.toasts.push(message),call,()=>{events.cleared+=1;},(id)=>events.primed.push(id),3,
       (id,returnFocus)=>events.opened.push({id,returnFocus}),'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',['Drive','Docs','Sheets','Slides'],(value)=>value.section,orderSaveRunning,queuedOrder
     );
-    return {item,state,fields,events,handlers,optimisticMaterialMutations,modalState,resolveRpc,rejectRpc,getResolve:()=>resolveRpc,getReject:()=>rejectRpc};
+    return {item,state,fields,events,handlers,optimisticMaterialMutations,recentCompletedCreates,modalState,resolveRpc,rejectRpc,getResolve:()=>resolveRpc,getReject:()=>rejectRpc};
   }
 
   const success=harness();
@@ -94,13 +96,15 @@ test('rename is optimistic before the RPC, waits for reorder, and reconciles or 
   assert.equal(success.events.rpc.method,'apiUpdateMaterial');
   assert.equal(success.optimisticMaterialMutations.has(success.item.id),true);
   assert.equal(success.state.busy.has(`material:${success.item.id}`),true);
-  success.getResolve()({material:{...success.item,name:'Серверное имя',section:'Slides'}});
+  const confirmedRename={...success.item,name:'Серверное имя',section:'Slides'};
+  success.getResolve()({material:confirmedRename});
   await saving;
   assert.equal(success.state.materials[0].name,'Серверное имя');
   assert.equal(success.optimisticMaterialMutations.size,0);
   assert.equal(success.state.busy.size,0);
   assert.equal(success.events.cleared,1);
   assert.deepEqual(success.events.primed,[success.item.id]);
+  assert.deepEqual(success.recentCompletedCreates.get(success.item.createRequestId),confirmedRename,'an eventual bootstrap must retain the confirmed rename, not the pre-create name');
 
   const failure=harness();
   const failed=failure.handlers.saveEdit({preventDefault(){}});
@@ -116,6 +120,7 @@ test('rename is optimistic before the RPC, waits for reorder, and reconciles or 
   assert.equal(failure.fields.editSection.value,'Slides');
   assert.match(failure.events.toasts.at(-1),/Сервер недоступен.*Изменения отменены/);
   assert.equal(failure.events.cleared,0,'failed retry keeps the stable idempotency key');
+  assert.equal(failure.recentCompletedCreates.get(failure.item.createRequestId),failure.item,'a failed rename keeps the original recent-create buffer');
 
   const protectedForm=harness(),otherId='cccccccc-cccc-4ccc-8ccc-cccccccccccc';
   const protectedSave=protectedForm.handlers.saveEdit({preventDefault(){}});
@@ -148,16 +153,18 @@ test('rename is optimistic before the RPC, waits for reorder, and reconciles or 
 test('hide removes immediately, waits for queued reorder, and restores its exact position on failure', async () => {
   const source = frontend.slice(frontend.indexOf('function materialMutationBusyKey'), frontend.indexOf('function captureOrder'));
   function harness(orderSaveRunning=false,queuedOrder=null) {
-    const before={id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1',name:'До'},item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',name:'Скрыть',section:'Docs'},after={id:'cccccccc-cccc-4ccc-8ccc-ccccccccccc3',name:'После'};
+    const createRequestId='dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const before={id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1',name:'До'},item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',name:'Скрыть',section:'Docs',createRequestId},after={id:'cccccccc-cccc-4ccc-8ccc-ccccccccccc3',name:'После'};
     const state={materials:[before,item,after],busy:new Set(),authoritative:true},optimisticMaterialMutations=new Map(),events={closed:0,renders:0,toasts:[],cleared:0,restored:[],primed:[],rpc:null};
+    const recentCompletedCreates=new Map([[createRequestId,item]]);
     let resolveRpc,rejectRpc;
     const fields={editId:{value:item.id},editName:{value:item.name,focus(){}},editSection:{value:'Docs'},editUrl:{value:''},editSubmit:{disabled:false}};
-    const handlers=new Function('state','optimisticMaterialMutations','$','stableIdempotency','modalReturnFocus','downloadGrants','downloadGrantRetryNotBefore','closeModal','render','restoreFocusTarget','toast','call','clearIdempotency','primeDownloadGrant','downloadPrimeGeneration','openEdit','taskPageId','SECTIONS','sectionFor','orderSaveRunning','queuedOrder',`${source};return {archiveMaterial};`)(
-      state,optimisticMaterialMutations,(id)=>fields[id],()=>({slot:'slot',value:'idem-key'}),new Map(),new Map(),new Map(),()=>{events.closed+=1;},()=>{events.renders+=1;},(value)=>events.restored.push(value),(message)=>events.toasts.push(message),
+    const handlers=new Function('state','optimisticMaterialMutations','recentCompletedCreates','$','stableIdempotency','modalReturnFocus','downloadGrants','downloadGrantRetryNotBefore','closeModal','render','restoreFocusTarget','toast','call','clearIdempotency','primeDownloadGrant','downloadPrimeGeneration','openEdit','taskPageId','SECTIONS','sectionFor','orderSaveRunning','queuedOrder',`${source};return {archiveMaterial};`)(
+      state,optimisticMaterialMutations,recentCompletedCreates,(id)=>fields[id],()=>({slot:'slot',value:'idem-key'}),new Map(),new Map(),new Map(),()=>{events.closed+=1;},()=>{events.renders+=1;},(value)=>events.restored.push(value),(message)=>events.toasts.push(message),
       (method,payload)=>{events.rpc={method,payload};return new Promise((resolve,reject)=>{resolveRpc=resolve;rejectRpc=reject;});},()=>{events.cleared+=1;},(id)=>events.primed.push(id),4,()=>{},
       'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',['Drive','Docs','Sheets','Slides'],(value)=>value.section,orderSaveRunning,queuedOrder
     );
-    return {before,item,after,state,events,handlers,optimisticMaterialMutations,getResolve:()=>resolveRpc,getReject:()=>rejectRpc};
+    return {before,item,after,state,events,handlers,optimisticMaterialMutations,recentCompletedCreates,getResolve:()=>resolveRpc,getReject:()=>rejectRpc};
   }
 
   const success=harness(),focus={materialMenuId:success.item.id};
@@ -170,6 +177,7 @@ test('hide removes immediately, waits for queued reorder, and restores its exact
   assert.deepEqual(success.state.materials.map((item)=>item.id),[success.before.id,success.after.id]);
   assert.equal(success.optimisticMaterialMutations.size,0);
   assert.equal(success.events.cleared,1);
+  assert.equal(success.recentCompletedCreates.has(success.item.createRequestId),false,'an eventual bootstrap cannot revive a successfully hidden recent create');
 
   const failure=harness(),failureFocus={materialMenuId:failure.item.id};
   const failed=failure.handlers.archiveMaterial(failure.item,failureFocus);
@@ -181,6 +189,7 @@ test('hide removes immediately, waits for queued reorder, and restores its exact
   assert.deepEqual(failure.events.primed,[failure.item.id]);
   assert.match(failure.events.toasts.at(-1),/Архив недоступен.*Карточка возвращена/);
   assert.equal(failure.events.cleared,0);
+  assert.equal(failure.recentCompletedCreates.get(failure.item.createRequestId),failure.item,'a failed hide keeps the recent-create buffer for rollback consistency');
   assert.doesNotMatch(source,/window\.confirm|\bconfirm\(/);
   assert.doesNotMatch(source,/apiDeletePhysical/);
 
@@ -347,7 +356,9 @@ test('primary cards create Google files and their pencils upload into the matchi
   assert.doesNotMatch(render, /classList\.toggle\('busy'[^\n]*!actionReady/);
   assert.match(frontend, /if\(section==='Drive'\)[\s\S]*createGoogle\(section\)/);
   assert.match(frontend, /const payload=\{taskPageId,section,idempotencyKey:operation\.value\}/);
-  assert.match(frontend, /if\(bridgeRequest&&bridgeRequest\.reservationId\)payload\.reservationId=bridgeRequest\.reservationId/);
+  assert.match(frontend, /const prepared=bridgeRequest&&bridgeRequest\.reservation\|\|\(!bridgeRequest&&state\.preparedCreates\[section\]\)/);
+  assert.match(frontend, /payload\.reservationId=prepared\.reservationId/);
+  assert.match(frontend, /preparedName:prepared\.preparedName,generation:prepared\.generation,navigateUntil:prepared\.navigateUntil,reservationProof:prepared\.reservationProof/);
   assert.match(frontend, /createGoogleWithRecovery\(payload\)/);
   assert.match(frontend, /call\('apiUpload',\{taskPageId,name:file\.name,mimeType:file\.type\|\|'application\/octet-stream',section,dataBase64,idempotencyKey:operation\.value\}\)/);
   assert.doesNotMatch(frontend, /seedDownloadFromFile\(data\.material,file\)/);
@@ -369,11 +380,35 @@ test('signed prepared files open directly and bind the background claim to the s
   assert.match(frontend, /safeTaskFolderUrl\(data&&data\.folderUrl\)/);
   assert.match(frontend, /state\.snapshotTrusted=true;state\.actionReady=true/);
   assert.match(frontend, /state\.actionReady\?Object\.values\(state\.preparedCreates\)/);
-  assert.match(frontend, /issuedPreparedCreates\.get\(reservationId\)!==data\.section/);
+  assert.match(frontend, /trustedUntil:state\.actionReady&&Number\.isFinite\(state\.trustedUntil\)\?new Date\(state\.trustedUntil\)\.toISOString\(\):''/);
+  assert.match(frontend, /const issued=issuedPreparedCreates\.get\(reservationId\),reservation=issued&&Number\.isSafeInteger\(issued\.generation\)\?safePreparedCreate\(data\):issued/);
+  assert.match(frontend, /!preparedCreateMatches\(issued,reservation\)/);
   assert.match(frontend, /type:'notion-widget-v20-primary-started',requestId/);
   assert.match(frontend, /activeBridgeCreateRequests\.get\(data\.section\)===requestId/);
-  assert.match(frontend, /if\(bridgeRequest&&bridgeRequest\.reservationId\)payload\.reservationId=bridgeRequest\.reservationId/);
+  assert.match(frontend, /reservationProof:item\.reservationProof/);
+  assert.match(frontend, /createGoogle\(data\.section,\{source:event\.source,origin:event\.origin,requestId,reservationId,reservation\}\)/);
   assert.match(frontend, /prepared&&prepared\.reservationId===bridgeRequest\.reservationId\)delete state\.preparedCreates\[section\]/);
+});
+
+test('v2 prepared descriptors are exact, canonical and fail closed before bridge forwarding', () => {
+  const source=frontend.slice(frontend.indexOf('function normalizeClientId'),frontend.indexOf('function preparedCreateMap'));
+  const helpers=new Function('URL',`${source};return {normalizeClientId,safePreparedCreate,preparedCreateMatches};`)(URL);
+  const clientId='a1111111-1111-4111-8111-111111111111';
+  assert.equal(helpers.normalizeClientId(clientId),clientId);
+  assert.equal(helpers.normalizeClientId(` ${clientId} `),'');
+  assert.equal(helpers.normalizeClientId(clientId.toUpperCase()),'');
+  const descriptor={
+    section:'Docs',reservationId:'b2222222-2222-4222-8222-222222222222',
+    openUrl:'https://docs.google.com/document/d/PreparedGoogleDoc123/edit',preparedName:'Новый Google документ',
+    generation:1,navigateUntil:new Date(Date.now()+30*24*60*60*1000).toISOString(),reservationProof:'a'.repeat(64)
+  };
+  const safe=helpers.safePreparedCreate(descriptor);
+  assert.deepEqual(safe,descriptor);
+  assert.equal(helpers.safePreparedCreate({...descriptor,generation:'1'}),null);
+  assert.equal(helpers.safePreparedCreate({...descriptor,preparedName:` ${descriptor.preparedName} `}),null);
+  assert.equal(helpers.safePreparedCreate({...descriptor,reservationProof:descriptor.reservationProof.toUpperCase()}),null);
+  assert.equal(helpers.safePreparedCreate({...descriptor,reservationId:descriptor.reservationId.toUpperCase()}),null);
+  assert.equal(helpers.preparedCreateMatches(safe,{...safe,preparedName:'Другое'}),false);
 });
 
 test('fresh cached action proof starts missing Docs, Sheets and Slides warm RPCs in parallel', async () => {
@@ -420,9 +455,16 @@ test('mutation retries use per-session stable idempotency keys without persistin
 
 test('the access capability is added centrally to backend payloads and is never logged', () => {
   assert.match(frontend, /let accessToken = params\.get\('accessToken'\) \|\| ''/);
+  assert.match(frontend, /let clientIdInput = String\(params\.get\('clientId'\) \|\| ''\)\.slice\(0,80\)/);
+  assert.match(frontend, /let clientId = normalizeClientId\(clientIdInput\)/);
+  assert.match(frontend, /function normalizeClientId\(value\)/);
+  assert.match(frontend, /\^\[0-9a-f\]\{8\}-\[0-9a-f\]\{4\}-4\[0-9a-f\]\{3\}-\[89ab\]\[0-9a-f\]\{3\}-\[0-9a-f\]\{12\}\$/);
   assert.match(frontend, /google\.script\.url/);
   assert.match(frontend, /accessToken=String\(runtimeParams\.accessToken\|\|accessToken\|\|''\)/);
+  assert.match(frontend, /clientIdInput=String\(runtimeParams\.clientId\|\|clientIdInput\|\|''\)\.slice\(0,80\)/);
+  assert.match(frontend, /clientId=normalizeClientId\(clientIdInput\)/);
   assert.match(frontend, /securedPayload=Object\.assign\(\{\},payload\|\|\{\},\{accessToken\}\)/);
+  assert.match(frontend, /if\(clientIdInput\)securedPayload\.clientId=clientId\|\|clientIdInput/);
   assert.doesNotMatch(frontend, /console\.(?:log|debug|info|warn|error)/);
 });
 
@@ -521,6 +563,73 @@ test('a short-lived server-prepared Drive URL bypasses the courier only for the 
   assert.equal(helpers.freshDirectDownloadUrl(item),'','extra parameters are rejected');
 });
 
+test('the live bridge exposes only exact encrypted-navigation material for real saved cards', () => {
+  const source=frontend.slice(frontend.indexOf('function presentationSnapshotSourceMaterials'),frontend.indexOf('function announceEmbedSnapshot'));
+  const native={id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',name:'  Отчёт   за август  ',section:'Docs',format:'Google Docs',position:1,openUrl:'https://docs.google.com/document/d/ExampleDocument123/edit',syncStatus:'synced'};
+  const binary={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',name:'Архив.zip',section:'Drive',format:'ZIP',position:2,canDownload:true,widgetOwned:true,syncStatus:'synced'};
+  const disguised={id:'cccccccc-cccc-4ccc-8ccc-cccccccccccc',name:'Не Google',section:'Docs',format:'Word',position:3,openUrl:'https://docs.google.com/document/d/AnotherDocument123/edit',syncStatus:'synced'};
+  const state={materials:[native,binary,disguised]},optimisticMaterialMutations=new Map();
+  const direct='https://drive.google.com/uc?export=download&authuser=owner%40example.com&id=DRIVEFILE123';
+  const expiresAt=new Date(Date.now()+30000).toISOString(),downloadGrants=new Map([[binary.id,{directDownloadExpiresAt:expiresAt}]]);
+  const build=new Function('state','SECTIONS','canPrepareDownload','URL','optimisticMaterialMutations','freshDirectDownloadUrl','downloadGrants','normalizeUuid',`${source};return {presentationSnapshotMaterials,navigationSnapshotMaterials,nativeGoogleNavigationUrl};`);
+  const helpers=build(state,['Drive','Docs','Sheets','Slides'],(item)=>Boolean(item&&item.canDownload&&item.widgetOwned),URL,optimisticMaterialMutations,(item)=>item===binary?direct:'',downloadGrants,(value)=>String(value||'').toLowerCase());
+  assert.deepEqual(helpers.presentationSnapshotMaterials()[0],{name:'Отчёт за август',section:'Docs',format:'Google Docs',position:1});
+  assert.deepEqual(helpers.navigationSnapshotMaterials(),[
+    {name:'Отчёт за август',section:'Docs',format:'Google Docs',position:1,openUrl:native.openUrl},
+    {name:'Архив.zip',section:'Drive',format:'ZIP',position:2,directDownloadUrl:direct,directDownloadExpiresAt:expiresAt}
+  ]);
+  native.openUrl+='?usp=sharing';
+  assert.equal(helpers.nativeGoogleNavigationUrl(native),'','non-canonical Google URLs fail closed');
+  optimisticMaterialMutations.set(native.id,{kind:'edit'});
+  assert.deepEqual(helpers.navigationSnapshotMaterials(),[],'optimistic mutations are never persisted as confirmed navigation');
+  assert.match(frontend,/navigationMaterials:navigationSnapshotMaterials\(\)/);
+  assert.match(frontend,/navigationFolderUrl:state\.actionReady\?safeTaskFolderUrl\(state\.folderUrl\):''/);
+  const prime=frontend.slice(frontend.indexOf('function primeDownloadGrant'),frontend.indexOf('async function refreshVisibleDownloadGrants'));
+  assert.match(prime,/downloadGrants\.set\([\s\S]*refreshDownloadGrantLink\(materialId\);announceEmbedBridgeReady\(\)/);
+});
+
+test('optimistic edits and hides never become durable bridge snapshots, while confirmed or rolled-back renders do', () => {
+  const optimisticMaterialMutations=new Map([['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',{kind:'edit'}]]);
+  let rows=[{name:'Исходное имя',section:'Docs',format:'Google Docs',position:0}];
+  const snapshotMessages=[];
+  const snapshotSource=frontend.slice(frontend.indexOf('function announceEmbedSnapshot'),frontend.indexOf('function announceEmbedBridgeReady'));
+  const snapshotHarness=new Function('optimisticMaterialMutations','isEmbedBridgeMode','state','presentationSnapshotMaterials','postToEmbedAncestors',`
+    let lastAnnouncedSnapshotFingerprint='',bridgeAnnouncements=0;
+    function announceEmbedBridgeReady(){bridgeAnnouncements+=1;}
+    ${snapshotSource}
+    return {announce:announceEmbedSnapshot,bridgeAnnouncements:()=>bridgeAnnouncements};
+  `)(optimisticMaterialMutations,()=>true,{bootstrapped:true},()=>rows.map((row)=>({...row})),(message)=>snapshotMessages.push(message));
+
+  snapshotHarness.announce();
+  assert.equal(snapshotMessages.length,0,'an optimistic presentation snapshot must not reach durable wrapper storage');
+  assert.equal(snapshotHarness.bridgeAnnouncements(),0,'the companion bridge payload is also withheld while mutation state is provisional');
+  optimisticMaterialMutations.clear();
+  snapshotHarness.announce();
+  assert.equal(snapshotMessages.length,1,'the first confirmed render publishes its real snapshot');
+  assert.equal(snapshotHarness.bridgeAnnouncements(),1);
+
+  optimisticMaterialMutations.set('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',{kind:'hide'});
+  rows=[];
+  snapshotHarness.announce();
+  assert.equal(snapshotMessages.length,1,'a provisional hide cannot overwrite the last confirmed durable snapshot');
+  optimisticMaterialMutations.clear();
+  snapshotHarness.announce();
+  assert.equal(snapshotMessages.length,2,'after RPC success, the confirmed hidden state is published');
+  assert.deepEqual(snapshotMessages[1].materials,[]);
+
+  const bridgeMessages=[];
+  const bridgeSource=frontend.slice(frontend.indexOf('function announceEmbedBridgeReady'),frontend.indexOf('function postEmbedBridgeGeometry'));
+  const announceBridge=new Function('optimisticMaterialMutations','runtimeLocationResolved','isEmbedBridgeMode','state','completedCreateAnnouncements','presentationSnapshotMaterials','navigationSnapshotMaterials','safeTaskFolderUrl','primaryGeometry','window','postToEmbedAncestors','bridgeInstanceId',`${bridgeSource};return announceEmbedBridgeReady;`)(
+    optimisticMaterialMutations,true,()=>true,{bootstrapped:true,authoritative:true,snapshotTrusted:false,actionReady:false,materials:[],preparedCreates:{},trustedUntil:0,folderUrl:''},new Map(),()=>[],()=>[],()=>'',()=>[],{innerWidth:900,innerHeight:500},(message)=>bridgeMessages.push(message),'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  );
+  optimisticMaterialMutations.set('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',{kind:'edit'});
+  announceBridge();
+  assert.equal(bridgeMessages.length,0);
+  optimisticMaterialMutations.clear();
+  announceBridge();
+  assert.equal(bridgeMessages.length,1,'confirmed state resumes complete bridge publication');
+});
+
 test('bootstrap primes downloads while preserving unchanged unexpired packages in memory', () => {
   const bootstrap=frontend.slice(frontend.indexOf('function applyBootstrapData'),frontend.indexOf('function refresh('));
   const prime=frontend.slice(frontend.indexOf('function freshDownloadGrant'),frontend.indexOf('function downloadCourierHref'));
@@ -536,6 +645,7 @@ test('bootstrap primes downloads while preserving unchanged unexpired packages i
   assert.match(bootstrap,/downloadGrantRetryNotBefore\.clear\(\)/);
   assert.match(bootstrap,/scheduleDownloadGrantPrime\(downloadPrimeGeneration\)/);
   assert.match(prime,/window\.setTimeout\(async\(\)=>/);
+  assert.match(prime,/state\.materials\.filter\(\(item\)=>canPrepareDownload\(item\)&&downloadGrantNeedsRefresh\(item,true\)\)/);
   assert.match(prime,/Promise\.all\(Array\.from\(\{length:Math\.min\(DOWNLOAD_GRANT_PRIME_WORKERS,candidates\.length\)\},\(\)=>worker\(\)\)\)/);
   assert.match(prime,/visible:downloadCardIsVisible\(item\.id\)/);
   assert.match(prime,/Number\(right\.visible\)-Number\(left\.visible\)/);
@@ -963,7 +1073,9 @@ test('native create clicks render one optimistic card and poll only the server l
   assert.match(frontend, /function completeOptimisticCreate\(requestId,material,announce\)/);
   assert.match(frontend, /state\.materials=state\.materials\.filter\(\(item\)=>item\.id!==record\.pendingId\)/);
   assert.match(frontend, /upsert\(material\);if\(material\)\{recentCompletedCreates\.set\(normalized,material\);rememberCompletedCreate\(normalized\);recentDrivePageIds\.add\(material\.id\);\}/);
-  assert.match(frontend, /startOptimisticCreate\(section,bridgeRequest\.requestId,false\)/);
+  assert.match(frontend, /startOptimisticCreate\(section,bridgeRequest\.requestId,false,prepared\)/);
+  assert.match(frontend, /name:preparedForSection&&preparedForSection\.preparedName\|\|pendingCreateName\(section\)/);
+  assert.match(frontend, /openUrl:preparedForSection&&preparedForSection\.openUrl\|\|''/);
   assert.match(frontend, /function createGoogleWithRecovery\(payload\)/);
   assert.match(frontend, /const delays=\[0,900,2400\]/);
   assert.match(frontend, /if\(delay\)await new Promise\(\(resolve\)=>window\.setTimeout\(resolve,delay\)\)/);
