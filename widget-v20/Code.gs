@@ -16,7 +16,7 @@ var W20_DOWNLOAD_GRANT_EPOCH_PREFIX = 'w20:download-grant-epoch:';
 var W20_DOWNLOAD_GRANT_TTL_SECONDS = 60;
 var W20_DOWNLOAD_GRANT_SCHEMA = 2;
 var W20_FAST_DOWNLOAD_PACKAGE_TTL_SECONDS = 60;
-var W20_DRIVE_DIRECT_SOURCE_TTL_SECONDS = 180;
+var W20_DRIVE_DIRECT_SOURCE_TTL_SECONDS = 15 * 60;
 var W20_DRIVE_POLL_CLAIM_TTL_SECONDS = 60;
 var W20_ATTACHMENT_JOB_PREFIX = 'w20:attachment-job:';
 var W20_ATTACHMENT_JOB_SCHEMA = 1;
@@ -218,13 +218,68 @@ function w20DownloadPostFields_(event) {
   };
 }
 
+function w20HasExactObjectKeys_(value, expected) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  var actual = Object.keys(value).sort();
+  var wanted = expected.slice().sort();
+  return actual.length === wanted.length && actual.every(function (key, index) { return key === wanted[index]; });
+}
+
+function w20MutationPostFields_(event) {
+  var expected = ['task', 'accessToken', 'mutationRequestId', 'mutationPayload'];
+  var parameters = event && event.parameters;
+  var postType = String(event && event.postData && event.postData.type || '').toLowerCase().split(';')[0].trim();
+  var keys = parameters && typeof parameters === 'object' ? Object.keys(parameters) : [];
+  var exact = postType === 'application/x-www-form-urlencoded' && !String(event && event.queryString || '') && keys.length === expected.length;
+  var values = {};
+  expected.forEach(function (key) {
+    var list = parameters && parameters[key];
+    if (!list || typeof list.length !== 'number' || list.length !== 1) exact = false;
+    values[key] = list && list.length === 1 ? String(list[0] || '') : '';
+  });
+  if (keys.some(function (key) { return expected.indexOf(key) === -1; })) exact = false;
+  var uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  var taskUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  var task = String(values.task || '').toLowerCase();
+  var requestId = String(values.mutationRequestId || '').toLowerCase();
+  var accessToken = String(values.accessToken || '');
+  var rawPayload = String(values.mutationPayload || '');
+  var payload = null;
+  if (rawPayload && rawPayload.length <= 1000) {
+    try { payload = JSON.parse(rawPayload); } catch (_payloadError) { payload = null; }
+  }
+  var kind = String(payload && payload.kind || '');
+  var binding = String(payload && payload.binding || '').toLowerCase();
+  var validPayload = false;
+  if (kind === 'hide') {
+    validPayload = w20HasExactObjectKeys_(payload, ['kind', 'binding']);
+  } else if (kind === 'edit') {
+    var name = String(payload && payload.name || '').replace(/\s+/g, ' ').trim();
+    var section = String(payload && payload.section || '');
+    validPayload = w20HasExactObjectKeys_(payload, ['kind', 'binding', 'name', 'section']) &&
+      Boolean(name && name.length <= 180 && ['Drive', 'Docs', 'Sheets', 'Slides'].indexOf(section) !== -1);
+    if (validPayload) payload = { kind: kind, binding: binding, name: name, section: section };
+  }
+  validPayload = Boolean(validPayload && /^[a-f0-9]{64}$/.test(binding));
+  return {
+    valid: Boolean(exact && taskUuid.test(task) && uuid.test(requestId) &&
+      /^[A-Za-z0-9._~-]{32,256}$/.test(accessToken) && validPayload),
+    taskPageId: task,
+    accessToken: accessToken,
+    requestId: uuid.test(requestId) ? requestId : '',
+    payload: validPayload ? payload : null
+  };
+}
+
 function w20CourierPostKind_(event) {
   var parameters = event && event.parameters;
   var keys = parameters && typeof parameters === 'object' ? Object.keys(parameters) : [];
   var hasCreate = keys.indexOf('createSection') !== -1 || keys.indexOf('createRequestId') !== -1;
   var hasDownload = keys.indexOf('downloadPageId') !== -1 || keys.indexOf('downloadTicket') !== -1;
-  if (hasCreate && !hasDownload) return 'create';
-  if (hasDownload && !hasCreate) return 'download';
+  var hasMutation = keys.indexOf('mutationRequestId') !== -1 || keys.indexOf('mutationPayload') !== -1;
+  if (hasCreate && !hasDownload && !hasMutation) return 'create';
+  if (hasDownload && !hasCreate && !hasMutation) return 'download';
+  if (hasMutation && !hasCreate && !hasDownload) return 'mutation';
   return '';
 }
 
@@ -324,6 +379,147 @@ function w20PreparedDownloadPostDirect_(response, fields, cfg) {
   return w20GetDownloadGrant_(fields.taskPageId, fields.pageId, grant, cfg);
 }
 
+function w20FreshRegistryMaterialByNavigationBinding_(taskId, binding, cfg) {
+  var task = WidgetV19Core.normalizeUuid(taskId);
+  var exactBinding = String(binding || '').toLowerCase();
+  if (!task || !/^[a-f0-9]{64}$/.test(exactBinding) || !cfg || task !== cfg.authorizedTaskPageId ||
+      (cfg.deniedPageIds && cfg.deniedPageIds[task])) return null;
+  var values;
+  try { values = PropertiesService.getScriptProperties().getProperties(); }
+  catch (_propertyError) { return null; }
+  var registry;
+  var meta;
+  try {
+    registry = w20RegistryReadTaskResultFromValues_(task, null, values);
+    meta = w20RegistryParseTaskMeta_(task, values[w20RegistryMetaKey_(task)]);
+  } catch (_registryError) { return null; }
+  var proof = w20RegistryActionProof_(meta, registry, cfg.rootFolderId);
+  var materials = registry && Array.isArray(registry.materials) ? registry.materials : [];
+  if (!proof.ready || !registry.ok || !registry.integrityOk || registry.activeCount !== materials.length ||
+      !meta || registry.activeCount !== meta.snapshotActiveCount) return null;
+  var match = null;
+  var count = 0;
+  materials.forEach(function (material) {
+    if (w20NavigationBinding_(material, task, cfg) !== exactBinding) return;
+    match = material;
+    count += 1;
+  });
+  return count === 1 ? match : null;
+}
+
+function w20MutationPresentation_(material, taskId, cfg) {
+  var client = w20MaterialForClient_(material, taskId, cfg);
+  var name = String(client && client.name || '').replace(/\s+/g, ' ').trim();
+  var section = String(client && client.section || '');
+  var format = String(client && client.format || '').replace(/\s+/g, ' ').trim();
+  var position = Number(client && client.position);
+  var binding = String(client && client.navigationBinding || '').toLowerCase();
+  if (!name || name.length > 180 || ['Drive', 'Docs', 'Sheets', 'Slides'].indexOf(section) === -1 ||
+      format.length > 100 || !isFinite(position) || position < 0 || position > 10000 || !/^[a-f0-9]{64}$/.test(binding)) {
+    throw new W19Error_('MUTATION_RESULT_INVALID', 'Обновлённая карточка не прошла проверку.', true);
+  }
+  return { name: name, section: section, format: format || 'Файл', position: Math.round(position), navigationBinding: binding };
+}
+
+function w20ApplyOuterMutation_(fields) {
+  return w19ApiResult_(function () {
+    var cfg = w19AuthorizedConfig_({ taskPageId: fields.taskPageId, accessToken: fields.accessToken });
+    var taskId = w20AssertAuthorizedTaskId_(fields.taskPageId, cfg);
+    var payload = fields.payload || {};
+    var canonical = w19CanonicalIdempotency_(taskId, 'outer-' + payload.kind + '-' + payload.binding, fields.requestId);
+    return w19WithIdempotency_(canonical, function () {
+      var initial = w20FreshRegistryMaterialByNavigationBinding_(taskId, payload.binding, cfg);
+      if (!initial) throw new W19Error_('MUTATION_REFRESH_REQUIRED', 'Карточка изменилась. Обновите виджет и повторите действие.', true);
+      var pageId = WidgetV19Core.normalizeUuid(initial.id);
+      if (!pageId || (cfg.deniedPageIds && cfg.deniedPageIds[pageId])) throw new W19Error_('WRITE_BARRIER', 'Материал запрещён write barrier.', false);
+      return w19WithMutationLock_(function () {
+        var currentRegistry = w20FreshRegistryMaterialByNavigationBinding_(taskId, payload.binding, cfg);
+        if (!currentRegistry || WidgetV19Core.normalizeUuid(currentRegistry.id) !== pageId) {
+          throw new W19Error_('MUTATION_REFRESH_REQUIRED', 'Карточка изменилась. Обновите виджет и повторите действие.', true);
+        }
+        var page = w19AssertMaterialForTask_(pageId, taskId, cfg, payload.kind === 'hide');
+        if (page.in_trash) throw new W19Error_('MATERIAL_ARCHIVED', 'Материал находится в корзине.', false);
+        var current = w19MaterialFromPage_(page);
+        if (w20NavigationBinding_(current, taskId, cfg) !== payload.binding) {
+          throw new W19Error_('MUTATION_REFRESH_REQUIRED', 'Карточка уже изменилась. Обновите виджет.', true);
+        }
+        if (current.syncStatus === 'deleting') throw new W19Error_('BUSY', 'Материал сейчас удаляется.', true);
+        if (current.syncStatus === 'deleted') throw new W19Error_('MATERIAL_DELETED', 'Физически удалённый материал нельзя изменить.', false);
+        w20InvalidateDownloadMaterialCache_(taskId, pageId);
+        if (payload.kind === 'hide') {
+          if (!w20CancelAttachmentJob_(taskId, pageId)) throw new W19Error_('BUSY', 'Фоновая копия ещё завершается.', true);
+          w20SetDriveMaterialState_(current, taskId, 'archived');
+          var archiveProps = {};
+          archiveProps[W19_P.ARCHIVE] = { checkbox: true };
+          archiveProps[W19_P.SYNC_STATUS] = w19Select_('archived');
+          w19UpdateNotionPage_(pageId, archiveProps, cfg);
+          if (!w20RegistryRemove_(taskId, pageId)) {
+            throw new W19Error_('BUSY', 'Карточка скрыта, но быстрый снимок ещё обновляется.', true);
+          }
+          return { kind: 'hide', binding: payload.binding, material: null };
+        }
+        var nextSection = WidgetV19Core.assertSection(payload.section);
+        var nextName = WidgetV19Core.cleanName(payload.name, current.name);
+        if (nextSection === current.section && nextName === current.name) {
+          return { kind: 'edit', binding: payload.binding, material: w20MutationPresentation_(current, taskId, cfg) };
+        }
+        var editProps = {};
+        if (nextSection !== current.section) {
+          editProps[W19_P.SECTION] = w19Select_(nextSection);
+          editProps[W19_P.POSITION] = { number: w19NextPosition_(taskId, nextSection, cfg) };
+        }
+        if (nextName !== current.name) {
+          if (current.provider === 'Google Drive' && current.googleFileId) {
+            w19DriveRetry_(function () { Drive.Files.update({ name: nextName }, current.googleFileId, null, { fields: 'id,name' }); });
+          }
+          editProps[W19_P.NAME] = w19Title_(nextName);
+        }
+        editProps[W19_P.SYNC_STATUS] = w19Select_('synced');
+        var updated = w19UpdateNotionPage_(pageId, editProps, cfg);
+        var updatedMaterial = w19MaterialFromPage_(updated);
+        if (!w20RegistryUpsert_(taskId, updatedMaterial)) {
+          throw new W19Error_('BUSY', 'Изменение сохранено, но быстрый снимок ещё обновляется.', true);
+        }
+        return { kind: 'edit', binding: payload.binding, material: w20MutationPresentation_(updatedMaterial, taskId, cfg) };
+      });
+    });
+  });
+}
+
+function w20SafeMutationPostResult_(fields, response) {
+  var requestId = String(fields && fields.requestId || '').toLowerCase();
+  var data = response && response.data;
+  var safeMaterial = null;
+  if (data && data.kind === 'edit' && w20HasExactObjectKeys_(data.material, ['name', 'section', 'format', 'position', 'navigationBinding'])) {
+    var name = String(data.material.name || '').replace(/\s+/g, ' ').trim();
+    var section = String(data.material.section || '');
+    var format = String(data.material.format || '').replace(/\s+/g, ' ').trim();
+    var position = Number(data.material.position);
+    var navigationBinding = String(data.material.navigationBinding || '').toLowerCase();
+    if (name && name.length <= 180 && ['Drive', 'Docs', 'Sheets', 'Slides'].indexOf(section) !== -1 &&
+        format.length <= 100 && isFinite(position) && position >= 0 && position <= 10000 && /^[a-f0-9]{64}$/.test(navigationBinding)) {
+      safeMaterial = { name: name, section: section, format: format || 'Файл', position: Math.round(position), navigationBinding: navigationBinding };
+    }
+  }
+  if (response && response.ok === true && response.data &&
+      (data.kind === 'hide' || data.kind === 'edit') && /^[a-f0-9]{64}$/.test(String(data.binding || '')) &&
+      (data.kind === 'hide' && data.material === null || data.kind === 'edit' && safeMaterial)) {
+    return {
+      requestId: requestId,
+      status: 'success',
+      kind: data.kind,
+      binding: data.binding,
+      material: data.kind === 'edit' ? safeMaterial : null
+    };
+  }
+  return {
+    requestId: requestId,
+    status: 'error',
+    message: WidgetV19Core.cleanName(response && response.error && response.error.message, 'Изменение не сохранено.'),
+    retryable: Boolean(response && response.error && response.error.retryable)
+  };
+}
+
 function doPost(event) {
   var kind = w20CourierPostKind_(event);
   if (kind === 'download') {
@@ -364,6 +560,18 @@ function doPost(event) {
     } : null);
     return downloadTemplate.evaluate()
       .setTitle('Скачивание файла')
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
+      .addMetaTag('viewport', 'width=device-width, initial-scale=1, viewport-fit=cover');
+  }
+  if (kind === 'mutation') {
+    var mutationFields = w20MutationPostFields_(event);
+    var mutationResult = mutationFields.valid ?
+      w20SafeMutationPostResult_(mutationFields, w20ApplyOuterMutation_(mutationFields)) :
+      { requestId: mutationFields.requestId, status: 'error', message: 'Параметры изменения повреждены.', retryable: false };
+    var mutationTemplate = HtmlService.createTemplateFromFile('Mutation');
+    mutationTemplate.precomputedResultJson = JSON.stringify(mutationResult);
+    return mutationTemplate.evaluate()
+      .setTitle('Изменение материала')
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
       .addMetaTag('viewport', 'width=device-width, initial-scale=1, viewport-fit=cover');
   }
@@ -3088,7 +3296,7 @@ function apiPrepareDownload(input) {
     var issued = w20IssueDownloadGrant_(taskId, materialId, direct, cfg, grantEpoch);
     if (issued && issued.mode === 'grant' && /^[a-f0-9]{96}$/.test(String(issued.downloadGrant || ''))) {
       issued.directDownloadUrl = direct.url;
-      issued.directDownloadExpiresAt = issued.expiresAt;
+      issued.directDownloadExpiresAt = direct.expiresAt;
       issued.directDownloadName = w20FastDownloadName_(direct.name);
     }
     if (issued && issued.mode === 'proxy') issued.proxyReason = 'grant';

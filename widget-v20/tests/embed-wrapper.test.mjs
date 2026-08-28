@@ -21,14 +21,16 @@ test('public wrapper isolates Apps Script from multi-login cookies', () => {
   assert.match(wrapper, /<iframe[^>]+loading="eager"[^>]+fetchpriority="high"/);
   assert.match(wrapper, /referrerpolicy="no-referrer"/);
   assert.match(wrapper, /connect-src https:\/\/script\.google\.com https:\/\/\*\.googleusercontent\.com/);
+  assert.match(wrapper, /frame-src https:\/\/script\.google\.com https:\/\/\*\.googleusercontent\.com/);
   assert.match(wrapper, /<link rel="dns-prefetch" href="\/\/script\.google\.com">/);
   assert.match(wrapper, /<link rel="preconnect" href="https:\/\/script\.google\.com" crossorigin>/);
-  assert.match(wrapper, /<link rel="preload" href="apps-script-embed\.js\?v=53" as="script" fetchpriority="high">/);
-  assert.match(wrapper, /j\.src='apps-script-embed\.js\?v=53'/);
+  assert.match(wrapper, /<link rel="preload" href="apps-script-embed\.js\?v=55" as="script" fetchpriority="high">/);
+  assert.match(wrapper, /j\.src='apps-script-embed\.js\?v=55'/);
   assert.doesNotMatch(wrapper, /<script[^>]+src="apps-script-embed\.js/);
   assert.match(wrapper, /class="skeleton"/);
   assert.match(wrapper, /body\.widget-ready iframe\{opacity:1\}/);
-  assert.match(wrapper, /\.snapshot-ready \.skeleton,\.widget-action-ready \.skeleton,\.widget-action-ready \.snapshot-grid\{opacity:0;visibility:hidden\}/);
+  assert.match(wrapper, /\.snapshot-ready \.skeleton,\.widget-action-ready \.skeleton,\.widget-action-ready:not\(\.outer-mutation-pending\):not\(\.outer-menu-open\) \.snapshot-grid\{opacity:0;visibility:hidden\}/);
+  assert.match(wrapper, /form-action https:\/\/script\.google\.com https:\/\/\*\.googleusercontent\.com/);
   assert.match(wrapper, /\.snapshot-grid\{[^}]*pointer-events:auto/);
   assert.match(wrapper, /id="snapshotGrid"[^>]+hidden/);
   assert.equal((wrapper.match(/data-snapshot-section="(?:Drive|Docs|Sheets|Slides)"/g)||[]).length,4);
@@ -75,7 +77,7 @@ test('wrapper exposes its shell before starting the credentialless Apps Script f
   });
   assert.equal(widget.src, '', 'the nested request cannot hold the outer shell load open');
   assert.equal(scripts.length, 1, 'the preloaded runtime starts immediately after the static shell');
-  assert.equal(scripts[0].src, 'apps-script-embed.js?v=53');
+  assert.equal(scripts[0].src, 'apps-script-embed.js?v=55');
   assert.equal(scripts[0].async, true);
   assert.equal(scripts[0].fetchPriority, 'high');
   assert.equal(timers.length, 1);
@@ -522,7 +524,9 @@ test('prepared create cache is short-lived, encrypted, origin-bound and one-shot
   assert.match(wrapperJs, /\^\/\$\{segment\}\/d\/\[A-Za-z0-9_-\]\{10,200\}\/edit\$/);
   assert.match(wrapperJs, /store\.setItem\(context\.usedSlot, JSON\.stringify\(\{ schema: context\.schema, updatedAt: Date\.now\(\), entries:/);
   assert.match(wrapperJs, /if \(entries\.some\(\(entry\) => entry\.digest === record\.actionDigest\)\) return false/);
-  assert.match(wrapperJs, /store\.removeItem\(context\.slot\)/);
+  const consumeCached=wrapperJs.slice(wrapperJs.indexOf('function consumeCachedPreparedCreate(record)'),wrapperJs.indexOf('function showFatal(message)'));
+  assert.doesNotMatch(consumeCached,/removeItem\(context\.slot\)/,'consuming one descriptor must preserve the shared encrypted envelope');
+  assert.match(consumeCached,/filterCachedActionState\(context\.schema, new Set\(\[record\.actionDigest\]\), record, true\)/);
   assert.match(wrapperJs, /window\.addEventListener\('storage', handleActionCacheStorage\)/);
   assert.match(wrapperJs, /new window\.BroadcastChannel\(context\.channel\)/);
   assert.match(wrapperJs, /record\.actionQueued = true/);
@@ -559,7 +563,7 @@ test('device-bound prepared create cache v2 is release-independent, exact and lo
   for(const field of ['openUrl','generation','navigateUntil','reservationProof','preparedName'])assert.match(actionMessage,new RegExp(`message\\.${field} = `));
   assert.doesNotMatch(actionMessage,/clientId/);
   assert.match(wrapperJs,/optimisticCreateCards\.set\(record\.requestId, \{ section: record\.section, preparedName: record\.preparedName, openUrl: record\.href, navigateUntil: record\.navigateUntil \}\)/);
-  assert.match(wrapperJs,/row\.pending \? optimisticCreateHref\(row\) : navigationHrefForRow\(row\)/);
+  assert.match(wrapperJs,/snapshotNativeAnchor\(card, row, \(\) => optimisticCreateHref\(row\)\)/);
   assert.match(wrapperJs,/card\.setAttribute\('aria-busy', 'true'\)/);
   assert.match(wrapperJs,/if \(isV2\) addOptimisticCreate\(record\)/);
   assert.match(wrapperJs,/completed\.forEach\(removeOptimisticCreate\)/);
@@ -569,23 +573,24 @@ test('device-bound prepared create cache v2 is release-independent, exact and lo
 
 test('saved-card navigation cache is a separate encrypted read-only capability', () => {
   assert.match(wrapperJs,/NAVIGATION_CACHE_MAX_AGE_MS = 24 \* 60 \* 60 \* 1000/);
-  assert.match(wrapperJs,/NAVIGATION_DIRECT_MAX_TTL_MS = 60 \* 1000/);
+  assert.match(wrapperJs,/NAVIGATION_DIRECT_MAX_TTL_MS = 15 \* 60 \* 1000/);
   assert.match(wrapperJs,/NAVIGATION_CACHE_SCHEMA = 2/);
   assert.match(wrapperJs,/notion-widget-navigation-key-v2\\u0000\$\{domain\}/);
   assert.match(wrapperJs,/notion-widget-navigation-slot-v2\\u0000\$\{domain\}/);
   assert.match(wrapperJs,/aad: encoder\.encode\(`notion-widget-navigation-v2\\u0000\$\{domain\}`\)/);
   assert.match(wrapperJs,/key\.startsWith\('notion-widget-navigation-v1:'\).*store\.removeItem\(key\)/s,'legacy tuple-only navigation ciphertext is retired');
-  assert.match(wrapperJs,/safeSavedGoogleOpenUrl\(source\.openUrl, row\.section\)/);
+  assert.match(wrapperJs,/safeSavedGoogleOpenUrl\(source\.openUrl, row\.section, row\.format\)/);
   assert.match(wrapperJs,/keys\.join\('\|'\) === 'export\|authuser\|id'/);
   assert.match(wrapperJs,/expiresAt - Number\(now\) > NAVIGATION_DIRECT_MAX_TTL_MS/);
   assert.match(wrapperJs,/source\.name !== row\.name \|\| source\.section !== row\.section \|\| source\.format !== row\.format/);
   assert.match(wrapperJs,/source\.navigationBinding !== row\.navigationBinding \|\| !\/\^\[a-f0-9\]\{64\}\$\/\.test\(row\.navigationBinding\)/);
   assert.match(wrapperJs,/JSON\.stringify\(\[String\(row && row\.navigationBinding \|\| ''\), String\(row && row\.name/);
   assert.match(wrapperJs,/navigationCacheSnapshotFingerprint !== snapshotFingerprint\(confirmedSnapshotRows\)/);
-  assert.match(wrapperJs,/document\.createElement\(navigationHref \? 'a' : 'article'\)/);
-  assert.match(wrapperJs,/card\.target = '_blank'/);
-  assert.match(wrapperJs,/card\.rel = 'noopener noreferrer'/);
-  assert.match(wrapperJs,/card\.referrerPolicy = 'no-referrer'/);
+  assert.match(wrapperJs,/const main = document\.createElement\('a'\)/);
+  assert.match(wrapperJs,/snapshotNativeAnchor\(main, row, \(\) => outerNavigationHrefForRow\(row\)\)/);
+  assert.match(wrapperJs,/anchor\.target = '_blank'/);
+  assert.match(wrapperJs,/anchor\.rel = 'noopener noreferrer'/);
+  assert.match(wrapperJs,/anchor\.referrerPolicy = 'no-referrer'/);
   assert.match(wrapperJs,/if \(bridge\.authoritative && bridge\.actionReady\) persistNavigationCache\(data\.navigationMaterials, data\.navigationFolderUrl, data\.snapshotMaterials\)/);
   const bridgeReady=wrapperJs.slice(wrapperJs.indexOf("if (data.type === 'notion-widget-v20-bridge-ready')"),wrapperJs.indexOf("if (!isCurrentBridgeEvent(event))"));
   assert.doesNotMatch(bridgeReady,/else invalidateNavigationCache\(\)/,'a stale bridge cannot revoke the encrypted navigation cache');
@@ -593,7 +598,149 @@ test('saved-card navigation cache is a separate encrypted read-only capability',
   assert.ok(navigationWrite);
   assert.doesNotMatch(navigationWrite,/url|token|accessToken|googleFileId|materialId|docs\.google\.com|drive\.google\.com/);
   const renderView=wrapperJs.slice(wrapperJs.indexOf('function renderSnapshotView('),wrapperJs.indexOf('function renderSafeSnapshotMaterials('));
-  assert.doesNotMatch(renderView,/menu|rename|archive|delete|mutation/i,'the restored outer card exposes only its main native anchor');
+  assert.match(renderView,/snapshot-menu-trigger/,'the restored card exposes its action chevron without waiting for Apps Script');
+  assert.match(renderView,/openOuterMenu\(row, menuButton, event\)/);
+});
+
+test('identical concurrent navigation persistence coalesces without cancelling the only encrypted write', async () => {
+  const source=wrapperJs.slice(wrapperJs.indexOf('async function persistExactNavigationCache(entriesValue, folderValue, folderExpiryValue, snapshotValue)'),wrapperJs.indexOf('function persistNavigationCache(value, folderValue, snapshotValue)'));
+  assert.ok(source.indexOf('fingerprint === navigationCachePersistFingerprint')<source.indexOf('++navigationCacheWriteGeneration'),'an identical in-flight fingerprint must be detected before advancing the generation');
+  const now=7_000_000,row={navigationBinding:'a'.repeat(64),name:'Документ',section:'Docs',format:'Google Docs',position:0};
+  const entries=[{cardKey:JSON.stringify([row.navigationBinding,row.name,row.section,row.format,row.position]),kind:'google',url:'https://docs.google.com/document/d/ConcurrentPersist123/edit',expiresAt:now+60_000}];
+  let releaseContext;const contextReady=new Promise((resolve)=>{releaseContext=resolve;}),writes=[];
+  const store={setItem(...args){writes.push(args);}};
+  const build=new Function('fixedNow','contextReady','store','TextEncoder','Uint8Array','JSON',`
+    const NAVIGATION_CACHE_SCHEMA=2,NAVIGATION_CACHE_MAX_AGE_MS=24*60*60*1000;
+    const Date={now:()=>fixedNow};
+    const window={crypto:{getRandomValues(target){target.fill(7);return target;},subtle:{encrypt:async()=>new Uint8Array([1,2,3]).buffer}}};
+    let navigationCachePersistFingerprint='',navigationCacheWriteGeneration=0;
+    const safeSnapshotMaterials=(value)=>value,allowedDriveFolderUrl=()=>'',safeExactNavigationCacheEntries=(value)=>value;
+    const invalidateNavigationCache=()=>{throw new Error('valid persistence must not invalidate');};
+    const snapshotFingerprint=JSON.stringify,activateNavigationCache=()=>{},navigationCacheStore=()=>store,navigationCacheContext=()=>contextReady;
+    const bytesToBase64Url=()=> 'encoded';
+    ${source}
+    return{persistExactNavigationCache,generation:()=>navigationCacheWriteGeneration};
+  `);
+  const api=build(now,contextReady,store,TextEncoder,Uint8Array,JSON);
+  const first=api.persistExactNavigationCache(entries,'',0,[row]);
+  const second=api.persistExactNavigationCache(entries,'',0,[row]);
+  assert.equal(api.generation(),1,'the duplicate cannot invalidate the first writer generation');
+  assert.equal(await second,true);
+  releaseContext({host:'public.example',task:'task',clientId:'client',slot:'slot',key:{},aad:new Uint8Array()});
+  assert.equal(await first,true);
+  assert.equal(writes.length,1,'one encrypted envelope is durably written');
+});
+
+test('outer saved-card mutations are optimistic, exact-field, duplicate-safe and source-bound', () => {
+  const submit=wrapperJs.slice(wrapperJs.indexOf('function submitOuterMutation(record, payload)'),wrapperJs.indexOf('function startOuterMutation(kind, row, patch)'));
+  const handler=wrapperJs.slice(wrapperJs.indexOf('function safeOuterMutationMessage(value)'),wrapperJs.indexOf('function isGoogleScriptOrigin(origin)'));
+  assert.deepEqual([...submit.matchAll(/appendMutationField\(form, '([^']+)'/g)].map((match)=>match[1]),['task','accessToken','mutationRequestId','mutationPayload']);
+  assert.match(submit,/form\.method = 'post'/);
+  assert.match(submit,/form\.enctype = 'application\/x-www-form-urlencoded'/);
+  assert.match(submit,/form\.target = frame\.name/);
+  assert.doesNotMatch(submit,/pageId|idempotency|window\.open/);
+  assert.match(handler,/isFrameDescendant\(record\.frame\.contentWindow, event\.source, 5\)/);
+  assert.match(wrapperJs,/function isFrameDescendant\(root, source, maxDepth\)[\s\S]*target\.frames\[index\]/,'Apps Script sandbox descendants are source-bound to the exact submitted mutation frame');
+  const frameHelper=wrapperJs.slice(wrapperJs.indexOf('function isFrameDescendant(root, source, maxDepth)'),wrapperJs.indexOf('function isWidgetDescendant(source)'));
+  const isFrameDescendant=new Function(`${frameHelper};return isFrameDescendant;`)();
+  const sandbox={length:0,frames:[]},wrap=(child)=>({length:1,frames:[child]});
+  let exactRoot=sandbox;for(let depth=0;depth<5;depth+=1)exactRoot=wrap(exactRoot);
+  assert.equal(isFrameDescendant(exactRoot,sandbox,5),true,'the deepest legitimate Apps Script sandbox is accepted');
+  assert.equal(isFrameDescendant(wrap(exactRoot),sandbox,5),false,'a source beyond the bounded submitted frame tree is rejected');
+  assert.equal(isFrameDescendant(exactRoot,{length:0,frames:[]},5),false,'a sibling or foreign iframe is rejected');
+  assert.match(handler,/isGoogleScriptOrigin\(event\.origin\)/);
+  assert.match(handler,/hasExactObjectKeys\(value\.material, \['name', 'section', 'format', 'position', 'navigationBinding'\]\)/);
+  assert.doesNotMatch(handler,/accessToken|idempotencyKey|googleFileId|pageId|openUrl/);
+  assert.match(handler,/rebaseNavigationCacheAfterMutation\(previousRows, confirmedSnapshotRows, record\)/,'one mutation rebases unaffected native links instead of clearing the whole fast cache');
+  assert.doesNotMatch(handler,/invalidateNavigationCache\(\)/,'a successful card mutation must not blanket-revoke every other cached document');
+
+  const rebase=wrapperJs.slice(wrapperJs.indexOf('function navigationEntryFromCapability(row, capability, now)'),wrapperJs.indexOf('function removeOuterMutationNodes(record)'));
+  assert.match(rebase,/previousEntries\.get\(navigationCardKey\(row\)\)/,'unchanged rows retain their exact cached capability');
+  assert.match(rebase,/row\.navigationBinding === record\.resultBinding/,'the edited URL can transfer only to the exact server-returned opaque identity');
+  assert.match(rebase,/persistExactNavigationCache\(entries, folderUrl, folderUrl \? navigationCacheFolderExpiresAt : 0, nextRows\)/,'the rebased encrypted cache preserves absolute capability expiries');
+  assert.doesNotMatch(rebase,/now \+ NAVIGATION_CACHE_MAX_AGE_MS/,'a client mutation cannot renew a Google or folder capability');
+
+  const source=wrapperJs.slice(wrapperJs.indexOf('function startOuterMutation(kind, row, patch)'),wrapperJs.indexOf('function safeOuterMutationMessage(value)'));
+  const binding='d'.repeat(64),row={name:'Исходное имя',section:'Docs',format:'Google Docs',position:1,navigationBinding:binding};
+  const requests=['11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222'];
+  const byRequest=new Map(),byBinding=new Map(),submissions=[];
+  const start=new Function('outerMutationRequestByBinding','outerMutationsByRequest','outerVisibleSnapshotRows','safeSnapshotMaterials','showNotice','randomId','validCreateRequestId','outerMutationNavigationCapability','document','renderSnapshotView','snapshotFingerprint','submitOuterMutation','SECTIONS','confirmedSnapshotRows',`
+    let outerMutationViewGeneration=0;
+    ${source}
+    return startOuterMutation;
+  `)(
+    byBinding,byRequest,()=>[row],(value)=>value,()=>{},()=>requests.shift(),(value)=>/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value),
+    ()=>({href:'https://docs.google.com/document/d/ExistingDocument123/edit',kind:'google',expiresAt:Date.now()+10000,validatorSection:'Docs'}),
+    {body:{classList:{add(){}}}},()=>{},JSON.stringify,(record,payload)=>{submissions.push({record,payload});return true;},['Drive','Docs','Sheets','Slides'],[row]
+  );
+  assert.equal(start('edit',row,{name:'Новое имя',section:'Docs'}),true);
+  assert.equal(start('edit',row,{name:'Ещё одно имя',section:'Docs'}),true);
+  assert.equal(submissions.length,1,'a second click reuses the already pending mutation instead of submitting another form');
+  assert.equal(byRequest.size,1);
+  assert.equal(byBinding.get(binding),'11111111-1111-4111-8111-111111111111');
+  assert.deepEqual(Object.keys(submissions[0].payload).sort(),['binding','kind','name','section']);
+
+  const safeSource=wrapperJs.slice(wrapperJs.indexOf('function safeOuterMutationMessage(value)'),wrapperJs.indexOf('function handleOuterMutationMessage(event)'));
+  const safe=new Function('validCreateRequestId','hasExactObjectKeys','safeSnapshotMaterials',`${safeSource};return safeOuterMutationMessage;`)(
+    (value)=>/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value),
+    (value,keys)=>Boolean(value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).sort().join('|')===keys.slice().sort().join('|')),
+    (value)=>value
+  );
+  const message={type:'notion-widget-v20-mutation-result',requestId:'11111111-1111-4111-8111-111111111111',status:'success',kind:'edit',binding,material:{name:'Новое имя',section:'Docs',format:'Google Docs',position:1,navigationBinding:'e'.repeat(64)}};
+  assert.ok(safe(message));
+  assert.equal(safe({...message,accessToken:'forbidden'}),null);
+  assert.equal(safe({...message,material:{...message.material,idempotencyKey:'forbidden'}}),null);
+});
+
+test('mutation rebase preserves exact unaffected links and absolute expiries without tuple collisions', () => {
+  const source=wrapperJs.slice(wrapperJs.indexOf('function navigationEntryFromCapability(row, capability, now)'),wrapperJs.indexOf('function removeOuterMutationNodes(record)'));
+  const now=5_000_000,key=(row)=>JSON.stringify([row.navigationBinding,row.name,row.section,row.format,row.position]);
+  const oldBinding='1'.repeat(64),resultBinding='2'.repeat(64),collisionBinding='3'.repeat(64),googleBinding='4'.repeat(64),directBinding='5'.repeat(64),expiredBinding='6'.repeat(64),tooLongBinding='7'.repeat(64);
+  const old={navigationBinding:oldBinding,name:'Одинаковая карточка',section:'Sheets',format:'Google Docs',position:1};
+  const result={...old,navigationBinding:resultBinding};
+  const collision={...old,navigationBinding:collisionBinding};
+  const google={navigationBinding:googleBinding,name:'Соседний документ',section:'Docs',format:'Google Docs',position:2};
+  const direct={navigationBinding:directBinding,name:'Файл.zip',section:'Drive',format:'ZIP',position:3};
+  const expired={navigationBinding:expiredBinding,name:'Старая ссылка',section:'Docs',format:'Google Docs',position:4};
+  const tooLong={navigationBinding:tooLongBinding,name:'Слишком долгая ссылка',section:'Drive',format:'ZIP',position:5};
+  const previousRows=[old,collision,google,direct,expired,tooLong],nextRows=[result,collision,google,direct,expired,tooLong];
+  const editedUrl='https://docs.google.com/document/d/EditedDocument123/edit';
+  const googleUrl='https://docs.google.com/document/d/OtherDocument123/edit';
+  const directUrl='https://drive.google.com/uc?export=download&authuser=owner%40example.com&id=BinaryFile12345';
+  const editedExpiry=now+50_000,googleExpiry=now+60_000,directExpiry=now+14*60*1000,folderExpiry=now+70_000;
+  const initialEntries=[
+    {cardKey:key(old),kind:'google',url:editedUrl,expiresAt:editedExpiry},
+    {cardKey:key(google),kind:'google',url:googleUrl,expiresAt:googleExpiry},
+    {cardKey:key(direct),kind:'direct',url:directUrl,expiresAt:directExpiry},
+    {cardKey:key(expired),kind:'google',url:'https://docs.google.com/document/d/ExpiredDocument123/edit',expiresAt:now+500},
+    {cardKey:key(tooLong),kind:'direct',url:directUrl,expiresAt:now+15*60*1000+1}
+  ];
+  const persisted=[];
+  const run=new Function('previousRows','nextRows','record','initialEntries','folderUrl','folderExpiresAt','fixedNow','navigationCardKey','safeSavedGoogleOpenUrl','safeDirectDriveDownloadUrl','snapshotFingerprint','persistExactNavigationCache',`
+    const NAVIGATION_DIRECT_MAX_TTL_MS=15*60*1000;
+    const Date={now:()=>fixedNow};
+    let navigationCacheSnapshotFingerprint=snapshotFingerprint(previousRows);
+    let navigationCacheEntries=new Map(initialEntries.map((entry)=>[entry.cardKey,entry]));
+    let navigationCacheFolderExpiresAt=folderExpiresAt;
+    function cachedNavigationFolderHref(){return folderUrl;}
+    ${source}
+    return rebaseNavigationCacheAfterMutation(previousRows,nextRows,record);
+  `);
+  const record={kind:'edit',binding:oldBinding,resultBinding,optimisticRow:result,navigationHref:editedUrl,navigationKind:'google',navigationExpiresAt:editedExpiry};
+  const resultValue=run(previousRows,nextRows,record,initialEntries,'https://drive.google.com/drive/folders/TaskFolder12345',folderExpiry,now,key,
+    (url,_section,format)=>format==='Google Docs'&&url.includes('/document/d/')?url:'',
+    (url)=>url.startsWith('https://drive.google.com/uc?')?url:'',JSON.stringify,(...args)=>{persisted.push(args);return true;});
+  assert.equal(resultValue,true);
+  assert.equal(persisted.length,1);
+  const [entries,folder,exactFolderExpiry,snapshot]=persisted[0];
+  assert.equal(entries.length,3,'only the exact edited result and two unaffected live links survive');
+  assert.equal(entries.some((entry)=>entry.cardKey===key(collision)),false,'a visually identical card cannot receive the edited URL');
+  assert.equal(entries.some((entry)=>entry.cardKey===key(expired)),false,'an expiring capability is not prolonged');
+  assert.equal(entries.some((entry)=>entry.cardKey===key(tooLong)),false,'a direct capability beyond the exact fifteen-minute ceiling is rejected');
+  assert.deepEqual(entries.map((entry)=>entry.expiresAt).sort((a,b)=>a-b),[editedExpiry,googleExpiry,directExpiry].sort((a,b)=>a-b));
+  assert.equal(folder,'https://drive.google.com/drive/folders/TaskFolder12345');
+  assert.equal(exactFolderExpiry,folderExpiry,'the folder keeps its original absolute expiry');
+  assert.equal(snapshot,nextRows);
 });
 
 test('server-rendered early snapshot posts only passive card presentation fields', () => {
@@ -833,7 +980,7 @@ test('wrapper runtime exposes validated native create links without opening a po
   const postsBeforeCachedClick=events.filter((entry)=>entry[0]==='post').length;
   prebridgeSheets.listeners.click({preventDefault(){throw new Error('the cached action must retain native navigation');}});
   assert.equal(events.filter((entry)=>entry[0]==='post').length,postsBeforeCachedClick,'the background action stays queued until a bridge exists');
-  assert.equal(persistedSnapshot.has(actionSlot),false,'the reusable encrypted envelope is synchronously removed on the first click');
+  assert.equal(persistedSnapshot.get(actionSlot),actionEnvelope,'the shared encrypted envelope is preserved and the tombstone makes the descriptor one-shot');
   const usedEnvelope=String(persistedSnapshot.get(actionUsedSlot)||'');
   assert.ok(usedEnvelope,'the click synchronously writes a cross-tab one-shot tombstone');
   assert.doesNotMatch(usedEnvelope,/CachedSpreadsheet|docs\.google\.com|44444444|a{32}/);
@@ -1055,6 +1202,8 @@ test('v2 cached navigation paints one real pending card and binds only after an 
   const navigateUntilMs=now+20*24*60*60*1000;
   const navigateUntil=new globalThis.Date(navigateUntilMs).toISOString();
   const descriptor={section:'Docs',reservationId:'88888888-8888-4888-8888-888888888888',openUrl:'https://docs.google.com/document/d/DevicePreparedDoc123/edit',generation:7,navigateUntil,reservationProof:'d'.repeat(64),preparedName:'Новый быстрый документ'};
+  const sheetsDescriptor={section:'Sheets',reservationId:'88888888-8888-4888-8888-888888888889',openUrl:'https://docs.google.com/spreadsheets/d/DevicePreparedSheet123/edit',generation:8,navigateUntil,reservationProof:'e'.repeat(64),preparedName:'Новая быстрая таблица'};
+  const slidesDescriptor={section:'Slides',reservationId:'88888888-8888-4888-8888-888888888890',openUrl:'https://docs.google.com/presentation/d/DevicePreparedSlides123/edit',generation:9,navigateUntil,reservationProof:'f'.repeat(64),preparedName:'Новая быстрая презентация'};
   const encoder=new TextEncoder(),domain=`${host}\u0000${task}\u0000${token}\u0000${clientId}`;
   const keyDigest=await crypto.webcrypto.subtle.digest('SHA-256',encoder.encode(`notion-widget-action-key-v2\u0000${domain}`));
   const slotDigest=await crypto.webcrypto.subtle.digest('SHA-256',encoder.encode(`notion-widget-action-slot-v2\u0000${domain}`));
@@ -1063,21 +1212,22 @@ test('v2 cached navigation paints one real pending card and binds only after an 
   const usedSlot=`notion-widget-action-used-v2:${Buffer.from(usedSlotDigest).subarray(0,18).toString('base64url')}`;
   const key=await crypto.webcrypto.subtle.importKey('raw',keyDigest,{name:'AES-GCM'},false,['encrypt']);
   const iv=crypto.webcrypto.getRandomValues(new Uint8Array(12));
-  const payload={schema:2,host,task,clientId,savedAt:now,expiresAt:navigateUntilMs,preparedCreates:[descriptor]};
+  const payload={schema:2,host,task,clientId,savedAt:now,expiresAt:navigateUntilMs,preparedCreates:[descriptor,sheetsDescriptor,slidesDescriptor]};
   const ciphertext=await crypto.webcrypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:encoder.encode(`notion-widget-action-v2\u0000${domain}`)},key,encoder.encode(JSON.stringify(payload)));
+  const encryptedEnvelope=JSON.stringify({schema:2,savedAt:now,expiresAt:navigateUntilMs,iv:Buffer.from(iv).toString('base64url'),ciphertext:Buffer.from(ciphertext).toString('base64url')});
   const storage=new Map([
     [`notion-widget-client-v1:${task}`,clientId],
-    [slot,JSON.stringify({schema:2,savedAt:now,expiresAt:navigateUntilMs,iv:Buffer.from(iv).toString('base64url'),ciphertext:Buffer.from(ciphertext).toString('base64url')})]
+    [slot,encryptedEnvelope]
   ]);
   const slots=['Drive','Docs','Sheets','Slides'].map((section)=>{const value=new Element();value.dataset.slot=section;return value;});
   const interactionGrid=new Element();interactionGrid.hidden=true;
   interactionGrid.querySelectorAll=(selector)=>selector==='[data-slot]'?slots:selector==='[data-section]'?slots.flatMap((item)=>item.children):[];
   const snapshotGrid=new Element();snapshotGrid.hidden=true;
-  const widget=new Element(),fatal=new Element(),events=[],broadcast=[];
+  const widget=new Element(),fatal=new Element(),events=[],broadcast=[],broadcastListeners=[];
   const bridgeSource={length:0,frames:[],postMessage(message,origin){events.push({message:JSON.parse(JSON.stringify(message)),origin});}};
   widget.contentWindow={length:1,frames:[bridgeSource]};
   const listeners={};
-  class BroadcastChannel {constructor(name){this.name=name;}addEventListener(){}postMessage(message){broadcast.push(JSON.parse(JSON.stringify(message)));}}
+  class BroadcastChannel {constructor(name){this.name=name;}addEventListener(type,listener){if(type==='message')broadcastListeners.push(listener);}postMessage(message){broadcast.push(JSON.parse(JSON.stringify(message)));}}
   class ClockDate extends globalThis.Date {static now(){return now;}}
   const bodyClasses=new Set();
   const windowObject={
@@ -1092,7 +1242,11 @@ test('v2 cached navigation paints one real pending card and binds only after an 
   });
   const docsControl=slots.find((item)=>item.dataset.slot==='Docs').children[0];
   for(let attempt=0;attempt<30&&docsControl.href!==descriptor.openUrl;attempt+=1)await new Promise((resolve)=>setImmediate(resolve));
+  const sheetsControl=slots.find((item)=>item.dataset.slot==='Sheets').children[0];
+  const slidesControl=slots.find((item)=>item.dataset.slot==='Slides').children[0];
   assert.equal(docsControl.href,descriptor.openUrl,'release-independent v2 ciphertext restores a native Google URL before the bridge');
+  assert.equal(sheetsControl.href,sheetsDescriptor.openUrl,'the same v2 envelope restores the Sheets section');
+  assert.equal(slidesControl.href,slidesDescriptor.openUrl,'the same v2 envelope restores the Slides section');
   const embedNonce=new URL(widget.src).searchParams.get('embedNonce'),origin='https://script.googleusercontent.com';
   listeners.message({source:bridgeSource,origin,data:{type:'notion-widget-v20-bridge-ready',embedNonce,instanceId:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',authoritative:false,actionReady:false,completedCreateRequestIds:[descriptor.reservationId],preparedCreates:[],geometry:[],viewport:{width:868,height:523}}});
   assert.equal(docsControl.href,descriptor.openUrl,'a stale non-authoritative bridge cannot revoke the device-bound native action');
@@ -1115,11 +1269,22 @@ test('v2 cached navigation paints one real pending card and binds only after an 
   let prevented=0;docsControl.listeners.click({preventDefault(){prevented+=1;}});
   assert.equal(prevented,1);
   assert.equal(descendants(snapshotGrid).filter((item)=>String(item.className).includes('optimistic-create')).length,1,'a double click cannot duplicate the optimistic card');
-  assert.equal(storage.has(slot),false,'the v2 reusable ciphertext is removed synchronously');
+  assert.equal(storage.get(slot),encryptedEnvelope,'consuming Docs preserves the shared encrypted v2 envelope');
+  assert.equal(sheetsControl.href,sheetsDescriptor.openUrl,'consuming Docs keeps the Sheets native href active');
+  assert.equal(slidesControl.href,slidesDescriptor.openUrl,'consuming Docs keeps the Slides native href active');
   const tombstone=JSON.parse(storage.get(usedSlot));
   assert.equal(tombstone.schema,2);
   assert.ok(tombstone.entries[0].expiresAt-now>=30*24*60*60*1000,'the consumed proof stays tombstoned for at least thirty days');
   assert.doesNotMatch(JSON.stringify(tombstone),/DevicePrepared|Новый быстрый|d{32}|docs\.google\.com/);
+  const digestFor=async(prepared)=>Buffer.from(new Uint8Array(await crypto.webcrypto.subtle.digest('SHA-256',encoder.encode(
+    `notion-widget-action-used-v2\u0000${host}\u0000${task}\u0000${clientId}\u0000${prepared.section}\u0000${prepared.reservationId}\u0000${prepared.openUrl}\u0000${prepared.generation}\u0000${prepared.navigateUntil}\u0000${prepared.reservationProof}\u0000${prepared.preparedName}`
+  )))).toString('base64url');
+  const sheetsDigest=await digestFor(sheetsDescriptor);
+  assert.equal(broadcastListeners.length,1,'the v2 cross-tab invalidation listener is installed');
+  broadcastListeners[0]({data:{schema:2,type:'used',digest:sheetsDigest,expiresAt:now+31*24*60*60*1000}});
+  assert.equal(sheetsControl.href,undefined,'a cross-tab used event disables only its exact consumed descriptor');
+  assert.equal(slidesControl.href,slidesDescriptor.openUrl,'a cross-tab Sheets event leaves Slides native-clickable');
+  assert.equal(storage.get(slot),encryptedEnvelope,'cross-tab consumption also preserves the shared encrypted envelope');
   assert.equal(Array.from(storage.entries()).some(([key,value])=>/^notion-widget-preview-v[12]:/.test(key)&&String(value).includes(descriptor.preparedName)),false,'the optimistic row is never persisted as confirmed presentation state');
   const mismatch=Object.assign({},descriptor,{generation:8,reservationProof:'e'.repeat(64)});
   listeners.message({source:bridgeSource,origin,data:{type:'notion-widget-v20-bridge-ready',embedNonce,instanceId:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',authoritative:true,actionReady:true,preparedCreates:[mismatch],geometry:[],viewport:{width:868,height:523}}});
@@ -1194,11 +1359,12 @@ test('encrypted saved navigation restores native Google, Drive download and fold
   });
   const descendants=(root)=>root.children.flatMap((child)=>[child,...descendants(child)]);
   let savedAnchors=[];
-  for(let attempt=0;attempt<40;attempt+=1){savedAnchors=descendants(snapshotGrid).filter((item)=>item.tagName==='A'&&item.className.includes('snapshot-card'));if(savedAnchors.length===2)break;await new Promise((resolve)=>setImmediate(resolve));}
+  for(let attempt=0;attempt<40;attempt+=1){savedAnchors=descendants(snapshotGrid).filter((item)=>item.tagName==='A'&&item.className.includes('snapshot-card'));if(savedAnchors.some((item)=>item.href===googleUrl)&&savedAnchors.some((item)=>item.href===directUrl))break;await new Promise((resolve)=>setImmediate(resolve));}
   const googleAnchor=savedAnchors.find((item)=>item.href===googleUrl),directAnchor=savedAnchors.find((item)=>item.href===directUrl);
   assert.ok(googleAnchor,'the confirmed Google card becomes a native anchor before the live iframe');
   assert.ok(directAnchor,'the unexpired binary card uses its exact prepared Drive URL');
   for(const anchor of savedAnchors){assert.equal(anchor.target,'_blank');assert.equal(anchor.rel,'noopener noreferrer');assert.equal(anchor.referrerPolicy,'no-referrer');assert.equal(Object.keys(anchor.listeners).some((name)=>/menu|rename|delete|archive/.test(name)),false);}
+  assert.equal(descendants(snapshotGrid).filter((item)=>item.tagName==='BUTTON'&&item.className==='snapshot-menu-trigger').length,2,'saved cards expose one action chevron each before the live iframe');
   const driveControl=slots.find((item)=>item.dataset.slot==='Drive').children[0];
   assert.equal(driveControl.href,folderUrl,'the exact cached task folder is available read-only');
   const embedNonce=new URL(widget.src).searchParams.get('embedNonce');
@@ -1221,7 +1387,8 @@ test('encrypted saved navigation restores native Google, Drive download and fold
   listeners.message({source:bridgeSource,origin:'https://script.googleusercontent.com',data:{type:'notion-widget-v20-bridge-ready',embedNonce,instanceId:'dddddddd-dddd-4ddd-8ddd-dddddddddddd',authoritative:true,actionReady:true,snapshotMaterials:replacementRows,navigationMaterials:[],navigationFolderUrl:'',preparedCreates:[],geometry:[],viewport:{width:868,height:523}}});
   for(let attempt=0;attempt<30&&storage.has(navSlot);attempt+=1)await new Promise((resolve)=>setImmediate(resolve));
   const postRevokeAnchors=descendants(snapshotGrid).filter((item)=>item.tagName==='A'&&item.className.includes('snapshot-card'));
-  assert.equal(postRevokeAnchors.length,0,'an authoritative exact empty navigation snapshot revokes the restored anchors');
+  assert.equal(postRevokeAnchors.length,2,'passive card surfaces remain available for edit and hide after navigation is revoked');
+  assert.equal(postRevokeAnchors.some((item)=>item.href),false,'an authoritative exact empty navigation snapshot revokes every native href');
   assert.equal(driveControl.href,undefined);
   assert.equal(storage.has(navSlot),false);
 });

@@ -122,17 +122,19 @@
         if(!data||data.mode!=='grant'||!/^[a-f0-9]{96}$/.test(String(data.downloadGrant||'')))return null;
         const raw=String(data.directDownloadUrl||''),name=String(data.directDownloadName||'');
         const expiresText=String(data.directDownloadExpiresAt||''),grantExpiresText=String(data.expiresAt||'');
-        if(!raw||raw.length>1000||!name||name.length>180||safeDownloadName(name)!==name||expiresText!==grantExpiresText||
-            !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(expiresText))return null;
+        if(!raw||raw.length>1000||!name||name.length>180||safeDownloadName(name)!==name||
+            !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(expiresText)||
+            !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(grantExpiresText))return null;
         const url=new URL(raw),entries=Array.from(url.searchParams.entries()),keys=entries.map(([key])=>key);
         const account=url.searchParams.get('authuser')||'',fileId=url.searchParams.get('id')||'';
         const canonical=`https://drive.google.com/uc?export=download&authuser=${encodeURIComponent(account)}&id=${encodeURIComponent(fileId)}`;
-        const expiry=Date.parse(expiresText),now=Date.now();
+        const expiry=Date.parse(expiresText),grantExpiry=Date.parse(grantExpiresText),now=Date.now();
         if(url.protocol!=='https:'||url.hostname!=='drive.google.com'||url.port||url.username||url.password||url.pathname!=='/uc'||url.hash||
             url.href!==raw||raw!==canonical||entries.length!==3||new Set(keys).size!==3||keys.join('|')!=='export|authuser|id'||
             url.searchParams.get('export')!=='download'||!/^[A-Za-z0-9_-]{10,200}$/.test(fileId)||
             !/^[^\s@]{1,64}@[^\s@]{1,189}$/.test(account)||account!==account.toLowerCase()||
-            !Number.isFinite(expiry)||new Date(expiry).toISOString()!==expiresText||expiry<=now+30000||expiry-now>60000)return null;
+            !Number.isFinite(expiry)||new Date(expiry).toISOString()!==expiresText||expiry<=now+30000||expiry-now>15*60*1000||
+            !Number.isFinite(grantExpiry)||new Date(grantExpiry).toISOString()!==grantExpiresText||grantExpiry<=now||grantExpiry-now>60000||expiry<grantExpiry)return null;
         return {url:raw,name,expiresAt:expiresText};
       }catch(_error){return null;}
     }

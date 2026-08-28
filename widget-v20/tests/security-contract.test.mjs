@@ -8,7 +8,7 @@ const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const text = (name) => fs.readFileSync(path.join(root, name), 'utf8');
 
 test('new runtime files contain no hard-coded deployment URL or credential-shaped assignment', () => {
-  const runtime = ['Index.html', 'Download.html', 'Code.gs', 'Core.js', 'Registry.gs'].map(text).join('\n');
+  const runtime = ['Index.html', 'Download.html', 'Create.html', 'Mutation.html', 'Code.gs', 'Core.js', 'Registry.gs'].map(text).join('\n');
   assert.doesNotMatch(runtime, /script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+/);
   assert.doesNotMatch(runtime, /(?:NOTION_TOKEN|SECRET|REFRESH_TOKEN)\s*=\s*['\"][^'\"]+['\"]/i);
   assert.doesNotMatch(runtime, /Bearer\s+[A-Za-z0-9._-]{16,}/i);
@@ -85,7 +85,7 @@ test('create GET rendezvous is noopener, exact-field and status-only', () => {
 test('download POST is exact-field and precomputes direct only from a supplied or freshly re-redeemed HMAC grant', () => {
   const backend=text('Code.gs');
   const fields=backend.slice(backend.indexOf('function w20DownloadPostFields_'),backend.indexOf('function w20SafeCreateOpenUrl_'));
-  const prepared=backend.slice(backend.indexOf('function w20PreparedDownloadPostDirect_'),backend.indexOf('function doPost'));
+  const prepared=backend.slice(backend.indexOf('function w20PreparedDownloadPostDirect_'),backend.indexOf('function w20FreshRegistryMaterialByNavigationBinding_'));
   const post=backend.slice(backend.indexOf('function doPost'),backend.indexOf('/* ========================= Public client API'));
   const grant=backend.slice(backend.indexOf('function w20DownloadGrantCacheKey_'),backend.indexOf('function w19MaterialFromPage_'));
   assert.match(fields,/\['task', 'accessToken', 'downloadPageId', 'downloadTicket'\]/);
@@ -232,7 +232,8 @@ test('direct Drive preparation uses only an exact fresh registry proof or the fu
   assert.match(body, /w20DriveDownloadUrl_\(drive\.id, cfg\.allowedEmail\)/);
   assert.match(body, /w20IssueDownloadGrant_\(taskId, materialId, direct, cfg, grantEpoch\)/);
   assert.match(body, /issued\.directDownloadUrl = direct\.url/);
-  assert.match(body, /issued\.directDownloadExpiresAt = issued\.expiresAt/);
+  assert.match(body, /issued\.directDownloadExpiresAt = direct\.expiresAt/);
+  assert.match(backend, /W20_DRIVE_DIRECT_SOURCE_TTL_SECONDS = 15 \* 60/);
   assert.doesNotMatch(body, /UrlFetchApp|attachmentUrl|attachmentExpiry|Utilities\.base64Encode|DriveApp\.getFileById/);
 
   assert.match(registryProof, /PropertiesService\.getScriptProperties\(\)\.getProperties\(\)/);
@@ -268,13 +269,14 @@ test('prepared Drive download handoff is canonical, short-lived, and falls back 
   const start = runner.slice(runner.indexOf('async function startDownload'), runner.indexOf('startDownload();'));
   assert.match(validator, /data\.mode!=='grant'/);
   assert.match(validator, /\^\[a-f0-9\]\{96\}\$/);
-  assert.match(validator, /expiresText!==grantExpiresText/);
+  assert.match(validator, /grantExpiry=Date\.parse\(grantExpiresText\)/);
   assert.match(validator, /url\.hostname!=='drive\.google\.com'/);
   assert.match(validator, /url\.pathname!=='\/uc'/);
   assert.match(validator, /keys\.join\('\|'\)!=='export\|authuser\|id'/);
   assert.match(validator, /raw!==canonical/);
   assert.match(validator, /account!==account\.toLowerCase\(\)/);
-  assert.match(validator, /expiry<=now\+30000\|\|expiry-now>60000/);
+  assert.match(validator, /expiry<=now\+30000\|\|expiry-now>15\*60\*1000/);
+  assert.match(validator, /grantExpiry<=now\|\|grantExpiry-now>60000\|\|expiry<grantExpiry/);
   assert.match(start, /validatedPreparedDrive\(prepareResponse\.data\)/);
   assert.match(start, /if\(prepared\)[\s\S]*notifyCourierDirect\(prepared\);[\s\S]*return/);
   assert.match(start, /grantedResponse=await callDownload\(Object\.assign\(\{\},input,\{downloadGrant:grant\}\)\)/);

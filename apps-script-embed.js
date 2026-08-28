@@ -23,7 +23,7 @@
   const ACTION_DESCRIPTOR_V2_KEYS = ['section', 'reservationId', 'openUrl', 'generation', 'navigateUntil', 'reservationProof', 'preparedName'];
   const NAVIGATION_CACHE_SCHEMA = 2;
   const NAVIGATION_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-  const NAVIGATION_DIRECT_MAX_TTL_MS = 60 * 1000;
+  const NAVIGATION_DIRECT_MAX_TTL_MS = 15 * 60 * 1000;
   const SNAPSHOT_CLASS = { Drive: 'gray', Docs: 'blue', Sheets: 'green', Slides: 'orange' };
   let earlyBridgeEvents = [];
   let earlyBridgeListener = null;
@@ -81,6 +81,14 @@
   let navigationCacheWriteGeneration = 0;
   let navigationViewGeneration = 0;
   let navigationCachePruned = false;
+  const outerMutationsByRequest = new Map();
+  const outerMutationRequestByBinding = new Map();
+  const outerEphemeralNavigation = new Map();
+  let outerMutationViewGeneration = 0;
+  let outerMenuRow = null;
+  let outerMenuTrigger = null;
+  let outerMenu = null;
+  let outerEditModal = null;
 
   function randomId() {
     if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
@@ -149,6 +157,51 @@
     return section === 'Docs' ? 'Google Docs' : section === 'Sheets' ? 'Google Sheets' : 'Google Slides';
   }
 
+  function outerVisibleSnapshotRows() {
+    let rows = confirmedSnapshotRows.map((row) => Object.assign({}, row));
+    outerMutationsByRequest.forEach((record) => {
+      if (!record || record.settled) return;
+      if (record.kind === 'hide') {
+        rows = rows.filter((row) => row.navigationBinding !== record.binding);
+      } else if (record.kind === 'edit') {
+        rows = rows.map((row) => row.navigationBinding === record.binding ? Object.assign({}, record.optimisticRow) : row);
+      }
+    });
+    return rows;
+  }
+
+  function snapshotNativeAnchor(anchor, row, hrefResolver) {
+    const refreshNavigation = () => {
+      const current = hrefResolver();
+      if (current) anchor.href = current;
+      else anchor.removeAttribute('href');
+      return current;
+    };
+    anchor.target = '_blank';
+    anchor.rel = 'noopener noreferrer';
+    anchor.referrerPolicy = 'no-referrer';
+    anchor.setAttribute('aria-label', `Открыть ${row.name}`);
+    anchor.addEventListener('pointerdown', refreshNavigation);
+    anchor.addEventListener('click', (event) => { if (!refreshNavigation()) event.preventDefault(); });
+    anchor.addEventListener('auxclick', (event) => { if (event.button === 1 && !refreshNavigation()) event.preventDefault(); });
+    refreshNavigation();
+    return anchor;
+  }
+
+  function appendSnapshotCardContents(target, row, sourceIcon) {
+    if (sourceIcon) target.appendChild(sourceIcon.cloneNode(true));
+    const meta = document.createElement('span');
+    meta.className = 'skeleton-meta';
+    const title = document.createElement('span');
+    title.className = 'skeleton-title';
+    title.textContent = row.name;
+    const sub = document.createElement('span');
+    sub.className = 'skeleton-sub';
+    sub.textContent = row.pending ? `${row.format} · Создаётся…` : row.format;
+    meta.append(title, sub);
+    target.appendChild(meta);
+  }
+
   function renderSnapshotView(fingerprint) {
     if (!snapshotGrid) return false;
     window.__notionWidgetSnapshotRuntimeOwned = true;
@@ -161,8 +214,8 @@
       navigateUntil: entry.navigateUntil,
       pending: true
     }));
-    const rows = confirmedSnapshotRows.concat(pendingRows);
-    const viewFingerprint = `${fingerprint || snapshotFingerprint(confirmedSnapshotRows)}\u0000${JSON.stringify(pendingRows)}\u0000${navigationViewGeneration}`;
+    const rows = outerVisibleSnapshotRows().concat(pendingRows);
+    const viewFingerprint = `${fingerprint || snapshotFingerprint(confirmedSnapshotRows)}\u0000${JSON.stringify(pendingRows)}\u0000${navigationViewGeneration}\u0000${outerMutationViewGeneration}`;
     if (viewFingerprint === lastRenderedSnapshotFingerprint) return true;
     snapshotGrid.replaceChildren();
     SECTIONS.forEach((section) => {
@@ -180,40 +233,34 @@
         column.appendChild(top);
       }
       sectionRows.forEach((row) => {
-        const navigationHref = row.pending ? optimisticCreateHref(row) : navigationHrefForRow(row);
-        const card = document.createElement(navigationHref ? 'a' : 'article');
-        card.className = `snapshot-card ${SNAPSHOT_CLASS[section]}${row.pending ? ' optimistic-create' : ''}`;
-        if (navigationHref) {
-          card.href = navigationHref;
-          card.target = '_blank';
-          card.rel = 'noopener noreferrer';
-          card.referrerPolicy = 'no-referrer';
-          card.setAttribute('aria-label', `Открыть ${row.name}`);
-          const refreshNavigation = () => {
-            const current = row.pending ? optimisticCreateHref(row) : navigationHrefForRow(row);
-            if (current) card.href = current;
-            else card.removeAttribute('href');
-            return current;
-          };
-          card.addEventListener('pointerdown', refreshNavigation);
-          card.addEventListener('click', (event) => { if (!refreshNavigation()) event.preventDefault(); });
-          card.addEventListener('auxclick', (event) => { if (event.button === 1 && !refreshNavigation()) event.preventDefault(); });
-        }
         if (row.pending) {
+          const card = document.createElement('a');
+          card.className = `snapshot-card ${SNAPSHOT_CLASS[section]} optimistic-create`;
+          snapshotNativeAnchor(card, row, () => optimisticCreateHref(row));
           card.setAttribute('aria-busy', 'true');
           card.setAttribute('aria-label', `${row.name}. Создаётся`);
+          appendSnapshotCardContents(card, row, sourceIcon);
+          column.appendChild(card);
+          return;
         }
-        if (sourceIcon) card.appendChild(sourceIcon.cloneNode(true));
-        const meta = document.createElement('span');
-        meta.className = 'skeleton-meta';
-        const title = document.createElement('span');
-        title.className = 'skeleton-title';
-        title.textContent = row.name;
-        const sub = document.createElement('span');
-        sub.className = 'skeleton-sub';
-        sub.textContent = row.pending ? `${row.format} · Создаётся…` : row.format;
-        meta.append(title, sub);
-        card.appendChild(meta);
+        const card = document.createElement('article');
+        card.className = `snapshot-card ${SNAPSHOT_CLASS[section]}${row.pending ? ' optimistic-create' : ''}`;
+        const main = document.createElement('a');
+        main.className = 'snapshot-card-main';
+        snapshotNativeAnchor(main, row, () => outerNavigationHrefForRow(row));
+        appendSnapshotCardContents(main, row, sourceIcon);
+        card.appendChild(main);
+        if (/^[a-f0-9]{64}$/.test(String(row.navigationBinding || ''))) {
+          const menuButton = document.createElement('button');
+          menuButton.type = 'button';
+          menuButton.className = 'snapshot-menu-trigger';
+          menuButton.dataset.outerMenuBinding = row.navigationBinding;
+          menuButton.setAttribute('aria-label', `Действия: ${row.name}`);
+          menuButton.setAttribute('aria-haspopup', 'menu');
+          menuButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 10 5 5 5-5"/></svg>';
+          menuButton.addEventListener('click', (event) => openOuterMenu(row, menuButton, event));
+          card.appendChild(menuButton);
+        }
         column.appendChild(card);
       });
       snapshotGrid.appendChild(column);
@@ -221,6 +268,7 @@
     lastRenderedSnapshotFingerprint = viewFingerprint;
     document.body.classList.add('snapshot-ready');
     snapshotGrid.hidden = false;
+    snapshotGrid.setAttribute('aria-hidden', 'false');
     if (cachedPrimaryActionsUsable()) scheduleCachedPrimaryGeometry();
     return true;
   }
@@ -470,9 +518,12 @@
     } catch (_error) { return null; }
   }
 
-  function safeSavedGoogleOpenUrl(value, section) {
+  function safeSavedGoogleOpenUrl(value, section, format) {
     const raw = String(value || '');
-    const segment = section === 'Docs' ? 'document' : section === 'Sheets' ? 'spreadsheets' : section === 'Slides' ? 'presentation' : '';
+    const normalizedFormat = String(format || '');
+    const segment = normalizedFormat
+      ? normalizedFormat === 'Google Docs' ? 'document' : normalizedFormat === 'Google Sheets' ? 'spreadsheets' : normalizedFormat === 'Google Slides' ? 'presentation' : ''
+      : section === 'Docs' ? 'document' : section === 'Sheets' ? 'spreadsheets' : section === 'Slides' ? 'presentation' : '';
     if (!segment) return '';
     try {
       const url = new URL(raw);
@@ -510,7 +561,7 @@
       if (!allowed.has(cardKey) || seen.has(cardKey)) return null;
       seen.add(cardKey);
       if (google) {
-        const url = safeSavedGoogleOpenUrl(source.openUrl, row.section);
+        const url = safeSavedGoogleOpenUrl(source.openUrl, row.section, row.format);
         if (!url) return null;
         entries.push({ cardKey, kind: 'google', url, expiresAt: Number(now) + NAVIGATION_CACHE_MAX_AGE_MS });
       } else {
@@ -578,7 +629,23 @@
     if (!row || navigationCacheSnapshotFingerprint !== snapshotFingerprint(confirmedSnapshotRows)) return '';
     const entry = navigationCacheEntries.get(navigationCardKey(row));
     if (!entry || entry.expiresAt <= Date.now() + (entry.kind === 'direct' ? 1000 : 0)) return '';
-    return entry.kind === 'google' ? safeSavedGoogleOpenUrl(entry.url, row.section) : safeDirectDriveDownloadUrl(entry.url);
+    return entry.kind === 'google' ? safeSavedGoogleOpenUrl(entry.url, row.section, row.format) : safeDirectDriveDownloadUrl(entry.url);
+  }
+
+  function outerNavigationHrefForRow(row) {
+    const binding = String(row && row.navigationBinding || '').toLowerCase();
+    const pendingRequest = outerMutationRequestByBinding.get(binding);
+    const pending = pendingRequest && outerMutationsByRequest.get(pendingRequest);
+    if (pending && pending.navigationHref) return pending.navigationHref;
+    const ephemeral = outerEphemeralNavigation.get(binding);
+    if (ephemeral && ephemeral.expiresAt > Date.now()) {
+      const href = ephemeral.kind === 'google'
+        ? safeSavedGoogleOpenUrl(ephemeral.url, ephemeral.validatorSection, ephemeral.validatorFormat)
+        : safeDirectDriveDownloadUrl(ephemeral.url);
+      if (href) return href;
+      outerEphemeralNavigation.delete(binding);
+    }
+    return navigationHrefForRow(row);
   }
 
   function optimisticCreateHref(row) {
@@ -625,7 +692,7 @@
     const row = navigationRowFromKey(value.cardKey), expiresAt = Number(value.expiresAt);
     if (!row || !Number.isSafeInteger(expiresAt) || expiresAt <= Number(payload.savedAt) || expiresAt > Number(payload.savedAt) + NAVIGATION_CACHE_MAX_AGE_MS) return null;
     if (value.kind === 'google') {
-      const url = safeSavedGoogleOpenUrl(value.url, row.section);
+      const url = safeSavedGoogleOpenUrl(value.url, row.section, row.format);
       return url ? { cardKey: value.cardKey, kind: value.kind, url, expiresAt } : null;
     }
     const url = safeDirectDriveDownloadUrl(value.url);
@@ -675,20 +742,49 @@
     }
   }
 
-  async function persistNavigationCache(value, folderValue, snapshotValue) {
-    const generation = ++navigationCacheWriteGeneration, store = navigationCacheStore(), context = await navigationCacheContext();
-    if (!store || !context || generation !== navigationCacheWriteGeneration) return false;
+  function safeExactNavigationCacheEntries(value, snapshotRows, now) {
+    if (!Array.isArray(value) || value.length > 100) return null;
+    const allowed = new Set(snapshotRows.map(navigationCardKey)), seen = new Set(), entries = [];
+    for (const source of value) {
+      if (!hasExactObjectKeys(source, ['cardKey', 'kind', 'url', 'expiresAt']) || !['google', 'direct'].includes(source.kind)) return null;
+      const row = navigationRowFromKey(source.cardKey), expiresAt = Number(source.expiresAt);
+      if (!row || !allowed.has(source.cardKey) || seen.has(source.cardKey) || !Number.isSafeInteger(expiresAt) ||
+          expiresAt <= Number(now) || expiresAt - Number(now) > NAVIGATION_CACHE_MAX_AGE_MS) return null;
+      seen.add(source.cardKey);
+      if (source.kind === 'google') {
+        const url = safeSavedGoogleOpenUrl(source.url, row.section, row.format);
+        if (!url) return null;
+        entries.push({ cardKey: source.cardKey, kind: source.kind, url, expiresAt });
+      } else {
+        const url = safeDirectDriveDownloadUrl(source.url);
+        if (!url || expiresAt <= Number(now) + 1000 || expiresAt - Number(now) > NAVIGATION_DIRECT_MAX_TTL_MS) return null;
+        entries.push({ cardKey: source.cardKey, kind: source.kind, url, expiresAt });
+      }
+    }
+    return entries;
+  }
+
+  async function persistExactNavigationCache(entriesValue, folderValue, folderExpiryValue, snapshotValue) {
     const now = Date.now(), snapshotRows = safeSnapshotMaterials(snapshotValue), folderUrl = folderValue ? allowedDriveFolderUrl(folderValue) : '';
-    const entries = snapshotRows && safeNavigationMaterials(value, snapshotRows, now);
-    if (!snapshotRows || !entries || (folderValue && !folderUrl)) { invalidateNavigationCache(); return false; }
-    const folderExpiresAt = folderUrl ? now + NAVIGATION_CACHE_MAX_AGE_MS : 0;
+    const entries = snapshotRows && safeExactNavigationCacheEntries(entriesValue, snapshotRows, now);
+    const folderExpiresAt = Number(folderExpiryValue) || 0;
+    if (!snapshotRows || !entries || (folderValue && !folderUrl) || (!folderUrl && folderExpiresAt !== 0) ||
+        (folderUrl && (!Number.isSafeInteger(folderExpiresAt) || folderExpiresAt <= now || folderExpiresAt - now > NAVIGATION_CACHE_MAX_AGE_MS))) {
+      invalidateNavigationCache();return false;
+    }
     const expiries = entries.map((entry) => entry.expiresAt).concat(folderUrl ? [folderExpiresAt] : []);
     if (!expiries.length) { invalidateNavigationCache(); return false; }
     const expiresAt = Math.max(...expiries), snapshotValueFingerprint = snapshotFingerprint(snapshotRows);
     const fingerprint = JSON.stringify({ snapshotFingerprint: snapshotValueFingerprint, folderUrl, folderExpiresAt, entries });
     activateNavigationCache(entries, snapshotValueFingerprint, folderUrl, folderExpiresAt);
     if (fingerprint === navigationCachePersistFingerprint) return true;
+    const generation = ++navigationCacheWriteGeneration, store = navigationCacheStore();
     navigationCachePersistFingerprint = fingerprint;
+    const context = await navigationCacheContext();
+    if (!store || !context || generation !== navigationCacheWriteGeneration || fingerprint !== navigationCachePersistFingerprint) {
+      if (generation === navigationCacheWriteGeneration && fingerprint === navigationCachePersistFingerprint) navigationCachePersistFingerprint = '';
+      return false;
+    }
     try {
       const iv = new Uint8Array(12);window.crypto.getRandomValues(iv);
       const payload = { schema: NAVIGATION_CACHE_SCHEMA, host: context.host, task: context.task, clientId: context.clientId, savedAt: now, expiresAt, snapshotFingerprint: snapshotValueFingerprint, folderUrl, folderExpiresAt, entries };
@@ -700,6 +796,13 @@
       if (generation === navigationCacheWriteGeneration && fingerprint === navigationCachePersistFingerprint) navigationCachePersistFingerprint = '';
       return false;
     }
+  }
+
+  function persistNavigationCache(value, folderValue, snapshotValue) {
+    const now = Date.now(), snapshotRows = safeSnapshotMaterials(snapshotValue), folderUrl = folderValue ? allowedDriveFolderUrl(folderValue) : '';
+    const entries = snapshotRows && safeNavigationMaterials(value, snapshotRows, now);
+    if (!snapshotRows || !entries || (folderValue && !folderUrl)) { invalidateNavigationCache(); return false; }
+    return persistExactNavigationCache(entries, folderUrl, folderUrl ? now + NAVIGATION_CACHE_MAX_AGE_MS : 0, snapshotRows);
   }
 
   function handleNavigationCacheStorage(event) {
@@ -891,9 +994,10 @@
     return entries;
   }
 
-  function removeCachedActionRecords(keepRecord) {
+  function removeCachedActionRecords(keepRecord, schema, blockedDigests) {
     createRequests.forEach((record, section) => {
       if (!record.fromActionCache || record === keepRecord || record.navigationCommitted || record.actionStarted) return;
+      if (blockedDigests && (record.cacheSchema !== schema || !blockedDigests.has(record.actionDigest))) return;
       createRequests.delete(section);
       forgetCreateRequest(section);
     });
@@ -917,6 +1021,30 @@
     else refresh();
   }
 
+  function filterCachedActionState(schema, digests, keepRecord, deferVisualRefresh) {
+    let changed = false;
+    Object.keys(cachedPreparedCreates).forEach((section) => {
+      const prepared = cachedPreparedCreates[section];
+      if (!prepared || prepared.cacheSchema !== schema || !digests.has(prepared.actionDigest)) return;
+      delete cachedPreparedCreates[section];
+      changed = true;
+    });
+    if (!changed) return false;
+    removeCachedActionRecords(keepRecord || null, schema, digests);
+    const hasRemaining = Object.keys(cachedPreparedCreates).length > 0;
+    if (!hasRemaining) cachedActionTrustedUntil = 0;
+    const refresh = () => {
+      if (!hasLiveActionBridge()) {
+        document.body.classList.toggle('action-cache-ready', hasRemaining);
+        if (!hasRemaining && !keepRecord) interactionGrid.hidden = true;
+      }
+      refreshAllControlHrefs();
+    };
+    if (deferVisualRefresh) window.setTimeout(refresh, 0);
+    else refresh();
+    return true;
+  }
+
   function receiveActionCacheInvalidation(value) {
     if (!value || !hasExactObjectKeys(value, ['schema', 'type', 'digest', 'expiresAt']) ||
         ![ACTION_CACHE_SCHEMA, ACTION_CACHE_V2_SCHEMA].includes(value.schema) || !['used', 'invalidate'].includes(value.type)) return false;
@@ -930,8 +1058,7 @@
     }
     if (!validActionDigest(value.digest)) return false;
     blockedActionDigests.set(value.digest, expiresAt);
-    const blocked = Object.values(cachedPreparedCreates).some((entry) => entry.actionDigest === value.digest);
-    if (blocked) clearCachedActionState(null, false);
+    filterCachedActionState(value.schema, new Set([value.digest]), null, false);
     return true;
   }
 
@@ -959,9 +1086,7 @@
       const store = actionCacheStore();
       if (!store) return;
       const entries = readUsedActionEntries(store, context);
-      if (entries.some((entry) => Object.values(cachedPreparedCreates).some((prepared) => prepared.actionDigest === entry.digest))) {
-        clearCachedActionState(null, false);
-      }
+      filterCachedActionState(context.schema, new Set(entries.map((entry) => entry.digest)), null, false);
       return;
     }
     if (!event.newValue) {
@@ -1250,13 +1375,12 @@
       if (entries.some((entry) => entry.digest === record.actionDigest)) return false;
       entries.push({ digest: record.actionDigest, expiresAt });
       store.setItem(context.usedSlot, JSON.stringify({ schema: context.schema, updatedAt: Date.now(), entries: entries.slice(-12) }));
-      try { store.removeItem(context.slot); } catch (_removeError) {}
     } catch (_error) { return false; }
     blockedActionDigests.set(record.actionDigest, expiresAt);
     record.cachedActionConsumed = true;
     record.liveConfirmed = false;
     if (isV2) addOptimisticCreate(record);
-    clearCachedActionState(record, true);
+    filterCachedActionState(context.schema, new Set([record.actionDigest]), record, true);
     const channel = isV2 ? actionCacheV2Channel : actionCacheChannel;
     if (channel) {
       try { channel.postMessage({ schema: context.schema, type: 'used', digest: record.actionDigest, expiresAt }); } catch (_error) {}
@@ -1280,6 +1404,381 @@
     }, 5000);
   }
 
+  function closeOuterMenu(restoreFocus) {
+    if (outerMenu) outerMenu.hidden = true;
+    document.body.classList.toggle('outer-menu-open', false);
+    const trigger = outerMenuTrigger;
+    outerMenuRow = null;
+    outerMenuTrigger = null;
+    if (restoreFocus && trigger && trigger.isConnected && typeof trigger.focus === 'function') trigger.focus();
+  }
+
+  function ensureOuterMenu() {
+    if (outerMenu) return outerMenu;
+    const menu = document.createElement('div');
+    menu.className = 'outer-menu';
+    menu.hidden = true;
+    menu.setAttribute('role', 'menu');
+    const open = document.createElement('a');
+    open.dataset.outerAction = 'open';
+    open.textContent = 'Открыть документ';
+    open.target = '_blank';
+    open.rel = 'noopener noreferrer';
+    open.referrerPolicy = 'no-referrer';
+    open.setAttribute('role', 'menuitem');
+    const refreshOpen = () => {
+      const href = outerNavigationHrefForRow(outerMenuRow);
+      if (href) open.href = href;
+      else open.removeAttribute('href');
+      return href;
+    };
+    open.addEventListener('pointerdown', refreshOpen);
+    open.addEventListener('click', (event) => {
+      if (!refreshOpen()) { event.preventDefault(); showNotice('Ссылка ещё подготавливается.'); return; }
+      closeOuterMenu(false);
+    });
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.dataset.outerAction = 'edit';
+    edit.textContent = 'Изменить название и раздел';
+    edit.setAttribute('role', 'menuitem');
+    edit.addEventListener('click', () => {
+      const row = outerMenuRow;
+      closeOuterMenu(false);
+      if (row) openOuterEditModal(row);
+    });
+    const hide = document.createElement('button');
+    hide.type = 'button';
+    hide.dataset.outerAction = 'hide';
+    hide.textContent = 'Скрыть из виджета';
+    hide.setAttribute('role', 'menuitem');
+    hide.addEventListener('click', () => {
+      const row = outerMenuRow;
+      closeOuterMenu(false);
+      if (row) startOuterMutation('hide', row, null);
+    });
+    menu.append(open, edit, hide);
+    document.body.appendChild(menu);
+    outerMenu = menu;
+    return menu;
+  }
+
+  function openOuterMenu(row, trigger, event) {
+    if (!row || !/^[a-f0-9]{64}$/.test(String(row.navigationBinding || '')) || outerMutationRequestByBinding.has(row.navigationBinding)) return false;
+    if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+    const menu = ensureOuterMenu();
+    outerMenuRow = Object.assign({}, row);
+    outerMenuTrigger = trigger || null;
+    const open = menu.querySelector('[data-outer-action="open"]');
+    const href = outerNavigationHrefForRow(outerMenuRow);
+    if (href) open.href = href;
+    else open.removeAttribute('href');
+    menu.hidden = false;
+    document.body.classList.add('outer-menu-open');
+    let rect = null;
+    try { rect = trigger && trigger.getBoundingClientRect(); } catch (_error) {}
+    const left = rect ? Math.max(8, Math.min(Number(rect.right || 0) - 238, Number(window.innerWidth || 0) - 246)) : 8;
+    const top = rect ? Math.max(8, Math.min(Number(rect.bottom || 0) + 5, Number(window.innerHeight || 0) - 150)) : 8;
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+    const first = href ? open : menu.querySelector('[data-outer-action="edit"]');
+    if (first && typeof first.focus === 'function') first.focus();
+    return true;
+  }
+
+  function closeOuterEditModal() {
+    if (!outerEditModal) return;
+    outerEditModal.hidden = true;
+    outerEditModal._row = null;
+    document.body.classList.toggle('outer-menu-open', false);
+  }
+
+  function ensureOuterEditModal() {
+    if (outerEditModal) return outerEditModal;
+    const backdrop = document.createElement('div');
+    backdrop.className = 'outer-modal';
+    backdrop.hidden = true;
+    backdrop.setAttribute('role', 'dialog');
+    backdrop.setAttribute('aria-modal', 'true');
+    backdrop.setAttribute('aria-labelledby', 'outerEditTitle');
+    const form = document.createElement('form');
+    form.className = 'outer-dialog';
+    const heading = document.createElement('h2');
+    heading.id = 'outerEditTitle';
+    heading.textContent = 'Изменить документ';
+    const nameLabel = document.createElement('label');
+    nameLabel.htmlFor = 'outerEditName';
+    nameLabel.textContent = 'Название';
+    const name = document.createElement('input');
+    name.id = 'outerEditName';
+    name.name = 'name';
+    name.maxLength = 180;
+    name.required = true;
+    name.autocomplete = 'off';
+    const sectionLabel = document.createElement('label');
+    sectionLabel.htmlFor = 'outerEditSection';
+    sectionLabel.textContent = 'Раздел';
+    const section = document.createElement('select');
+    section.id = 'outerEditSection';
+    section.name = 'section';
+    SECTIONS.forEach((value) => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = value;
+      section.appendChild(option);
+    });
+    const actions = document.createElement('div');
+    actions.className = 'outer-dialog-actions';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = 'Отмена';
+    const save = document.createElement('button');
+    save.type = 'submit';
+    save.textContent = 'Сохранить';
+    actions.append(cancel, save);
+    form.append(heading, nameLabel, name, sectionLabel, section, actions);
+    backdrop.appendChild(form);
+    backdrop._form = form;
+    backdrop._name = name;
+    backdrop._section = section;
+    backdrop._save = save;
+    cancel.addEventListener('click', closeOuterEditModal);
+    backdrop.addEventListener('click', (event) => { if (event.target === backdrop) closeOuterEditModal(); });
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const row = backdrop._row;
+      if (!row) return;
+      const started = startOuterMutation('edit', row, { name: name.value, section: section.value });
+      if (started) closeOuterEditModal();
+    });
+    document.body.appendChild(backdrop);
+    outerEditModal = backdrop;
+    return backdrop;
+  }
+
+  function openOuterEditModal(row) {
+    if (!row || outerMutationRequestByBinding.has(row.navigationBinding)) return false;
+    const modal = ensureOuterEditModal();
+    modal._row = Object.assign({}, row);
+    modal._name.value = row.name;
+    modal._section.value = row.section;
+    modal._save.disabled = false;
+    modal.hidden = false;
+    document.body.classList.add('outer-menu-open');
+    if (typeof modal._name.focus === 'function') modal._name.focus();
+    if (typeof modal._name.select === 'function') modal._name.select();
+    return true;
+  }
+
+  function outerMutationNavigationCapability(row) {
+    const href = outerNavigationHrefForRow(row);
+    if (!href) return null;
+    const cached = navigationCacheEntries.get(navigationCardKey(row));
+    if (cached && cached.url === href && cached.expiresAt > Date.now()) {
+      return { href, kind: cached.kind, expiresAt: cached.expiresAt, validatorSection: row.section, validatorFormat: row.format };
+    }
+    const ephemeral = outerEphemeralNavigation.get(String(row.navigationBinding || '').toLowerCase());
+    if (ephemeral && ephemeral.url === href && ephemeral.expiresAt > Date.now()) {
+      return { href, kind: ephemeral.kind, expiresAt: ephemeral.expiresAt, validatorSection: ephemeral.validatorSection, validatorFormat: ephemeral.validatorFormat };
+    }
+    return null;
+  }
+
+  function navigationEntryFromCapability(row, capability, now) {
+    if (!row || !capability || Number(capability.expiresAt) <= Number(now) + 1000) return null;
+    const cardKey = navigationCardKey(row), expiresAt = Number(capability.expiresAt);
+    if (capability.kind === 'google') {
+      const openUrl = safeSavedGoogleOpenUrl(capability.url, row.section, row.format);
+      return openUrl ? { cardKey, kind: 'google', url: openUrl, expiresAt } : null;
+    }
+    if (capability.kind === 'direct') {
+      const directDownloadUrl = safeDirectDriveDownloadUrl(capability.url);
+      if (!directDownloadUrl || expiresAt - Number(now) > NAVIGATION_DIRECT_MAX_TTL_MS) return null;
+      return { cardKey, kind: 'direct', url: directDownloadUrl, expiresAt };
+    }
+    return null;
+  }
+
+  function rebaseNavigationCacheAfterMutation(previousRows, nextRows, record) {
+    const now = Date.now();
+    const previousFingerprint = snapshotFingerprint(previousRows);
+    const previousEntries = navigationCacheSnapshotFingerprint === previousFingerprint ? new Map(navigationCacheEntries) : new Map();
+    const entries = [];
+    nextRows.forEach((row) => {
+      let capability = null;
+      const unchanged = previousEntries.get(navigationCardKey(row));
+      if (unchanged && unchanged.expiresAt > now + 1000) capability = unchanged;
+      else if (record && record.kind === 'edit' && row.navigationBinding === record.resultBinding &&
+          record.navigationHref && record.navigationExpiresAt > now + 1000) {
+        capability = { url: record.navigationHref, kind: record.navigationKind, expiresAt: record.navigationExpiresAt };
+      }
+      const entry = navigationEntryFromCapability(row, capability, now);
+      if (entry) entries.push(entry);
+    });
+    const folderUrl = cachedNavigationFolderHref();
+    return persistExactNavigationCache(entries, folderUrl, folderUrl ? navigationCacheFolderExpiresAt : 0, nextRows);
+  }
+
+  function removeOuterMutationNodes(record) {
+    if (!record) return;
+    if (record.timer) window.clearTimeout(record.timer);
+    record.timer = 0;
+    try { if (record.form) record.form.remove(); } catch (_error) {}
+    try { if (record.frame) record.frame.remove(); } catch (_error) {}
+    record.form = null;
+    record.frame = null;
+  }
+
+  function finishOuterMutationRecord(record) {
+    if (!record || record.settled) return false;
+    record.settled = true;
+    removeOuterMutationNodes(record);
+    outerMutationsByRequest.delete(record.requestId);
+    if (outerMutationRequestByBinding.get(record.binding) === record.requestId) outerMutationRequestByBinding.delete(record.binding);
+    outerMutationViewGeneration += 1;
+    document.body.classList.toggle('outer-mutation-pending', outerMutationsByRequest.size > 0);
+    return true;
+  }
+
+  function rollbackOuterMutation(record, message) {
+    if (!finishOuterMutationRecord(record)) return false;
+    renderSnapshotView(snapshotFingerprint(confirmedSnapshotRows));
+    showNotice(String(message || 'Изменение не сохранено.').slice(0, 300));
+    return true;
+  }
+
+  function appendMutationField(form, name, value) {
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = name;
+    input.value = value;
+    form.appendChild(input);
+  }
+
+  function submitOuterMutation(record, payload) {
+    const frame = document.createElement('iframe');
+    frame.className = 'outer-mutation-frame';
+    frame.name = `widget_mutation_${record.requestId.replace(/-/g, '')}`;
+    frame.title = 'Фоновое изменение документа';
+    frame.setAttribute('aria-hidden', 'true');
+    const form = document.createElement('form');
+    form.className = 'outer-mutation-form';
+    form.method = 'post';
+    form.action = DEPLOYMENT_URL;
+    form.target = frame.name;
+    form.enctype = 'application/x-www-form-urlencoded';
+    appendMutationField(form, 'task', String(params.get('task') || ''));
+    appendMutationField(form, 'accessToken', String(params.get('accessToken') || ''));
+    appendMutationField(form, 'mutationRequestId', record.requestId);
+    appendMutationField(form, 'mutationPayload', JSON.stringify(payload));
+    record.frame = frame;
+    record.form = form;
+    document.body.append(frame, form);
+    try { form.submit(); }
+    catch (_error) { rollbackOuterMutation(record, 'Не удалось начать изменение. Повторите действие.'); return false; }
+    window.setTimeout(() => { try { form.remove(); } catch (_error) {} record.form = null; }, 0);
+    record.timer = window.setTimeout(() => rollbackOuterMutation(record, 'Сервис не подтвердил изменение. Повторите действие.'), 45000);
+    return true;
+  }
+
+  function startOuterMutation(kind, row, patch) {
+    const binding = String(row && row.navigationBinding || '').toLowerCase();
+    if (!['edit', 'hide'].includes(kind) || !/^[a-f0-9]{64}$/.test(binding)) return false;
+    if (outerMutationRequestByBinding.has(binding)) return true;
+    const current = outerVisibleSnapshotRows().find((item) => item.navigationBinding === binding);
+    if (!current) return false;
+    let optimisticRow = current;
+    let payload = { kind: 'hide', binding };
+    if (kind === 'edit') {
+      const name = String(patch && patch.name || '').replace(/\s+/g, ' ').trim();
+      const section = String(patch && patch.section || '');
+      const safe = safeSnapshotMaterials([{ name, section, format: current.format, position: current.position, navigationBinding: binding }]);
+      if (!safe || safe.length !== 1 || !name || name.length > 180 || !SECTIONS.includes(section)) {
+        showNotice('Проверьте название и раздел.');
+        return false;
+      }
+      optimisticRow = safe[0];
+      payload = { kind: 'edit', binding, name: optimisticRow.name, section: optimisticRow.section };
+    }
+    const requestId = randomId().toLowerCase();
+    if (!validCreateRequestId(requestId)) return false;
+    const capability = outerMutationNavigationCapability(current);
+    const record = {
+      requestId, kind, binding, originalRow: Object.assign({}, current), optimisticRow: Object.assign({}, optimisticRow),
+      navigationHref: capability && capability.href || '', navigationKind: capability && capability.kind || '',
+      navigationExpiresAt: capability && capability.expiresAt || 0, navigationValidatorSection: capability && capability.validatorSection || current.section,
+      navigationValidatorFormat: capability && capability.validatorFormat || current.format,
+      resultBinding: '',
+      settled: false, frame: null, form: null, timer: 0
+    };
+    outerMutationsByRequest.set(requestId, record);
+    outerMutationRequestByBinding.set(binding, requestId);
+    outerMutationViewGeneration += 1;
+    document.body.classList.add('outer-mutation-pending');
+    renderSnapshotView(snapshotFingerprint(confirmedSnapshotRows));
+    if (!submitOuterMutation(record, payload)) return false;
+    return true;
+  }
+
+  function safeOuterMutationMessage(value) {
+    if (!value || value.type !== 'notion-widget-v20-mutation-result') return null;
+    const requestId = String(value.requestId || '').toLowerCase();
+    if (!validCreateRequestId(requestId)) return null;
+    if (value.status === 'error' && hasExactObjectKeys(value, ['type', 'requestId', 'status', 'message', 'retryable'])) {
+      return { requestId, status: 'error', message: String(value.message || 'Изменение не сохранено.').slice(0, 500), retryable: value.retryable === true };
+    }
+    if (value.status !== 'success' || !hasExactObjectKeys(value, ['type', 'requestId', 'status', 'kind', 'binding', 'material']) ||
+        !['edit', 'hide'].includes(value.kind)) return null;
+    const binding = String(value.binding || '').toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(binding)) return null;
+    if (value.kind === 'hide') return value.material === null ? { requestId, status: 'success', kind: 'hide', binding, material: null } : null;
+    if (!hasExactObjectKeys(value.material, ['name', 'section', 'format', 'position', 'navigationBinding'])) return null;
+    const rows = safeSnapshotMaterials([value.material]);
+    if (!rows || rows.length !== 1) return null;
+    return { requestId, status: 'success', kind: 'edit', binding, material: rows[0] };
+  }
+
+  function handleOuterMutationMessage(event) {
+    if (!isGoogleScriptOrigin(event.origin)) return false;
+    const message = safeOuterMutationMessage(event.data);
+    if (!message) return false;
+    const record = outerMutationsByRequest.get(message.requestId);
+    if (!record || !record.frame || !isFrameDescendant(record.frame.contentWindow, event.source, 5) || message.binding && message.binding !== record.binding) return true;
+    if (message.status === 'error') {
+      rollbackOuterMutation(record, message.message);
+      return true;
+    }
+    if (message.kind !== record.kind) return true;
+    const oldBinding = record.binding;
+    const previousRows = confirmedSnapshotRows.slice();
+    outerEphemeralNavigation.delete(oldBinding);
+    let nextRows = confirmedSnapshotRows.filter((row) => row.navigationBinding !== oldBinding);
+    if (message.kind === 'edit') {
+      record.resultBinding = message.material.navigationBinding;
+      nextRows = nextRows.filter((row) => row.navigationBinding !== message.material.navigationBinding);
+      nextRows.push(message.material);
+      if (record.navigationHref && record.navigationExpiresAt > Date.now()) {
+        outerEphemeralNavigation.set(message.material.navigationBinding, {
+          url: record.navigationHref,
+          kind: record.navigationKind,
+          expiresAt: record.navigationExpiresAt,
+          validatorSection: record.navigationValidatorSection,
+          validatorFormat: record.navigationValidatorFormat
+        });
+      }
+    }
+    const safeRows = safeSnapshotMaterials(nextRows);
+    if (!safeRows) { rollbackOuterMutation(record, 'Сервис вернул повреждённое изменение.'); return true; }
+    finishOuterMutationRecord(record);
+    confirmedSnapshotRows = safeRows;
+    rebaseNavigationCacheAfterMutation(previousRows, confirmedSnapshotRows, record);
+    const fingerprint = snapshotFingerprint(confirmedSnapshotRows);
+    renderSnapshotView(fingerprint);
+    persistSafeSnapshotSoon(confirmedSnapshotRows, fingerprint);
+    sendToBridge({ type: 'notion-widget-v20-outer-refresh', requestId: record.requestId });
+    return true;
+  }
+
   function isGoogleScriptOrigin(origin) {
     try {
       const url = new URL(origin);
@@ -1289,12 +1788,11 @@
     }
   }
 
-  function isWidgetDescendant(source) {
-    const root = widget.contentWindow;
+  function isFrameDescendant(root, source, maxDepth) {
     if (!root || !source) return false;
     const visit = (target, depth) => {
       if (target === source) return true;
-      if (depth >= 4) return false;
+      if (depth >= maxDepth) return false;
       let length = 0;
       try { length = Math.min(Number(target.length) || 0, 8); } catch (_error) { return false; }
       for (let index = 0; index < length; index += 1) {
@@ -1303,6 +1801,10 @@
       return false;
     };
     return visit(root, 0);
+  }
+
+  function isWidgetDescendant(source) {
+    return isFrameDescendant(widget.contentWindow, source, 4);
   }
 
   function isCurrentBridgeEvent(event) {
@@ -1801,6 +2303,7 @@
 
 
   function handleWidgetMessage(event) {
+    if (handleOuterMutationMessage(event)) return;
     const data = event.data;
     if (!data || data.embedNonce !== embedNonce || !isGoogleScriptOrigin(event.origin)) return;
     if (data.type === 'notion-widget-v20-snapshot-ready') {
@@ -1921,12 +2424,26 @@
     });
   }
 
+  function installOuterUiEvents() {
+    document.addEventListener('click', (event) => {
+      if (!outerMenu || outerMenu.hidden || outerMenu.contains(event.target) || outerMenuTrigger && outerMenuTrigger.contains(event.target)) return;
+      closeOuterMenu(false);
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      if (outerEditModal && !outerEditModal.hidden) { event.preventDefault(); closeOuterEditModal(); return; }
+      if (outerMenu && !outerMenu.hidden) { event.preventDefault(); closeOuterMenu(true); }
+    });
+    window.addEventListener('resize', () => closeOuterMenu(false));
+  }
+
   const params = parseRuntimeParams();
   if (!params) {
     showFatal('Ссылка виджета неполная или повреждена. Секретный ключ должен находиться после символа #.');
     return;
   }
   installInteractionControls();
+  installOuterUiEvents();
   window.addEventListener('message', handleWidgetMessage);
   window.addEventListener('storage', handleActionCacheStorage);
   window.addEventListener('storage', handleNavigationCacheStorage);
