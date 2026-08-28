@@ -623,6 +623,21 @@ test('server-rendered early snapshot posts only passive card presentation fields
   assert.doesNotMatch(JSON.stringify(payload),/3c72d627|Secret|55555555|drivePollClaim|createRequestId/,'SSR exposes only the opaque binding, never raw identity or claim material');
 });
 
+test('server-rendered early snapshot uses the templated nonce without waiting for Apps Script location discovery', () => {
+  assert.ok(earlySnapshot);
+  const nonce='abcdef0123456789abcdef0123456789',messages=[];
+  const parent={postMessage(message,targetOrigin){messages.push({message,targetOrigin});}};parent.parent=parent;
+  const bootstrap={cached:true,authoritative:false,materials:[{name:'Документ',section:'Docs',format:'Google Docs',position:0}]};
+  vm.runInNewContext(earlySnapshot,{
+    window:{parent},location:{search:''},
+    document:{getElementById(id){return id==='runtimeParams'?{dataset:{params:JSON.stringify({embedNonce:nonce,accessToken:'must-not-be-posted'})}}:{dataset:{bootstrap:JSON.stringify(bootstrap)}};}},
+    URLSearchParams,JSON,String,Number,Math,Array,RegExp
+  });
+  assert.equal(messages.length,1);
+  assert.equal(messages[0].message.embedNonce,nonce);
+  assert.doesNotMatch(JSON.stringify(messages[0].message),/must-not-be-posted|accessToken/);
+});
+
 test('wrapper binds one authenticated child channel without relaying local file contents', () => {
   assert.match(wrapperJs, /type === 'notion-widget-v20-bridge-ready'/);
   assert.match(wrapperJs,/function renderSnapshotView\(fingerprint\) \{\s+if \(!snapshotGrid\) return false;\s+window\.__notionWidgetSnapshotRuntimeOwned = true;/);

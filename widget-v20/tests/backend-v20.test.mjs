@@ -390,6 +390,10 @@ test('web app routes download and create requests to dedicated couriers', () => 
   assert.match(doGet, /output = createTemplate\.evaluate\(\)/);
   assert.match(doGet, /createTemplateFromFile\('Index'\)/);
   assert.match(doGet, /initialBootstrapJson = 'null'/);
+  assert.match(doGet, /runtimeParamsJson = JSON\.stringify\(\{/);
+  for (const field of ['task', 'accessToken', 'clientId', 'embedNonce', 'release']) {
+    assert.match(doGet, new RegExp(`${field}:`));
+  }
   assert.match(doGet, /var initialProperties = PropertiesService\.getScriptProperties\(\)\.getProperties\(\)/);
   assert.match(doGet, /w19AuthorizedConfigFromValues_\(initialInput, initialProperties\)/);
   assert.match(doGet, /w20BootstrapFromRegistry_\(initialInput, initialCfg, null, \{/);
@@ -404,6 +408,25 @@ test('web app routes download and create requests to dedicated couriers', () => 
   assert.match(doGet, /w20CreatePostFields_\(event\)/);
   assert.match(doGet, /template\.runtimeParamsJson = '\{\}'/);
   assert.match(doGet, /template\.precomputedResultJson = JSON\.stringify\(result\)/);
+});
+
+test('Index GET injects exactly the already-received runtime coordinates so startup skips the five-second location wait', () => {
+  const backend=loadBackend();
+  const task='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e',accessToken='a'.repeat(64);
+  const clientId='12345678-1234-4abc-8def-1234567890ab',embedNonce='0123456789abcdef0123456789abcdef';
+  const rendered=[];
+  const output={setTitle(){return this;},setXFrameOptionsMode(){return this;},addMetaTag(){return this;}};
+  backend.HtmlService={
+    XFrameOptionsMode:{ALLOWALL:'ALLOWALL'},
+    createTemplateFromFile(name){
+      assert.equal(name,'Index');
+      const template={evaluate(){rendered.push({runtime:template.runtimeParamsJson,bootstrap:template.initialBootstrapJson});return output;}};
+      return template;
+    }
+  };
+  assert.equal(backend.doGet({parameter:{task,accessToken,clientId,embedNonce,release:'v54'}}),output);
+  assert.deepEqual(JSON.parse(rendered[0].runtime),{task,accessToken,clientId,embedNonce,release:'v54'});
+  assert.equal(rendered[0].bootstrap,'null');
 });
 
 test('create GET rendezvous renders exactly four runtime values without executing creation', () => {
