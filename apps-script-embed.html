@@ -5,10 +5,10 @@
   <meta name="robots" content="noindex,nofollow">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="color-scheme" content="dark">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src https://script.google.com https://*.googleusercontent.com; frame-src https://script.google.com https://*.googleusercontent.com; script-src 'self' 'sha256-RQfwAUXYD/DpYu+jubqrjvevzPvDbYbmykmY5HV88Dk=' 'sha256-1mKqXk8bbZvOq2wqdQbrvGn6tJPIsgXw2SJec1U+pHs='; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src https://script.google.com https://*.googleusercontent.com; frame-src https://script.google.com https://*.googleusercontent.com; script-src 'self' 'sha256-5K/gXEpM+MGTs8535wAE9bglDX+FiusVxmG92OgCrUA=' 'sha256-jl/DyesMOh4gsbCLJMh4BUd/FN2CgbPdHrmUHDJvquc='; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
   <link rel="dns-prefetch" href="//script.google.com">
   <link rel="preconnect" href="https://script.google.com" crossorigin>
-  <link rel="preload" href="apps-script-embed.js?v=52" as="script" fetchpriority="high">
+  <link rel="preload" href="apps-script-embed.js?v=53" as="script" fetchpriority="high">
   <title>Файлы задачи</title>
   <style>
     * { box-sizing: border-box; }
@@ -97,13 +97,15 @@
       <div class="interaction-slot" data-slot="Slides"></div>
     </div>
   </div>
-  <script id="earlyWidgetBootstrap">(()=>{let u='',c=false;window.__notionWidgetDeferChild=true;try{if(location.hash.length>1){const s=new URLSearchParams(location.hash.slice(1)),t=String(s.get('task')||s.get('taskPageId')||'').toLowerCase(),a=String(s.get('accessToken')||''),r=String(s.get('release')||'');if(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(t)&&/^[A-Za-z0-9._~-]{32,256}$/.test(a)&&(!r||/^[A-Za-z0-9._-]{1,80}$/.test(r))){const v=x=>/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(x),g=()=>{const b=new Uint8Array(16);crypto.getRandomValues(b);b[6]=b[6]&15|64;b[8]=b[8]&63|128;const x=Array.from(b,y=>y.toString(16).padStart(2,'0')).join('');return x.slice(0,8)+'-'+x.slice(8,12)+'-'+x.slice(12,16)+'-'+x.slice(16,20)+'-'+x.slice(20)},k='notion-widget-client-v1:'+t;let i='';try{i=String(localStorage.getItem(k)||'')}catch(_){}if(!v(i))i=g();try{localStorage.setItem(k,i)}catch(_){}const b=new Uint8Array(16);crypto.getRandomValues(b);const n=Array.from(b,x=>x.toString(16).padStart(2,'0')).join(''),p=new URLSearchParams({task:t,accessToken:a,embedNonce:n,clientId:i}),q=[],h=e=>{try{const o=new URL(e.origin);if(e.data&&e.data.embedNonce===n&&o.protocol==='https:'&&(o.hostname==='script.google.com'||o.hostname.endsWith('.googleusercontent.com'))){if(q.length>=8)q.shift();q.push(e)}}catch(_){}};if(r)p.set('release',r);window.__notionWidgetEarlyBridge={nonce:n,clientId:i,events:q,listener:h};window.addEventListener('message',h);u='https://script.google.com/macros/s/AKfycbxrGUXhfRsvqjUrLSDFyhmjl3bJjbx-XtOjicHh7E7dAUVJW6Qi2F_K889ckvOCzu7KiQ/exec?'+p}}}catch(_){}const s=()=>{const j=document.createElement('script');j.src='apps-script-embed.js?v=52';j.async=true;j.fetchPriority='high';document.head.appendChild(j)},f=()=>{if(c)return;c=true;s();window.setTimeout(()=>{window.__notionWidgetDeferChild=false;if(u)document.getElementById('widget').src=u},0)};if(document.readyState==='complete')f();else window.addEventListener('load',f,{once:true})})();</script>
+  <script id="earlyWidgetBootstrap">(()=>{let u='',c=false,m=0,l=false;window.__notionWidgetDeferChild=true;const s=()=>{if(l)return;l=true;const j=document.createElement('script');j.src='apps-script-embed.js?v=53';j.async=true;j.fetchPriority='high';document.head.appendChild(j)};s();try{if(location.hash.length>1){const s=new URLSearchParams(location.hash.slice(1)),t=String(s.get('task')||s.get('taskPageId')||'').toLowerCase(),a=String(s.get('accessToken')||''),r=String(s.get('release')||'');if(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(t)&&/^[A-Za-z0-9._~-]{32,256}$/.test(a)&&(!r||/^[A-Za-z0-9._-]{1,80}$/.test(r))){const v=x=>/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(x),g=()=>{const b=new Uint8Array(16);crypto.getRandomValues(b);b[6]=b[6]&15|64;b[8]=b[8]&63|128;const x=Array.from(b,y=>y.toString(16).padStart(2,'0')).join('');return x.slice(0,8)+'-'+x.slice(8,12)+'-'+x.slice(12,16)+'-'+x.slice(16,20)+'-'+x.slice(20)},k='notion-widget-client-v1:'+t;let i='';try{i=String(localStorage.getItem(k)||'')}catch(_){}if(!v(i))i=g();try{localStorage.setItem(k,i)}catch(_){}const b=new Uint8Array(16);crypto.getRandomValues(b);const n=Array.from(b,x=>x.toString(16).padStart(2,'0')).join(''),p=new URLSearchParams({task:t,accessToken:a,embedNonce:n,clientId:i}),q=[],h=e=>{try{const o=new URL(e.origin);if(e.data&&e.data.embedNonce===n&&o.protocol==='https:'&&(o.hostname==='script.google.com'||o.hostname.endsWith('.googleusercontent.com'))){if(q.length>=8)q.shift();q.push(e)}}catch(_){}};if(r)p.set('release',r);window.__notionWidgetEarlyBridge={nonce:n,clientId:i,events:q,listener:h};window.addEventListener('message',h);u='https://script.google.com/macros/s/AKfycbxrGUXhfRsvqjUrLSDFyhmjl3bJjbx-XtOjicHh7E7dAUVJW6Qi2F_K889ckvOCzu7KiQ/exec?'+p}}}catch(_){}const d=()=>{if(c)return;c=true;if(m&&typeof window.clearTimeout==='function')window.clearTimeout(m);window.__notionWidgetDeferChild=false;const w=document.getElementById('widget');if(u&&w&&w.src!==u)w.src=u},a=typeof window.requestAnimationFrame==='function'?window.requestAnimationFrame.bind(window):null;m=window.setTimeout(d,200);if(a)a(()=>a(d))})();</script>
   <script id="earlySnapshotCache">
   (() => {
     'use strict';
     const SECTIONS=['Drive','Docs','Sheets','Slides'];
     const COLORS={Drive:'gray',Docs:'blue',Sheets:'green',Slides:'orange'};
     const MAX_AGE=24*60*60*1000;
+    const LEGACY_SCHEMA=1;
+    const SCHEMA=2;
 
     function params() {
       if(location.hash.length<=1)return null;
@@ -157,14 +159,74 @@
       return safe.sort((left,right)=>SECTIONS.indexOf(left.section)-SECTIONS.indexOf(right.section)||left.position-right.position||left.name.localeCompare(right.name)||String(left.navigationBinding||'').localeCompare(String(right.navigationBinding||'')));
     }
 
+    function validTime(value,now) {
+      return Number.isSafeInteger(value)&&now-value>=-60000&&now-value<=MAX_AGE;
+    }
+
+    function envelope(raw,schema,now) {
+      if(!raw||raw.length>100000)throw new Error('INVALID_SIZE');
+      const value=JSON.parse(raw);
+      if(!exact(value,['schema','savedAt','iv','ciphertext'])||value.schema!==schema||!validTime(value.savedAt,now))throw new Error('INVALID_ENVELOPE');
+      const iv=decode(value.iv);
+      const ciphertext=decode(value.ciphertext);
+      if(iv.length!==12||ciphertext.length<17||ciphertext.length>75000)throw new Error('INVALID_CIPHERTEXT');
+      return {value,iv,ciphertext};
+    }
+
     async function context(runtime) {
       const encoder=new TextEncoder();
-      const [keyDigest,slotDigest]=await Promise.all([
+      const [keyDigest,slotDigest,legacyKeyDigest,legacySlotDigest]=await Promise.all([
+        window.crypto.subtle.digest('SHA-256',encoder.encode(`notion-widget-preview-key-v2\u0000${runtime.task}\u0000${runtime.token}`)),
+        window.crypto.subtle.digest('SHA-256',encoder.encode(`notion-widget-preview-slot-v2\u0000${runtime.task}\u0000${runtime.token}`)),
         window.crypto.subtle.digest('SHA-256',encoder.encode(`notion-widget-preview-key-v1\u0000${runtime.task}\u0000${runtime.token}`)),
         window.crypto.subtle.digest('SHA-256',encoder.encode(`notion-widget-preview-slot-v1\u0000${runtime.task}\u0000${runtime.token}`))
       ]);
-      const key=await window.crypto.subtle.importKey('raw',keyDigest,{name:'AES-GCM'},false,['decrypt']);
-      return {key,slot:`notion-widget-preview-v1:${encode(new Uint8Array(slotDigest).slice(0,18))}`,aad:encoder.encode(`notion-widget-preview-v1\u0000${runtime.task}\u0000${runtime.release}`)};
+      const [key,legacyKey]=await Promise.all([
+        window.crypto.subtle.importKey('raw',keyDigest,{name:'AES-GCM'},false,['encrypt','decrypt']),
+        window.crypto.subtle.importKey('raw',legacyKeyDigest,{name:'AES-GCM'},false,['decrypt'])
+      ]);
+      return {
+        current:{schema:SCHEMA,key,slot:`notion-widget-preview-v2:${encode(new Uint8Array(slotDigest).slice(0,18))}`,aad:encoder.encode(`notion-widget-preview-v2\u0000${runtime.task}`)},
+        legacy:{schema:LEGACY_SCHEMA,key:legacyKey,slot:`notion-widget-preview-v1:${encode(new Uint8Array(legacySlotDigest).slice(0,18))}`,aad:encoder.encode(`notion-widget-preview-v1\u0000${runtime.task}\u0000${runtime.release}`)}
+      };
+    }
+
+    async function read(store,cache,removeAuthenticationFailure) {
+      let raw='';
+      try{raw=String(store.getItem(cache.slot)||'');}catch(_error){return {status:'unavailable'};}
+      if(!raw)return {status:'missing'};
+      let parsed;
+      try{parsed=envelope(raw,cache.schema,Date.now());}
+      catch(_error){try{store.removeItem(cache.slot);}catch(_removeError){}return {status:'invalid'};}
+      let plaintext;
+      try{plaintext=await window.crypto.subtle.decrypt({name:'AES-GCM',iv:parsed.iv,additionalData:cache.aad},cache.key,parsed.ciphertext);}
+      catch(_error){if(removeAuthenticationFailure){try{store.removeItem(cache.slot);}catch(_removeError){}}return {status:'authentication-failed'};}
+      try {
+        const payload=JSON.parse(new TextDecoder().decode(plaintext));
+        if(!exact(payload,['schema','savedAt','materials'])||payload.schema!==cache.schema||payload.savedAt!==parsed.value.savedAt||!validTime(payload.savedAt,Date.now()))throw new Error('INVALID_PAYLOAD');
+        const materials=rows(payload.materials);
+        if(!materials)throw new Error('INVALID_MATERIALS');
+        return {status:'valid',materials,savedAt:payload.savedAt};
+      } catch(_error) {
+        try{store.removeItem(cache.slot);}catch(_removeError){}
+        return {status:'invalid'};
+      }
+    }
+
+    async function migrate(store,cache,entry) {
+      try {
+        const iv=new Uint8Array(12);
+        window.crypto.getRandomValues(iv);
+        const plaintext=new TextEncoder().encode(JSON.stringify({schema:cache.current.schema,savedAt:entry.savedAt,materials:entry.materials}));
+        const ciphertext=new Uint8Array(await window.crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:cache.current.aad},cache.current.key,plaintext));
+        if(window.__notionWidgetLiveSnapshotSeen===true||window.__notionWidgetSnapshotRuntimeOwned===true)return false;
+        if(String(store.getItem(cache.current.slot)||''))return false;
+        const serialized=JSON.stringify({schema:cache.current.schema,savedAt:entry.savedAt,iv:encode(iv),ciphertext:encode(ciphertext)});
+        store.setItem(cache.current.slot,serialized);
+        if(String(store.getItem(cache.current.slot)||'')!==serialized)return false;
+        try{store.removeItem(cache.legacy.slot);}catch(_removeError){}
+        return true;
+      } catch(_error) {return false;}
     }
 
     function render(materials) {
@@ -216,29 +278,13 @@
       let store;
       try{store=window.localStorage;}catch(_error){return false;}
       const cache=await context(runtime);
-      let raw='';
-      try{raw=String(store.getItem(cache.slot)||'');}catch(_error){return false;}
-      if(!raw)return false;
-      try {
-        if(raw.length>100000)throw new Error('INVALID_SIZE');
-        const envelope=JSON.parse(raw);
-        if(!exact(envelope,['schema','savedAt','iv','ciphertext'])||envelope.schema!==1)throw new Error('INVALID_SCHEMA');
-        const savedAt=Number(envelope.savedAt);
-        const age=Date.now()-savedAt;
-        if(!Number.isFinite(savedAt)||age< -60000||age>MAX_AGE)throw new Error('STALE');
-        const iv=decode(envelope.iv);
-        const ciphertext=decode(envelope.ciphertext);
-        if(iv.length!==12||ciphertext.length>75000)throw new Error('INVALID_CIPHERTEXT');
-        const plaintext=await window.crypto.subtle.decrypt({name:'AES-GCM',iv,additionalData:cache.aad},cache.key,ciphertext);
-        const payload=JSON.parse(new TextDecoder().decode(plaintext));
-        if(!exact(payload,['schema','savedAt','materials'])||payload.schema!==1||Number(payload.savedAt)!==savedAt)throw new Error('INVALID_PAYLOAD');
-        const materials=rows(payload.materials);
-        if(!materials)return false;
-        return render(materials);
-      } catch(_error) {
-        try{store.removeItem(cache.slot);}catch(_removeError){}
-        return false;
-      }
+      const current=await read(store,cache.current,true);
+      if(current.status==='valid')return render(current.materials);
+      const legacy=await read(store,cache.legacy,false);
+      if(legacy.status!=='valid')return false;
+      const rendered=render(legacy.materials);
+      await migrate(store,cache,legacy);
+      return rendered;
     }
 
     return restore();

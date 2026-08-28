@@ -422,6 +422,23 @@ function apiBootstrap(input) {
       var actionMeta = metaWrite.ok ? metaWrite.meta : null;
       var actionProof = w20RegistryActionProof_(actionMeta, registry, cfg.rootFolderId);
       var folderReady = w20RegistryFolderMetaFresh_(actionMeta, cfg.rootFolderId);
+      var preparedPropertyValues = metaWrite.propertyValues;
+      var refreshedFolderProof = false;
+      if (!actionProof.ready && actionMeta && w20RegistryTaskMetaFresh_(actionMeta)) {
+        try { refreshedFolderProof = w20WarmTaskFolderProof_(task.id, cfg); }
+        catch (folderProofError) {
+          w19Audit_('bootstrap_folder_proof_deferred', {
+            code: String(folderProofError && folderProofError.code || 'DRIVE_ERROR').replace(/[^A-Z0-9_]/gi, '').slice(0, 80)
+          });
+        }
+      }
+      if (refreshedFolderProof) {
+        actionMeta = w20RegistryReadTaskMeta_(task.id);
+        registry = w20RegistryReadTaskResult_(task.id, null);
+        actionProof = w20RegistryActionProof_(actionMeta, registry, cfg.rootFolderId);
+        folderReady = w20RegistryFolderMetaFresh_(actionMeta, cfg.rootFolderId);
+        preparedPropertyValues = null;
+      }
       return {
         version: W19_VERSION,
         task: { id: task.id, name: task.name },
@@ -432,8 +449,8 @@ function apiBootstrap(input) {
         cached: false,
         authoritative: true,
         actionReady: actionProof.ready,
-        preparedCreates: actionProof.ready && metaWrite.propertyValues ?
-          w20PreparedCreatePoolForInput_(task.id, input, cfg, metaWrite.propertyValues) : [],
+        preparedCreates: actionProof.ready ?
+          w20PreparedCreatePoolForInput_(task.id, input, cfg, preparedPropertyValues) : [],
         trustedUntil: actionProof.trustedUntil,
         fullySynced: true,
         refreshRequired: false
@@ -1847,11 +1864,33 @@ function w20ReleaseClaimedCreateReservation_(taskId, section, requestId, idem, m
   }
 }
 
+function w20RefreshKnownTaskFolderProof_(taskId, meta, cfg) {
+  var task = WidgetV19Core.normalizeUuid(taskId);
+  var compactTask = WidgetV19Core.compactUuid(task);
+  var folderId = w20SafeDriveId_(meta && meta.folderId);
+  var rootFolderId = w20SafeDriveId_(cfg && cfg.rootFolderId);
+  if (!task || !compactTask || !folderId || !rootFolderId || !meta.folderVerified || meta.rootFolderId !== rootFolderId) return false;
+  var folder = w19GetDriveMetadata_(folderId);
+  var markers = folder && folder.appProperties || {};
+  var parents = folder && Array.isArray(folder.parents) ? folder.parents : [];
+  var markerOk = markers.widgetVersion === W20_DRIVE_MARKER || markers.widgetVersion === 'v19';
+  if (!folder || folder.trashed || folder.ownedByMe !== true ||
+      folder.mimeType !== 'application/vnd.google-apps.folder' || parents.indexOf(rootFolderId) === -1 ||
+      !markerOk || markers.taskPageId !== compactTask) return false;
+  return w20RegistryWriteFolderProof_(task, {
+    folderId: folderId,
+    rootFolderId: rootFolderId,
+    folderVerified: true,
+    folderValidatedAt: new Date().toISOString()
+  });
+}
+
 function w20WarmTaskFolderProof_(taskId, cfg) {
   return w19WithMutationLock_(function () {
     var current = w20RegistryReadFreshTaskMeta_(taskId);
     if (!current) return false;
     if (w20RegistryFolderMetaFresh_(current, cfg.rootFolderId)) return true;
+    if (w20RefreshKnownTaskFolderProof_(taskId, current, cfg)) return true;
     var task = w20TaskFromRegistryMeta_(taskId, current);
     var folder = w19EnsureTaskFolder_(task, cfg);
     return Boolean(w20RegistryWriteFolderProof_(taskId, {
@@ -3296,7 +3335,7 @@ function scheduledSync(event) {
     w19AssertSchema_(cfg);
     var registrySnapshotStartedAt = Date.now();
     var body = {
-      page_size: 50,
+      page_size: 100,
       filter: {
         and: [
           { property: W19_P.TYPE, select: { equals: 'Знание' } },
@@ -3306,20 +3345,33 @@ function scheduledSync(event) {
       },
       sorts: [{ timestamp: 'created_time', direction: 'ascending' }]
     };
+    var startedAtBeginning = !lease.cursor;
     if (lease.cursor) body.start_cursor = lease.cursor;
-    var result = w19NotionRequest_('post', '/v1/data_sources/' + cfg.dataSourceId + '/query', body, cfg);
+    var result = null;
     var ok = 0;
     var errors = 0;
     var syncedPages = [];
-    (result.results || []).forEach(function (page) {
-      try {
-        var syncedPage = w19SyncOnePage_(page, cfg);
-        syncedPages.push(syncedPage);
-        ok += 1;
-      }
-      catch (err) { errors += 1; w19MarkSyncError_(page, err, cfg); }
-    });
-    var fullSinglePageCycle = !lease.cursor && !result.has_more && errors === 0;
+    var checked = 0;
+    var scheduledStartedAt = Date.now();
+    var scheduledBatches = 0;
+    do {
+      scheduledBatches += 1;
+      result = w19NotionRequest_('post', '/v1/data_sources/' + cfg.dataSourceId + '/query', body, cfg);
+      if (body.start_cursor && result.has_more && body.start_cursor === result.next_cursor) break;
+      var batch = result.results || [];
+      checked += batch.length;
+      batch.forEach(function (page) {
+        try {
+          var syncedPage = w19SyncOnePage_(page, cfg);
+          syncedPages.push(syncedPage);
+          ok += 1;
+        }
+        catch (err) { errors += 1; w19MarkSyncError_(page, err, cfg); }
+      });
+      if (!result.has_more || !result.next_cursor) break;
+      body.start_cursor = result.next_cursor;
+    } while (scheduledBatches < 20 && Date.now() - scheduledStartedAt < 4 * 60 * 1000);
+    var fullSinglePageCycle = startedAtBeginning && !result.has_more && errors === 0;
     if (fullSinglePageCycle) {
       var task = w19AssertTaskPage_(cfg.authorizedTaskPageId, cfg);
       if (!task || task.id !== cfg.authorizedTaskPageId) {
@@ -3389,8 +3441,8 @@ function scheduledSync(event) {
         code: String(attachmentError && attachmentError.code || 'QUEUE_UNAVAILABLE').replace(/[^A-Z0-9_]/gi, '').slice(0, 80)
       });
     }
-    w19Audit_('scheduled_sync', { checked: (result.results || []).length, ok: ok, errors: errors });
-    return { ok: true, checked: (result.results || []).length, synced: ok, errors: errors, proofRefreshed: fullSinglePageCycle };
+    w19Audit_('scheduled_sync', { checked: checked, ok: ok, errors: errors });
+    return { ok: true, checked: checked, synced: ok, errors: errors, proofRefreshed: fullSinglePageCycle };
   } finally {
     w19FinishScheduledSync_(lease.token, commitCursor, nextCursor);
   }

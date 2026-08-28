@@ -403,6 +403,8 @@
   const DOWNLOAD_GRANT_RENEW_LEAD_MS = 15000;
   const DOWNLOAD_GRANT_RETRY_DELAY_MS = 5000;
   const DOWNLOAD_GRANT_PRIME_WORKERS = 4;
+  const CACHED_REFRESH_IDLE_MS = 30000;
+  const DOWNLOAD_PRIME_IDLE_MS = 750;
   const ACTION_READY_RENEW_LEAD_MS = 30000;
   const ACTION_READY_RETRY_DELAYS_MS = [750,1500,3000,7000,15000];
   const bridgeInstanceId = uid();
@@ -542,6 +544,7 @@
     state.folderUrl=folderUrl;state.trustedUntil=trustedUntil;state.snapshotTrusted=true;state.actionReady=true;
     const applied=merge?mergePreparedCreates(data.preparedCreates,expectedSection):applyPreparedCreates(data.preparedCreates);
     scheduleActionReadyExpiry();render();announceEmbedBridgeReady();
+    scheduleDownloadGrantPrime(downloadPrimeGeneration);
     return applied;
   }
 
@@ -948,7 +951,7 @@
     if(!state.actionReady)state.preparedCreates={};
     else {state.preparedCreates=preparedCreateMap(data&&data.preparedCreates);rememberIssuedPreparedCreates(state.preparedCreates);}
     if(state.actionReady)actionReadyRefreshAttempt=0;
-    if(state.authoritative)deferInitialDownloadPrimeUntilAuthoritative=false;
+    if(state.authoritative||state.snapshotTrusted)deferInitialDownloadPrimeUntilAuthoritative=false;
     downloadPrimeGeneration+=1;deferredDownloadPrimeGeneration=-1;downloadGrants.forEach((_record,pageId)=>{const current=state.materials.find((item)=>item.id===pageId);if(!canPrepareDownload(current)||previousDownloadFingerprints.get(pageId)!==downloadMaterialFingerprint(current))downloadGrants.delete(pageId);});downloadGrantRetryNotBefore.clear();window.clearTimeout(downloadGrantRenewTimer);window.clearTimeout(downloadGrantExpiryTimer);downloadGrantRenewTimer=0;downloadGrantExpiryTimer=0;
     scheduleActionReadyExpiry();
     if(runtimeLocationResolved&&state.authoritative&&!state.actionReady&&!(options&&options.deferActionProofRetry))window.setTimeout(()=>warmPreparedCreates(),0);
@@ -995,7 +998,7 @@
       window.clearTimeout(cachedRefreshTimer);cachedRefreshTimer=0;cachedRefreshAttempt=0;
       const data=await call('apiBootstrap',{taskPageId});
       applyBootstrapData(data,!data.cached&&data.authoritative===true);
-      if(data.cached)scheduleCachedRefresh(0);
+      if(data.cached)scheduleCachedRefresh(state.actionReady?CACHED_REFRESH_IDLE_MS:0);
       if(!data.cached)window.setTimeout(()=>pollDriveMetadata(false),2500);
     } catch(error) { showFatal(error.message,Boolean(error.retryable)); }
   }
@@ -1739,7 +1742,7 @@
   }
 
   function deferDownloadPrimeForBusy(generation) {
-    if(generation!==downloadPrimeGeneration||!state.authoritative||deferInitialDownloadPrimeUntilAuthoritative||!state.busy.size)return false;
+    if(generation!==downloadPrimeGeneration||!state.actionReady||!(state.authoritative||state.snapshotTrusted)||deferInitialDownloadPrimeUntilAuthoritative||!state.busy.size)return false;
     deferredDownloadPrimeGeneration=generation;return true;
   }
 
@@ -1747,27 +1750,25 @@
     const generation=deferredDownloadPrimeGeneration;
     if(generation<0||state.busy.size)return;
     deferredDownloadPrimeGeneration=-1;
-    if(generation!==downloadPrimeGeneration||!state.authoritative||deferInitialDownloadPrimeUntilAuthoritative)return;
+    if(generation!==downloadPrimeGeneration||!state.actionReady||!(state.authoritative||state.snapshotTrusted)||deferInitialDownloadPrimeUntilAuthoritative)return;
     scheduleDownloadGrantPrime(generation);
   }
 
   function scheduleDownloadGrantPrime(generation) {
-    if(generation!==downloadPrimeGeneration||!state.authoritative||deferInitialDownloadPrimeUntilAuthoritative)return;
+    if(generation!==downloadPrimeGeneration||!state.actionReady||!(state.authoritative||state.snapshotTrusted)||deferInitialDownloadPrimeUntilAuthoritative)return;
     if(state.busy.size){deferDownloadPrimeForBusy(generation);return;}
     const candidates=state.materials.filter((item)=>canPrepareDownload(item)&&downloadCardIsVisible(item.id)&&downloadGrantNeedsRefresh(item,true)).map((item)=>normalizeUuid(item.id)).filter(Boolean);
     if(!candidates.length)return;
     window.setTimeout(async()=>{
-      if(createPoolWarmPromise)await createPoolWarmPromise;
-      if(generation!==downloadPrimeGeneration||!state.authoritative||deferInitialDownloadPrimeUntilAuthoritative)return;
+      if(generation!==downloadPrimeGeneration||!state.actionReady||!(state.authoritative||state.snapshotTrusted)||deferInitialDownloadPrimeUntilAuthoritative)return;
       if(state.busy.size){deferDownloadPrimeForBusy(generation);return;}
-      if(state.actionReady&&missingPreparedCreateSections().length)await warmPreparedCreates();
       for(const pageId of candidates){
-        if(generation!==downloadPrimeGeneration||!state.authoritative||deferInitialDownloadPrimeUntilAuthoritative)return;
+        if(generation!==downloadPrimeGeneration||!state.actionReady||!(state.authoritative||state.snapshotTrusted)||deferInitialDownloadPrimeUntilAuthoritative)return;
         if(state.busy.size){deferDownloadPrimeForBusy(generation);return;}
         await primeDownloadGrant(pageId,generation);
       }
       scheduleDownloadGrantRenewal();
-    },0);
+    },DOWNLOAD_PRIME_IDLE_MS);
   }
 
   function downloadCourierHref(item) {
@@ -2047,13 +2048,16 @@
 
   const initialBootstrap=readInitialBootstrap();
   buildGrid();configureEmbedPrimaryCards();bindEvents();
-  if(initialBootstrap){deferInitialDownloadPrimeUntilAuthoritative=true;taskPageId=normalizeUuid(initialBootstrap.task.id)||taskPageId;applyBootstrapData(initialBootstrap,false,{skipDownloadPrime:true});}
+  if(initialBootstrap){deferInitialDownloadPrimeUntilAuthoritative=!bootstrapSnapshotIsTrusted(initialBootstrap,false);taskPageId=normalizeUuid(initialBootstrap.task.id)||taskPageId;applyBootstrapData(initialBootstrap,false,{skipDownloadPrime:true});}
   else render();
   const continueStartup=()=>{
     configureEmbedPrimaryCards();
     if(!initialBootstrap)return bootstrap();
-    if(!state.bootstrapped)applyBootstrapData(initialBootstrap,false,{skipDownloadPrime:true});
-    if(initialBootstrap.cached)scheduleCachedRefresh(0);
+    if(!state.bootstrapped||!state.actionReady)applyBootstrapData(initialBootstrap,false,{skipDownloadPrime:true});
+    if(initialBootstrap.cached){
+      scheduleCachedRefresh(state.actionReady?CACHED_REFRESH_IDLE_MS:0);
+      if(state.actionReady)scheduleDownloadGrantPrime(downloadPrimeGeneration);
+    }
   };
   if(runtimeLocationResolved)continueStartup();
   else resolveRuntimeLocation().then(()=>{runtimeLocationResolved=true;continueStartup();}).catch((error)=>showFatal(error.message,Boolean(error.retryable)));

@@ -575,14 +575,17 @@ test('scheduled sync uses a run lease and a stable pagination sort', () => {
   assert.match(body, /current\.token\s*!==\s*token/);
 });
 
-test('scheduled action proof refresh is complete-cycle-only, coherent and bounded to seven minutes', () => {
+test('scheduled action proof refresh covers a complete paginated cycle with safe trigger headroom', () => {
   const backend = text('Code.gs');
   const registry = text('Registry.gs');
   const scheduled = backend.slice(backend.indexOf('function scheduledSync'), backend.indexOf('function w19ClaimScheduledSync_'));
   const bootstrap = backend.slice(backend.indexOf('function apiBootstrap'), backend.indexOf('function apiCreateGoogle'));
   const sync = backend.slice(backend.indexOf('function apiSyncTask'), backend.indexOf('/* ========================= Admin-only setup'));
-  assert.match(registry, /W20_REGISTRY_ACTION_MAX_AGE_MS\s*=\s*7\s*\*\s*60\s*\*\s*1000/);
-  assert.match(scheduled, /fullSinglePageCycle\s*=\s*!lease\.cursor\s*&&\s*!result\.has_more\s*&&\s*errors\s*===\s*0/);
+  assert.match(registry, /W20_REGISTRY_ACTION_MAX_AGE_MS\s*=\s*20\s*\*\s*60\s*\*\s*1000/);
+  assert.match(registry, /W20_REGISTRY_FOLDER_MAX_AGE_MS\s*=\s*30\s*\*\s*60\s*\*\s*1000/);
+  assert.match(scheduled, /startedAtBeginning\s*=\s*!lease\.cursor/);
+  assert.match(scheduled, /do \{[\s\S]*body\.start_cursor\s*=\s*result\.next_cursor;[\s\S]*\} while \(scheduledBatches < 20 && Date\.now\(\) - scheduledStartedAt < 4 \* 60 \* 1000\)/);
+  assert.match(scheduled, /fullSinglePageCycle\s*=\s*startedAtBeginning\s*&&\s*!result\.has_more\s*&&\s*errors\s*===\s*0/);
   assert.match(scheduled, /w19AssertTaskPage_\(cfg\.authorizedTaskPageId, cfg\)/);
   assert.match(scheduled, /task\.id\s*!==\s*cfg\.authorizedTaskPageId/);
   assert.match(scheduled, /w19EnsureTaskFolder_\(task, cfg\)/);

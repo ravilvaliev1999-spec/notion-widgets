@@ -643,7 +643,7 @@ test('optimistic edits and hides never become durable bridge snapshots, while co
   assert.equal(bridgeMessages.length,1,'confirmed state resumes complete bridge publication');
 });
 
-test('authoritative bootstrap primes only visible downloads after create warming while preserving unchanged packages', () => {
+test('trusted bootstrap primes only visible downloads independently from create warming while preserving unchanged packages', () => {
   const bootstrap=frontend.slice(frontend.indexOf('function applyBootstrapData'),frontend.indexOf('function refresh('));
   const prime=frontend.slice(frontend.indexOf('function freshDownloadGrant'),frontend.indexOf('function downloadCourierHref'));
   const automaticPrime=frontend.slice(frontend.indexOf('function deferDownloadPrimeForBusy'),frontend.indexOf('function downloadCourierHref'));
@@ -657,17 +657,16 @@ test('authoritative bootstrap primes only visible downloads after create warming
   assert.match(bootstrap,/downloadGrants\.delete\(pageId\)/);
   assert.doesNotMatch(bootstrap,/downloadGrants\.clear\(\)/);
   assert.match(bootstrap,/downloadGrantRetryNotBefore\.clear\(\)/);
-  assert.match(bootstrap,/if\(state\.authoritative\)deferInitialDownloadPrimeUntilAuthoritative=false/);
-  assert.doesNotMatch(bootstrap,/state\.authoritative\|\|state\.snapshotTrusted\)deferInitialDownloadPrimeUntilAuthoritative=false/);
+  assert.match(bootstrap,/if\(state\.authoritative\|\|state\.snapshotTrusted\)deferInitialDownloadPrimeUntilAuthoritative=false/);
   assert.match(bootstrap,/scheduleDownloadGrantPrime\(downloadPrimeGeneration\)/);
   assert.match(frontend,/let deferredDownloadPrimeGeneration = -1/);
   assert.match(automaticPrime,/function deferDownloadPrimeForBusy\(generation\)/);
   assert.match(automaticPrime,/function resumeDeferredDownloadPrime\(\)/);
   assert.match(automaticPrime,/if\(state\.busy\.size\)\{deferDownloadPrimeForBusy\(generation\);return;\}/);
   assert.match(automaticPrime,/canPrepareDownload\(item\)&&downloadCardIsVisible\(item\.id\)&&downloadGrantNeedsRefresh\(item,true\)/);
-  assert.match(automaticPrime,/if\(createPoolWarmPromise\)await createPoolWarmPromise/);
-  assert.match(automaticPrime,/if\(state\.actionReady&&missingPreparedCreateSections\(\)\.length\)await warmPreparedCreates\(\)/);
+  assert.doesNotMatch(automaticPrime,/createPoolWarmPromise|missingPreparedCreateSections|warmPreparedCreates/);
   assert.match(automaticPrime,/for\(const pageId of candidates\)/);
+  assert.match(automaticPrime,/,DOWNLOAD_PRIME_IDLE_MS\)/);
   assert.doesNotMatch(automaticPrime,/DOWNLOAD_GRANT_PRIME_WORKERS|Promise\.all/);
   assert.match(prime,/call\('apiPrepareDownload',\{taskPageId,pageId:materialId\}\)/);
   assert.match(prime,/const requestedFingerprint=downloadMaterialFingerprint\(item\)/);
@@ -682,21 +681,23 @@ test('authoritative bootstrap primes only visible downloads after create warming
   assert.doesNotMatch(prime,/localStorage|sessionStorage|indexedDB|downloadUrl|attachmentUrl/);
 });
 
-test('cached snapshots cannot auto-prime downloads and authoritative auto-prime stays visible, serial and create-first', async () => {
+test('trusted cached and authoritative snapshots prime visible downloads serially without waiting for create heads', async () => {
   const source=frontend.slice(frontend.indexOf('function deferDownloadPrimeForBusy'),frontend.indexOf('function downloadCourierHref'));
   const visible={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'};
   const hidden={id:'cccccccc-cccc-4ccc-8ccc-cccccccccccc'};
   const makeHarness=({authoritative,deferred=false,busy=false,warm=null,actionReady=true,missing=()=>[],headWarm=async()=>{},visibleAll=false,needsRefresh=()=>true,onPrime=async()=>{}}={})=>{
     const timers=[],calls=[],state={authoritative,snapshotTrusted:true,actionReady,busy:new Set(busy?['create:Docs']:[]),materials:[visible,hidden]};let renewals=0;
-    const api=new Function('state','deferInitialDownloadPrimeUntilAuthoritative','downloadPrimeGeneration','canPrepareDownload','downloadCardIsVisible','downloadGrantNeedsRefresh','normalizeUuid','window','createPoolWarmPromise','missingPreparedCreateSections','warmPreparedCreates','primeDownloadGrant','scheduleDownloadGrantRenewal','deferredDownloadPrimeGeneration',`${source};return {schedule:scheduleDownloadGrantPrime,resume:resumeDeferredDownloadPrime,deferred:()=>deferredDownloadPrimeGeneration,setGeneration:(value)=>downloadPrimeGeneration=value};`)(
-      state,deferred,7,()=>true,(id)=>visibleAll||id===visible.id,needsRefresh,(id)=>id,{setTimeout(callback){timers.push(callback);}},warm,missing,headWarm,async(id)=>{calls.push(id);await onPrime(id,state);},()=>{renewals+=1;},-1
+    const api=new Function('state','deferInitialDownloadPrimeUntilAuthoritative','downloadPrimeGeneration','canPrepareDownload','downloadCardIsVisible','downloadGrantNeedsRefresh','normalizeUuid','window','createPoolWarmPromise','missingPreparedCreateSections','warmPreparedCreates','primeDownloadGrant','scheduleDownloadGrantRenewal','deferredDownloadPrimeGeneration','DOWNLOAD_PRIME_IDLE_MS',`${source};return {schedule:scheduleDownloadGrantPrime,resume:resumeDeferredDownloadPrime,deferred:()=>deferredDownloadPrimeGeneration,setGeneration:(value)=>downloadPrimeGeneration=value};`)(
+      state,deferred,7,()=>true,(id)=>visibleAll||id===visible.id,needsRefresh,(id)=>id,{setTimeout(callback){timers.push(callback);}},warm,missing,headWarm,async(id)=>{calls.push(id);await onPrime(id,state);},()=>{renewals+=1;},-1,750
     );
     return {state,timers,calls,...api,renewals:()=>renewals};
   };
 
   const cached=makeHarness({authoritative:false});
   cached.schedule(7);
-  assert.equal(cached.timers.length,0,'a trusted cached snapshot cannot initiate binary RPCs');
+  assert.equal(cached.timers.length,1,'a fresh server proof may prepare its exact registry downloads');
+  await cached.timers[0]();
+  assert.deepEqual(cached.calls,[visible.id]);
 
   const inconsistent=makeHarness({authoritative:true,deferred:true});
   inconsistent.schedule(7);
@@ -718,7 +719,7 @@ test('cached snapshots cannot auto-prime downloads and authoritative auto-prime 
   assert.equal(live.timers.length,1);
   const completion=live.timers[0]();
   await Promise.resolve();
-  assert.deepEqual(live.calls,[],'download RPC waits for the create pool');
+  assert.deepEqual(live.calls,[visible.id],'download preparation is independent from the create pool');
   releaseWarm();
   await completion;
   assert.deepEqual(live.calls,[visible.id],'automatic preparation excludes off-screen cards');
@@ -735,26 +736,22 @@ test('cached snapshots cannot auto-prime downloads and authoritative auto-prime 
   assert.deepEqual(interrupted.calls,[visible.id,hidden.id]);
 });
 
-test('cold authoritative download prime completes proof and all three create heads before the first download RPC', async () => {
+test('download prime waits for action proof but never for prepared create heads', async () => {
   const source=frontend.slice(frontend.indexOf('function deferDownloadPrimeForBusy'),frontend.indexOf('function downloadCourierHref'));
   const item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'};
   const events=[],timers=[],state={authoritative:true,snapshotTrusted:false,actionReady:false,busy:new Set(),materials:[item]};
-  let finishProof;
-  const proof=new Promise((resolve)=>{finishProof=()=>{state.actionReady=true;events.push('proof');resolve();};});
-  let headsReady=false;
-  const api=new Function('state','deferInitialDownloadPrimeUntilAuthoritative','downloadPrimeGeneration','canPrepareDownload','downloadCardIsVisible','downloadGrantNeedsRefresh','normalizeUuid','window','createPoolWarmPromise','missingPreparedCreateSections','warmPreparedCreates','primeDownloadGrant','scheduleDownloadGrantRenewal','deferredDownloadPrimeGeneration',`${source};return scheduleDownloadGrantPrime;`)(
-    state,false,11,()=>true,()=>true,()=>true,(id)=>id,{setTimeout(callback){timers.push(callback);}},proof,()=>headsReady?[]:['Docs','Sheets','Slides'],async()=>{events.push('heads:start');await Promise.resolve();headsReady=true;events.push('heads:done');},async()=>{events.push('download');},()=>{},-1
+  const api=new Function('state','deferInitialDownloadPrimeUntilAuthoritative','downloadPrimeGeneration','canPrepareDownload','downloadCardIsVisible','downloadGrantNeedsRefresh','normalizeUuid','window','createPoolWarmPromise','missingPreparedCreateSections','warmPreparedCreates','primeDownloadGrant','scheduleDownloadGrantRenewal','deferredDownloadPrimeGeneration','DOWNLOAD_PRIME_IDLE_MS',`${source};return scheduleDownloadGrantPrime;`)(
+    state,false,11,()=>true,()=>true,()=>true,(id)=>id,{setTimeout(callback){timers.push(callback);}},Promise.resolve(),()=>['Docs','Sheets','Slides'],async()=>{events.push('heads');},async()=>{events.push('download');},()=>{},-1,750
   );
   api(11);
-  const completion=timers[0]();
-  await Promise.resolve();
-  assert.deepEqual(events,[]);
-  finishProof();
-  await completion;
-  assert.deepEqual(events,['proof','heads:start','heads:done','download']);
+  assert.equal(timers.length,0,'no binary work starts before the server action proof');
+  state.actionReady=true;
+  api(11);
+  await timers[0]();
+  assert.deepEqual(events,['download']);
 });
 
-test('applying a trusted cached snapshot preserves the initial download deferral until live authority', () => {
+test('applying a trusted cached snapshot safely releases download preparation without a full Notion refresh', () => {
   const source=frontend.slice(frontend.indexOf('function applyBootstrapData'),frontend.indexOf('function readInitialBootstrap'));
   const state={task:null,folderUrl:null,serviceUrl:null,materials:[],preparedCreates:{},authoritative:false,snapshotTrusted:false,actionReady:false,fullySynced:false,trustedUntil:0,maxUploadBytes:1,claimRefreshNotBefore:0,bootstrapped:false};
   const scheduled=[];
@@ -765,13 +762,13 @@ test('applying a trusted cached snapshot preserves the initial download deferral
   harness.apply({task:{id:'task'},materials:[],cached:true,authoritative:false,actionReady:true,trustedUntil},false);
   assert.equal(state.snapshotTrusted,true);
   assert.equal(state.authoritative,false);
-  assert.equal(harness.deferred(),true,'snapshot trust is presentation/action proof, not live download authority');
-  assert.deepEqual(scheduled,[]);
+  assert.equal(harness.deferred(),false,'the fresh server proof is sufficient for an independently authorized download RPC');
+  assert.deepEqual(scheduled,[1]);
 
   harness.apply({task:{id:'task'},materials:[],cached:false,authoritative:true,actionReady:true,trustedUntil},true);
   assert.equal(state.authoritative,true);
   assert.equal(harness.deferred(),false);
-  assert.deepEqual(scheduled,[2],'only a live authoritative apply releases automatic download preparation');
+  assert.deepEqual(scheduled,[1,2]);
 });
 
 test('an in-flight download preparation is reusable only for the exact unchanged material', () => {
@@ -805,13 +802,12 @@ test('server-rendered safe registry cards paint before the first client RPC', ()
   assert.match(frontend,/state\.snapshotTrusted=bootstrapSnapshotIsTrusted\(data,state\.authoritative\)/);
   assert.match(frontend,/state\.actionReady=Boolean\(runtimeLocationResolved&&state\.snapshotTrusted\)/);
   assert.match(frontend,/if\(!runtimeLocationResolved\|\|!isEmbedBridgeMode\(\)\|\|!state\.bootstrapped\)return/);
-  assert.match(startupTail,/deferInitialDownloadPrimeUntilAuthoritative=true/);
-  assert.match(startupTail,/if\(!state\.bootstrapped\)applyBootstrapData\(initialBootstrap,false,\{skipDownloadPrime:true\}\)/);
+  assert.match(startupTail,/deferInitialDownloadPrimeUntilAuthoritative=!bootstrapSnapshotIsTrusted\(initialBootstrap,false\)/);
+  assert.match(startupTail,/if\(!state\.bootstrapped\|\|!state\.actionReady\)applyBootstrapData\(initialBootstrap,false,\{skipDownloadPrime:true\}\)/);
   assert.match(startupTail,/if\(runtimeLocationResolved\)continueStartup\(\)/);
-  assert.match(startupTail,/scheduleCachedRefresh\(0\)/);
-  assert.doesNotMatch(startupTail,/state\.actionReady\)scheduleDownloadGrantPrime/);
-  assert.match(frontend,/if\(state\.authoritative\)deferInitialDownloadPrimeUntilAuthoritative=false/);
-  assert.doesNotMatch(frontend,/state\.authoritative\|\|state\.snapshotTrusted\)deferInitialDownloadPrimeUntilAuthoritative=false/);
+  assert.match(startupTail,/scheduleCachedRefresh\(state\.actionReady\?CACHED_REFRESH_IDLE_MS:0\)/);
+  assert.match(startupTail,/if\(state\.actionReady\)scheduleDownloadGrantPrime/);
+  assert.match(frontend,/if\(state\.authoritative\|\|state\.snapshotTrusted\)deferInitialDownloadPrimeUntilAuthoritative=false/);
   assert.match(frontend,/!deferInitialDownloadPrimeUntilAuthoritative\)scheduleDownloadGrantPrime\(downloadPrimeGeneration\)/);
 });
 
