@@ -673,7 +673,7 @@ function w20BootstrapFromRegistry_(input, cfg, reason, options) {
     cached: true,
     authoritative: false,
     actionReady: actionProof.ready,
-    preparedCreates: actionProof.ready ? w20PreparedCreatePoolSnapshot_(taskId, values) : [],
+    preparedCreates: actionProof.ready ? w20PreparedCreatePoolForInput_(taskId, input, cfg, values) : [],
     trustedUntil: actionProof.trustedUntil,
     fullySynced: false,
     refreshRequired: true,
