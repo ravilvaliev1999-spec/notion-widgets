@@ -23,8 +23,8 @@ test('public wrapper isolates Apps Script from multi-login cookies', () => {
   assert.match(wrapper, /connect-src https:\/\/script\.google\.com https:\/\/\*\.googleusercontent\.com/);
   assert.match(wrapper, /<link rel="dns-prefetch" href="\/\/script\.google\.com">/);
   assert.match(wrapper, /<link rel="preconnect" href="https:\/\/script\.google\.com" crossorigin>/);
-  assert.match(wrapper, /<link rel="preload" href="apps-script-embed\.js\?v=51" as="script" fetchpriority="high">/);
-  assert.match(wrapper, /j\.src='apps-script-embed\.js\?v=51'/);
+  assert.match(wrapper, /<link rel="preload" href="apps-script-embed\.js\?v=52" as="script" fetchpriority="high">/);
+  assert.match(wrapper, /j\.src='apps-script-embed\.js\?v=52'/);
   assert.doesNotMatch(wrapper, /<script[^>]+src="apps-script-embed\.js/);
   assert.match(wrapper, /class="skeleton"/);
   assert.match(wrapper, /body\.widget-ready iframe\{opacity:1\}/);
@@ -78,7 +78,7 @@ test('wrapper exposes its shell before starting the credentialless Apps Script f
 
   earlyListeners.load();
   assert.equal(scripts.length, 1, 'the preloaded runtime starts as soon as the outer shell has loaded');
-  assert.equal(scripts[0].src, 'apps-script-embed.js?v=51');
+  assert.equal(scripts[0].src, 'apps-script-embed.js?v=52');
   assert.equal(scripts[0].async, true);
   assert.equal(scripts[0].fetchPriority, 'high');
   assert.equal(widget.src, '', 'the child starts in the task after the outer load event');
