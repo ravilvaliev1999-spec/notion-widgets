@@ -651,7 +651,10 @@ function w20BootstrapFromRegistry_(input, cfg, reason, options) {
     try { values = PropertiesService.getScriptProperties().getProperties(); }
     catch (_propertyError) { return null; }
   }
-  var clientCfg = settings.issueDrivePollClaims === false ? null : cfg;
+  var clientCfg = cfg;
+  if (settings.issueDrivePollClaims === false) {
+    clientCfg = { notionToken: String(cfg && cfg.notionToken || ''), suppressDrivePollClaim: true };
+  }
   var registry = w20RegistryReadTaskResultFromValues_(taskId, clientCfg, values);
   if (!registry.ok || !registry.integrityOk) return null;
   var stored = registry.materials;

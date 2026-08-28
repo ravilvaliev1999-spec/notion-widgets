@@ -548,6 +548,8 @@ test('cached bootstrap paints safe registry cards without Notion or Drive calls'
   assert.equal(result.data.materials[0].name,'Быстрая карточка');
   assert.equal(result.data.materials[0].openUrl,'https://docs.google.com/document/d/NativeGoogleDoc123/edit');
   assert.equal(result.data.materials[0].googleFileId,'NativeGoogleDoc123');
+  assert.match(result.data.materials[0].navigationBinding,/^[a-f0-9]{64}$/);
+  const navigationBinding=result.data.materials[0].navigationBinding;
   assert.equal(result.data.folderUrl,'https://drive.google.com/drive/folders/TaskFolder12345');
 
   const propertySnapshot=props.getProperties();
@@ -564,6 +566,7 @@ test('cached bootstrap paints safe registry cards without Notion or Drive calls'
   assert.equal(ssr.serviceUrl,null);
   assert.equal(ssr.materials.length,1);
   assert.equal(ssr.materials[0].drivePollClaim,undefined);
+  assert.equal(ssr.materials[0].navigationBinding,navigationBinding,'SSR keeps the exact opaque navigation identity without issuing a Drive poll claim');
   assert.ok(Array.isArray(ssr.preparedCreates));
 });
 
@@ -666,6 +669,26 @@ test('client materials expose only the create request id, never the canonical id
   assert.match(physicalDelete, /w20MaterialForClient_\(w19MaterialFromPage_\(updated\), task\.id, cfg\)/);
   assert.doesNotMatch(archiveState, /return \{ material: material,/);
   assert.match(archiveState, /w20MaterialForClient_\(material, task\.id, cfg\)/);
+});
+
+test('saved navigation is bound to an opaque server-derived page, file and revision identity', () => {
+  const backend=loadBackend();
+  const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e',cfg={notionToken:'server-only-navigation-secret'};
+  backend.w20IssueDrivePollClaim_=()=> 'claim';
+  const base={
+    id:'3c72d627-39a1-4120-8d0a-f969e6846945',provider:'Google Drive',googleFileId:'NativeGoogleDoc123',
+    name:'Одинаковое имя',format:'Google Docs',section:'Docs',position:1,archived:false,syncStatus:'synced',
+    openUrl:'https://docs.google.com/document/d/NativeGoogleDoc123/edit',updatedAt:'2026-08-28T10:00:00.000Z',
+    navigationBinding:'f'.repeat(64)
+  };
+  const first=backend.w20MaterialForClient_(base,taskId,cfg),same=backend.w20MaterialForClient_({...base},taskId,cfg);
+  assert.match(first.navigationBinding,/^[a-f0-9]{64}$/);
+  assert.equal(first.navigationBinding,same.navigationBinding,'the exact server identity/revision is stable');
+  assert.notEqual(first.navigationBinding,'f'.repeat(64),'a caller-supplied binding is discarded');
+  assert.notEqual(first.navigationBinding,backend.w20MaterialForClient_({...base,id:'4c72d627-39a1-4120-8d0a-f969e6846945'},taskId,cfg).navigationBinding,'replacing the Notion page changes the binding');
+  assert.notEqual(first.navigationBinding,backend.w20MaterialForClient_({...base,googleFileId:'ReplacementGoogle123',openUrl:'https://docs.google.com/document/d/ReplacementGoogle123/edit'},taskId,cfg).navigationBinding,'replacing the Drive file changes the binding');
+  assert.notEqual(first.navigationBinding,backend.w20MaterialForClient_({...base,updatedAt:'2026-08-28T10:00:01.000Z'},taskId,cfg).navigationBinding,'a new server revision changes the binding');
+  assert.doesNotMatch(JSON.stringify(first),/server-only-navigation-secret|create-google-Docs/);
 });
 
 test('archive hides one card while preserving its Notion knowledge and Google Drive file', () => {
@@ -1437,12 +1460,10 @@ test('post-CAS reservation failures preserve the reverse claim and can never fal
 
 test('reservation v2 prepares one signed 30-day head per client and section with a bounded client set', () => {
   const {backend,taskId,cfg,drive}=installReservationV2Harness();
-  const clients=[
-    '11111111-1111-4111-8111-111111111111',
-    '22222222-2222-4222-8222-222222222222',
-    '33333333-3333-4333-8333-333333333333',
-    '44444444-4444-4444-8444-444444444444'
-  ];
+  const clients=Array.from({length:backend.W20_CREATE_RESERVATION_V2_MAX_CLIENTS+1},(_,index)=>{
+    const ordinal=String(index+1);
+    return `${ordinal.padStart(8,'0')}-1111-4111-8111-${ordinal.padStart(12,'0')}`;
+  });
   const startedAt=Date.now();
   const first=backend.apiWarmCreateContext({taskPageId:taskId,clientId:clients[0]});
   assert.equal(first.ok,true,JSON.stringify(first));
@@ -1487,10 +1508,18 @@ test('reservation v2 prepares one signed 30-day head per client and section with
     const warmed=backend.apiWarmCreateContext({taskPageId:taskId,clientId});
     assert.equal(warmed.ok,true,JSON.stringify(warmed));assert.equal(warmed.data.preparedCreates.length,3);
   }
-  assert.equal(drive.creates,9);
-  const capped=backend.apiWarmCreateContext({taskPageId:taskId,clientId:clients[3]});
+  const fourth=backend.apiWarmCreateContext({taskPageId:taskId,clientId:clients[3]});
+  assert.equal(fourth.ok,true,JSON.stringify(fourth));
+  assert.equal(fourth.data.preparedCreates.length,3,'a fourth stable browser keeps the native prepared path');
+  assert.equal(drive.creates,12,'the fourth profile receives exact native heads instead of a slow fallback');
+  for(const clientId of clients.slice(4,backend.W20_CREATE_RESERVATION_V2_MAX_CLIENTS)){
+    const warmed=backend.apiWarmCreateContext({taskPageId:taskId,clientId});
+    assert.equal(warmed.ok,true,JSON.stringify(warmed));assert.equal(warmed.data.preparedCreates.length,3);
+  }
+  assert.equal(drive.creates,backend.W20_CREATE_RESERVATION_V2_MAX_CLIENTS*3);
+  const capped=backend.apiWarmCreateContext({taskPageId:taskId,clientId:clients.at(-1)});
   assert.equal(capped.ok,false);assert.equal(capped.error.code,'CREATE_CLIENT_LIMIT');
-  assert.equal(drive.creates,9,'client cap must not evict or create another head');
+  assert.equal(drive.creates,backend.W20_CREATE_RESERVATION_V2_MAX_CLIENTS*3,'client cap must not evict or create another head');
 });
 
 test('three sectional reservation v2 warms run full cleanup only while provisioning their shared client', () => {
@@ -1809,13 +1838,11 @@ test('scheduled sync rejects browser calls that are neither owner nor the instal
   assert.match(guard, /trigger\.getUniqueId\(\)/);
 });
 
-test('scheduled sync replenishes only missing create reservations on a best-effort path', () => {
+test('scheduled sync cleans v2 reservations without warming the unreachable legacy pool', () => {
   const scheduled = backendSource.slice(backendSource.indexOf('function scheduledSync'), backendSource.indexOf('function w19ClaimScheduledSync_'));
-  const warm = backendSource.slice(backendSource.indexOf('function w20WarmCreatePool_'), backendSource.indexOf('function w20ReadClaimedReservation_'));
-  assert.match(scheduled, /try \{ w20WarmCreatePool_\(cfg\.authorizedTaskPageId, cfg\); \}/);
-  assert.match(scheduled, /catch \(warmError\) \{ w19Audit_\('create_reservation_background_deferred'/);
-  assert.match(warm, /var prepared = w20PreparedCreatePoolSnapshot_\(taskId\)/);
-  assert.match(warm, /if \(present\[section\]\) return/);
+  assert.match(scheduled, /w20CleanupExpiredCreateReservationsV2_\(cfg\.authorizedTaskPageId, cfg, W20_CREATE_RESERVATION_V2_CLEANUP_LIMIT\)/);
+  assert.doesNotMatch(scheduled, /w20WarmCreatePool_/);
+  assert.doesNotMatch(scheduled, /create_reservation_background_deferred/);
 });
 
 test('background rename trigger uses a five-minute cadence to stay below shared API limits', () => {

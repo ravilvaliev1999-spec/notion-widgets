@@ -17,9 +17,9 @@
       const sections=['Drive','Docs','Sheets','Slides'],materials=[];
       for(const item of bootstrap.materials){
         if(materials.length>=100)break;
-        const section=String(item&&item.section||''),name=String(item&&item.name||'').replace(/\s+/g,' ').trim(),format=String(item&&item.format||'').replace(/\s+/g,' ').trim(),position=Number(item&&item.position);
+        const section=String(item&&item.section||''),name=String(item&&item.name||'').replace(/\s+/g,' ').trim(),format=String(item&&item.format||'').replace(/\s+/g,' ').trim(),position=Number(item&&item.position),navigationBinding=String(item&&item.navigationBinding||'').toLowerCase();
         if(!sections.includes(section)||!name||name.length>180||format.length>100||!Number.isFinite(position)||position<0||position>10000||item.archived===true||String(item.id||'').startsWith('pending:')||['pending','deleting','deleted'].includes(String(item.syncStatus||'')))continue;
-        materials.push({name,section,format:format||'Файл',position:Math.round(position)});
+        const material={name,section,format:format||'Файл',position:Math.round(position)};if(/^[a-f0-9]{64}$/.test(navigationBinding))material.navigationBinding=navigationBinding;materials.push(material);
       }
       let ancestor=window.parent;
       for(let depth=0;depth<5;depth+=1){
@@ -438,6 +438,7 @@
   let urgentDriveRetryTimer = 0;
   let urgentDriveRetryDelay = 250;
   let downloadPrimeGeneration = 0;
+  let deferredDownloadPrimeGeneration = -1;
   let downloadGrantRenewTimer = 0;
   let downloadGrantExpiryTimer = 0;
   let actionReadyExpiryTimer = 0;
@@ -538,9 +539,9 @@
   function acceptWarmCreateContext(data,merge,expectedSection) {
     const trustedUntil=Date.parse(String(data&&data.trustedUntil||'')),folderUrl=safeTaskFolderUrl(data&&data.folderUrl);
     if(!state.bootstrapped||!(data&&data.ready===true)||!folderUrl||!Number.isFinite(trustedUntil)||trustedUntil<=Date.now()+1000)return false;
-    state.folderUrl=folderUrl;state.trustedUntil=trustedUntil;state.snapshotTrusted=true;state.actionReady=true;deferInitialDownloadPrimeUntilAuthoritative=false;
+    state.folderUrl=folderUrl;state.trustedUntil=trustedUntil;state.snapshotTrusted=true;state.actionReady=true;
     const applied=merge?mergePreparedCreates(data.preparedCreates,expectedSection):applyPreparedCreates(data.preparedCreates);
-    scheduleActionReadyExpiry();render();announceEmbedBridgeReady();scheduleDownloadGrantPrime(downloadPrimeGeneration);
+    scheduleActionReadyExpiry();render();announceEmbedBridgeReady();
     return applied;
   }
 
@@ -941,12 +942,13 @@
     if(!state.actionReady)state.preparedCreates={};
     else {state.preparedCreates=preparedCreateMap(data&&data.preparedCreates);rememberIssuedPreparedCreates(state.preparedCreates);}
     if(state.actionReady)actionReadyRefreshAttempt=0;
-    if(state.authoritative||state.snapshotTrusted)deferInitialDownloadPrimeUntilAuthoritative=false;
-    downloadPrimeGeneration+=1;downloadGrants.forEach((_record,pageId)=>{const current=state.materials.find((item)=>item.id===pageId);if(!canPrepareDownload(current)||previousDownloadFingerprints.get(pageId)!==downloadMaterialFingerprint(current))downloadGrants.delete(pageId);});downloadGrantRetryNotBefore.clear();window.clearTimeout(downloadGrantRenewTimer);window.clearTimeout(downloadGrantExpiryTimer);downloadGrantRenewTimer=0;downloadGrantExpiryTimer=0;
+    if(state.authoritative)deferInitialDownloadPrimeUntilAuthoritative=false;
+    downloadPrimeGeneration+=1;deferredDownloadPrimeGeneration=-1;downloadGrants.forEach((_record,pageId)=>{const current=state.materials.find((item)=>item.id===pageId);if(!canPrepareDownload(current)||previousDownloadFingerprints.get(pageId)!==downloadMaterialFingerprint(current))downloadGrants.delete(pageId);});downloadGrantRetryNotBefore.clear();window.clearTimeout(downloadGrantRenewTimer);window.clearTimeout(downloadGrantExpiryTimer);downloadGrantRenewTimer=0;downloadGrantExpiryTimer=0;
     scheduleActionReadyExpiry();
     if(runtimeLocationResolved&&state.authoritative&&!state.actionReady&&!(options&&options.deferActionProofRetry))window.setTimeout(()=>warmPreparedCreates(),0);
-    render();announceEmbedBridgeReady();if(!(options&&options.skipDownloadPrime)&&!deferInitialDownloadPrimeUntilAuthoritative)scheduleDownloadGrantPrime(downloadPrimeGeneration);
+    render();announceEmbedBridgeReady();
     if(state.actionReady)window.setTimeout(()=>warmPreparedCreates(),0);
+    if(!(options&&options.skipDownloadPrime)&&!deferInitialDownloadPrimeUntilAuthoritative)scheduleDownloadGrantPrime(downloadPrimeGeneration);
   }
 
   function readInitialBootstrap() {
@@ -1244,7 +1246,7 @@
       else {if(popup&&!popup.closed)popup.close();showFatal(error.message,Boolean(error.retryable));}
     }
     finally {
-      state.busy.delete(`create:${section}`);render();
+      state.busy.delete(`create:${section}`);render();resumeDeferredDownloadPrime();
       if(releaseReservation)window.setTimeout(()=>warmPreparedCreates(),0);
     }
   }
@@ -1263,7 +1265,7 @@
       const data=await call('apiAddLink',{taskPageId,url,section,idempotencyKey:operation.value});
       clearIdempotency(operation);upsert(data.material);closeModal('linkModal');render();toast(data.duplicate?'Эта ссылка уже есть в задаче':'Ссылка сохранена как знание');
     } catch(error) { toast(error.message); }
-    finally { state.busy.delete(`link:${section}`);$('linkSubmit').disabled=false;render(); }
+    finally { state.busy.delete(`link:${section}`);$('linkSubmit').disabled=false;render();resumeDeferredDownloadPrime(); }
   }
 
   function chooseFiles(section) {
@@ -1423,12 +1425,13 @@
   }
 
   function presentationSnapshotMaterial(item) {
-    return {
+    const navigationBinding=String(item&&item.navigationBinding||'').toLowerCase();
+    const material={
       name:String(item.name||'').replace(/\s+/g,' ').trim().slice(0,180),
       section:String(item.section||''),
       format:String(item.format||'').replace(/\s+/g,' ').trim().slice(0,100)||'Файл',
       position:Math.max(0,Math.min(10000,Math.round(Number(item.position)||0)))
-    };
+    };if(/^[a-f0-9]{64}$/.test(navigationBinding))material.navigationBinding=navigationBinding;return material;
   }
 
   function presentationSnapshotMaterials() {
@@ -1454,6 +1457,7 @@
     if(optimisticMaterialMutations.size)return [];
     return presentationSnapshotSourceMaterials().map((item)=>{
       const presentation=presentationSnapshotMaterial(item);if(!presentation.name)return null;
+      if(!/^[a-f0-9]{64}$/.test(presentation.navigationBinding))return null;
       const openUrl=nativeGoogleNavigationUrl(item);
       if(openUrl)return Object.assign({},presentation,{openUrl});
       const directDownloadUrl=freshDirectDownloadUrl(item);
@@ -1728,19 +1732,35 @@
     if(canPrepareDownload(item)&&downloadGrantNeedsRefresh(item,true))primeDownloadGrant(item.id,downloadPrimeGeneration);
   }
 
+  function deferDownloadPrimeForBusy(generation) {
+    if(generation!==downloadPrimeGeneration||!state.authoritative||deferInitialDownloadPrimeUntilAuthoritative||!state.busy.size)return false;
+    deferredDownloadPrimeGeneration=generation;return true;
+  }
+
+  function resumeDeferredDownloadPrime() {
+    const generation=deferredDownloadPrimeGeneration;
+    if(generation<0||state.busy.size)return;
+    deferredDownloadPrimeGeneration=-1;
+    if(generation!==downloadPrimeGeneration||!state.authoritative||deferInitialDownloadPrimeUntilAuthoritative)return;
+    scheduleDownloadGrantPrime(generation);
+  }
+
   function scheduleDownloadGrantPrime(generation) {
-    const candidates=state.materials.filter((item)=>canPrepareDownload(item)&&downloadGrantNeedsRefresh(item,true)).map((item,index)=>({pageId:normalizeUuid(item.id),visible:downloadCardIsVisible(item.id),index}))
-      .filter((candidate)=>Boolean(candidate.pageId)).sort((left,right)=>Number(right.visible)-Number(left.visible)||left.index-right.index).map((candidate)=>candidate.pageId);
+    if(generation!==downloadPrimeGeneration||!state.authoritative||deferInitialDownloadPrimeUntilAuthoritative)return;
+    if(state.busy.size){deferDownloadPrimeForBusy(generation);return;}
+    const candidates=state.materials.filter((item)=>canPrepareDownload(item)&&downloadCardIsVisible(item.id)&&downloadGrantNeedsRefresh(item,true)).map((item)=>normalizeUuid(item.id)).filter(Boolean);
     if(!candidates.length)return;
     window.setTimeout(async()=>{
-      let cursor=0;
-      async function worker(){
-        while(generation===downloadPrimeGeneration&&cursor<candidates.length){
-          const pageId=candidates[cursor++];
-          await primeDownloadGrant(pageId,generation);
-        }
+      if(createPoolWarmPromise)await createPoolWarmPromise;
+      if(generation!==downloadPrimeGeneration||!state.authoritative||deferInitialDownloadPrimeUntilAuthoritative)return;
+      if(state.busy.size){deferDownloadPrimeForBusy(generation);return;}
+      if(state.actionReady&&missingPreparedCreateSections().length)await warmPreparedCreates();
+      for(const pageId of candidates){
+        if(generation!==downloadPrimeGeneration||!state.authoritative||deferInitialDownloadPrimeUntilAuthoritative)return;
+        if(state.busy.size){deferDownloadPrimeForBusy(generation);return;}
+        await primeDownloadGrant(pageId,generation);
       }
-      await Promise.all(Array.from({length:Math.min(DOWNLOAD_GRANT_PRIME_WORKERS,candidates.length)},()=>worker()));scheduleDownloadGrantRenewal();
+      scheduleDownloadGrantRenewal();
     },0);
   }
 
@@ -1835,7 +1855,7 @@
 
   function finishOptimisticMaterialMutation(record) {
     if(!optimisticMaterialMutationIsCurrent(record))return false;
-    optimisticMaterialMutations.delete(record.itemId);state.busy.delete(materialMutationBusyKey(record.itemId));return true;
+    optimisticMaterialMutations.delete(record.itemId);state.busy.delete(materialMutationBusyKey(record.itemId));resumeDeferredDownloadPrime();return true;
   }
 
   function rollbackOptimisticMaterialMutation(record) {
@@ -2027,7 +2047,6 @@
     configureEmbedPrimaryCards();
     if(!initialBootstrap)return bootstrap();
     if(!state.bootstrapped)applyBootstrapData(initialBootstrap,false,{skipDownloadPrime:true});
-    if(state.actionReady)scheduleDownloadGrantPrime(downloadPrimeGeneration);
     if(initialBootstrap.cached)scheduleCachedRefresh(0);
   };
   if(runtimeLocationResolved)continueStartup();

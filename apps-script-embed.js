@@ -20,7 +20,7 @@
   const ACTION_CACHE_V2_MAX_TTL_MS = 30 * 24 * 60 * 60 * 1000;
   const ACTION_CACHE_V2_USED_TTL_MS = 31 * 24 * 60 * 60 * 1000;
   const ACTION_DESCRIPTOR_V2_KEYS = ['section', 'reservationId', 'openUrl', 'generation', 'navigateUntil', 'reservationProof', 'preparedName'];
-  const NAVIGATION_CACHE_SCHEMA = 1;
+  const NAVIGATION_CACHE_SCHEMA = 2;
   const NAVIGATION_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
   const NAVIGATION_DIRECT_MAX_TTL_MS = 60 * 1000;
   const SNAPSHOT_CLASS = { Drive: 'gray', Docs: 'blue', Sheets: 'green', Slides: 'orange' };
@@ -130,10 +130,14 @@
       const rawName = String(source && source.name || '').replace(/\s+/g, ' ').trim();
       const rawFormat = String(source && source.format || '').replace(/\s+/g, ' ').trim();
       const position = Number(source && source.position);
-      if (!rawName || rawName.length > 180 || rawFormat.length > 100 || !Number.isFinite(position) || position < 0 || position > 10000) return null;
-      rows.push({ name: rawName, section, format: rawFormat || 'Файл', position: Math.round(position) });
+      const navigationBinding = String(source && source.navigationBinding || '').toLowerCase();
+      if (!rawName || rawName.length > 180 || rawFormat.length > 100 || !Number.isFinite(position) || position < 0 || position > 10000 ||
+          navigationBinding && !/^[a-f0-9]{64}$/.test(navigationBinding)) return null;
+      const row = { name: rawName, section, format: rawFormat || 'Файл', position: Math.round(position) };
+      if (navigationBinding) row.navigationBinding = navigationBinding;
+      rows.push(row);
     }
-    return rows.sort((left, right) => SECTIONS.indexOf(left.section) - SECTIONS.indexOf(right.section) || left.position - right.position || left.name.localeCompare(right.name));
+    return rows.sort((left, right) => SECTIONS.indexOf(left.section) - SECTIONS.indexOf(right.section) || left.position - right.position || left.name.localeCompare(right.name) || String(left.navigationBinding || '').localeCompare(String(right.navigationBinding || '')));
   }
 
   function snapshotFingerprint(rows) {
@@ -375,14 +379,14 @@
   }
 
   function navigationCardKey(row) {
-    return JSON.stringify([String(row && row.name || ''), String(row && row.section || ''), String(row && row.format || ''), Number(row && row.position)]);
+    return JSON.stringify([String(row && row.navigationBinding || ''), String(row && row.name || ''), String(row && row.section || ''), String(row && row.format || ''), Number(row && row.position)]);
   }
 
   function navigationRowFromKey(value) {
     try {
       const tuple = JSON.parse(String(value || ''));
-      if (!Array.isArray(tuple) || tuple.length !== 4) return null;
-      const rows = safeSnapshotMaterials([{ name: tuple[0], section: tuple[1], format: tuple[2], position: tuple[3] }]);
+      if (!Array.isArray(tuple) || tuple.length !== 5 || !/^[a-f0-9]{64}$/.test(String(tuple[0] || ''))) return null;
+      const rows = safeSnapshotMaterials([{ navigationBinding: tuple[0], name: tuple[1], section: tuple[2], format: tuple[3], position: tuple[4] }]);
       return rows && rows.length === 1 && navigationCardKey(rows[0]) === value ? rows[0] : null;
     } catch (_error) { return null; }
   }
@@ -415,13 +419,14 @@
     if (!Array.isArray(value) || value.length > 100) return null;
     const allowed = new Set(snapshotRows.map(navigationCardKey)), seen = new Set(), entries = [];
     for (const source of value) {
-      const google = hasExactObjectKeys(source, ['name', 'section', 'format', 'position', 'openUrl']);
-      const direct = hasExactObjectKeys(source, ['name', 'section', 'format', 'position', 'directDownloadUrl', 'directDownloadExpiresAt']);
+      const google = hasExactObjectKeys(source, ['name', 'section', 'format', 'position', 'navigationBinding', 'openUrl']);
+      const direct = hasExactObjectKeys(source, ['name', 'section', 'format', 'position', 'navigationBinding', 'directDownloadUrl', 'directDownloadExpiresAt']);
       if (google === direct) return null;
-      const presentation = safeSnapshotMaterials([{ name: source.name, section: source.section, format: source.format, position: source.position }]);
+      const presentation = safeSnapshotMaterials([{ navigationBinding: source.navigationBinding, name: source.name, section: source.section, format: source.format, position: source.position }]);
       if (!presentation || presentation.length !== 1) return null;
       const row = presentation[0], cardKey = navigationCardKey(row);
       if (source.name !== row.name || source.section !== row.section || source.format !== row.format ||
+          source.navigationBinding !== row.navigationBinding || !/^[a-f0-9]{64}$/.test(row.navigationBinding) ||
           typeof source.position !== 'number' || !Number.isSafeInteger(source.position) || source.position !== row.position) return null;
       if (!allowed.has(cardKey) || seen.has(cardKey)) return null;
       seen.add(cardKey);
@@ -454,7 +459,8 @@
         const now = Date.now();
         for (let index = Number(store.length) - 1; index >= 0; index -= 1) {
           const key = String(store.key(index) || '');
-          if (!key.startsWith('notion-widget-navigation-v1:')) continue;
+          if (key.startsWith('notion-widget-navigation-v1:')) { try { store.removeItem(key); } catch (_removeLegacyError) {} continue; }
+          if (!key.startsWith('notion-widget-navigation-v2:')) continue;
           let envelope = null;
           try { envelope = JSON.parse(String(store.getItem(key) || '')); } catch (_error) {}
           if (!hasExactObjectKeys(envelope, ['schema', 'savedAt', 'expiresAt', 'iv', 'ciphertext']) ||
@@ -475,13 +481,13 @@
       const task = String(params.get('task') || ''), token = String(params.get('accessToken') || ''), clientId = String(params.get('clientId') || '');
       if (!task || !token || !validClientId(clientId)) return null;
       const encoder = new TextEncoder(), domain = `${host}\u0000${task}\u0000${token}\u0000${clientId}`;
-      const keyDigest = new Uint8Array(await window.crypto.subtle.digest('SHA-256', encoder.encode(`notion-widget-navigation-key-v1\u0000${domain}`)));
-      const slotDigest = new Uint8Array(await window.crypto.subtle.digest('SHA-256', encoder.encode(`notion-widget-navigation-slot-v1\u0000${domain}`)));
+      const keyDigest = new Uint8Array(await window.crypto.subtle.digest('SHA-256', encoder.encode(`notion-widget-navigation-key-v2\u0000${domain}`)));
+      const slotDigest = new Uint8Array(await window.crypto.subtle.digest('SHA-256', encoder.encode(`notion-widget-navigation-slot-v2\u0000${domain}`)));
       const key = await window.crypto.subtle.importKey('raw', keyDigest, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
       const context = {
         key, host, task, clientId,
-        slot: `notion-widget-navigation-v1:${bytesToBase64Url(slotDigest.slice(0, 18))}`,
-        aad: encoder.encode(`notion-widget-navigation-v1\u0000${domain}`)
+        slot: `notion-widget-navigation-v2:${bytesToBase64Url(slotDigest.slice(0, 18))}`,
+        aad: encoder.encode(`notion-widget-navigation-v2\u0000${domain}`)
       };
       navigationCacheContextValue = context;
       return context;
