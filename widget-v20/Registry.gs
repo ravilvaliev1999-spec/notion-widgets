@@ -150,7 +150,7 @@ function w20RegistryUpsert_(taskId, material) {
     var existing = w20RegistryParseRecord_(existingRaw);
     if (w20RegistryIsTombstone_(taskId, material.id, existing)) return false;
     props.setProperty(key, JSON.stringify(safe));
-    if (!w20RegistryIsActiveRecord_(taskId, material.id, existing)) w20RegistryUpdateSnapshotCountUnlocked_(props, taskId);
+    if (!w20RegistryIsActiveRecord_(taskId, material.id, existing) && !w20RegistryUpdateSnapshotCountUnlocked_(props, taskId)) return false;
     return true;
   } catch (_err) { return false; }
   finally { lock.releaseLock(); }
@@ -166,7 +166,7 @@ function w20RegistryRestore_(taskId, material) {
     var props = PropertiesService.getScriptProperties();
     var existing = w20RegistryParseRecord_(w20RegistryStoredProperty_(props, key));
     props.setProperty(key, JSON.stringify(safe));
-    if (!w20RegistryIsActiveRecord_(taskId, material.id, existing)) w20RegistryUpdateSnapshotCountUnlocked_(props, taskId);
+    if (!w20RegistryIsActiveRecord_(taskId, material.id, existing) && !w20RegistryUpdateSnapshotCountUnlocked_(props, taskId)) return false;
     return true;
   } catch (_err) { return false; }
   finally { lock.releaseLock(); }
@@ -181,7 +181,7 @@ function w20RegistryRemove_(taskId, pageId) {
   try {
     var props = PropertiesService.getScriptProperties();
     props.setProperty(key, JSON.stringify(tombstone));
-    w20RegistryUpdateSnapshotCountUnlocked_(props, taskId);
+    if (!w20RegistryUpdateSnapshotCountUnlocked_(props, taskId)) return false;
     return true;
   } catch (_err) { return false; }
   finally { lock.releaseLock(); }

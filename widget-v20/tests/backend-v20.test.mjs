@@ -254,6 +254,134 @@ function installUploadApiHarness({ recovery = false, slot, existingPage = null }
   };
 }
 
+function installOuterMutationHarness() {
+  const backend = loadBackend();
+  const taskId = '3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const pageId = '3c72d627-39a1-8120-bd0a-f969e6846945';
+  const binding = 'a'.repeat(64);
+  const nextBinding = 'b'.repeat(64);
+  const accessToken = 'outer_mutation_capability_0123456789_ABCDEFGH';
+  const requestId = '12345678-1234-4abc-8def-1234567890ab';
+  const cfg = {
+    authorizedTaskPageId: taskId,
+    deniedPageIds: {},
+    notionToken: 'server-only-signing-secret',
+    rootFolderId: 'TrustedRootFolder123'
+  };
+  const current = {
+    id: pageId,
+    name: 'Исходное имя',
+    section: 'Docs',
+    format: 'Google Docs',
+    provider: 'Google Drive',
+    googleFileId: 'NativeGoogleDoc123',
+    widgetOwned: true,
+    syncStatus: 'synced',
+    position: 4,
+    idempotency: 'server-private-original-key',
+    openUrl: 'https://docs.google.com/document/d/NativeGoogleDoc123/edit'
+  };
+  const calls = {
+    fresh: 0,
+    auth: 0,
+    canonical: [],
+    idempotency: [],
+    locks: 0,
+    notionGet: 0,
+    notionIncludeArchived: [],
+    invalidations: 0,
+    cancelled: 0,
+    driveState: [],
+    driveRename: [],
+    notionUpdate: [],
+    registryRemove: 0,
+    registryUpsert: 0
+  };
+  backend.w19AuthorizedConfig_ = (input) => {
+    calls.auth += 1;
+    assert.deepEqual(JSON.parse(JSON.stringify(input)), { taskPageId: taskId, accessToken });
+    return cfg;
+  };
+  backend.w20FreshRegistryMaterialByNavigationBinding_ = (receivedTask, receivedBinding, receivedCfg) => {
+    calls.fresh += 1;
+    assert.equal(receivedTask, taskId);
+    assert.equal(receivedBinding, binding);
+    assert.equal(receivedCfg, cfg);
+    return current;
+  };
+  backend.w19CanonicalIdempotency_ = (...args) => {
+    calls.canonical.push(args);
+    return 'server-private-canonical-key';
+  };
+  backend.w19WithIdempotency_ = (key, operation) => {
+    calls.idempotency.push(key);
+    return operation({ recovery: false });
+  };
+  backend.w19WithMutationLock_ = (operation) => {
+    calls.locks += 1;
+    return operation();
+  };
+  backend.w19AssertMaterialForTask_ = (receivedPage, receivedTask, receivedCfg, includeArchived) => {
+    calls.notionGet += 1;
+    assert.equal(receivedPage, pageId);
+    assert.equal(receivedTask, taskId);
+    assert.equal(receivedCfg, cfg);
+    assert.equal(typeof includeArchived, 'boolean');
+    calls.notionIncludeArchived.push(includeArchived);
+    return { id: pageId, in_trash: false };
+  };
+  backend.w19MaterialFromPage_ = () => ({ ...current });
+  backend.w20NavigationBinding_ = (material) => material.navigationBinding || binding;
+  backend.w20InvalidateDownloadMaterialCache_ = () => { calls.invalidations += 1; };
+  backend.w20CancelAttachmentJob_ = () => { calls.cancelled += 1; return true; };
+  backend.w20SetDriveMaterialState_ = (_material, receivedTask, state) => {
+    calls.driveState.push({ task: receivedTask, state });
+  };
+  backend.w19DriveRetry_ = (operation) => operation();
+  backend.Drive = { Files: {
+    update(resource, fileId) {
+      calls.driveRename.push({ resource, fileId });
+      return { id: fileId, name: resource.name };
+    },
+    delete() { throw new Error('outer mutation must never delete a Drive file'); },
+    remove() { throw new Error('outer mutation must never remove a Drive file'); }
+  } };
+  backend.w19UpdateNotionPage_ = (receivedPage, properties) => {
+    calls.notionUpdate.push({ pageId: receivedPage, properties });
+    return { id: pageId, updated: true };
+  };
+  backend.w20RegistryRemove_ = () => { calls.registryRemove += 1; return true; };
+  backend.w20RegistryUpsert_ = () => { calls.registryUpsert += 1; return true; };
+  backend.w19NextPosition_ = () => 9;
+  backend.w20MaterialForClient_ = (material) => ({
+    name: material.name,
+    section: material.section,
+    format: material.format,
+    position: material.position,
+    navigationBinding: nextBinding,
+    id: pageId,
+    googleFileId: current.googleFileId,
+    accessToken,
+    idempotency: current.idempotency,
+    openUrl: current.openUrl
+  });
+  return {
+    backend,
+    taskId,
+    pageId,
+    binding,
+    nextBinding,
+    accessToken,
+    requestId,
+    cfg,
+    current,
+    calls,
+    fields(payload) {
+      return { valid: true, taskPageId: taskId, accessToken, requestId, payload };
+    }
+  };
+}
+
 test('Google Drive metadata is authoritative for title, type and canonical open URL', () => {
   const core = loadCore();
   const doc = core.describeGoogleMetadata({
@@ -490,6 +618,265 @@ test('create POST accepts exactly four form fields, executes once and embeds onl
   assert.equal(calls,1,'a non-form body must fail before create');
   backend.doPost({...event,queryString:'task=must-not-be-in-url'});
   assert.equal(calls,1,'POST courier fields must not arrive in the query string');
+});
+
+test('outer mutation POST parser accepts only four single form fields and an exact bounded payload schema', () => {
+  const backend = loadBackend();
+  const task = '3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const requestId = '12345678-1234-4abc-8def-1234567890ab';
+  const accessToken = 'outer_mutation_capability_0123456789_ABCDEFGH';
+  const binding = 'a'.repeat(64);
+  const makeEvent = (payload, overrides = {}) => ({
+    parameters: {
+      task: [task],
+      accessToken: [accessToken],
+      mutationRequestId: [requestId],
+      mutationPayload: [JSON.stringify(payload)]
+    },
+    postData: { type: 'application/x-www-form-urlencoded; charset=UTF-8' },
+    ...overrides
+  });
+
+  const hide = backend.w20MutationPostFields_(makeEvent({ kind: 'hide', binding }));
+  assert.deepEqual(JSON.parse(JSON.stringify(hide)), {
+    valid: true,
+    taskPageId: task,
+    accessToken,
+    requestId,
+    payload: { kind: 'hide', binding }
+  });
+  const edit = backend.w20MutationPostFields_(makeEvent({ kind: 'edit', binding, name: '  Новое   имя  ', section: 'Sheets' }));
+  assert.equal(edit.valid, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(edit.payload)), { kind: 'edit', binding, name: 'Новое имя', section: 'Sheets' });
+
+  const malformed = [
+    makeEvent({ kind: 'hide', binding }, { parameters: { task: [task], accessToken: [accessToken], mutationRequestId: [requestId] } }),
+    makeEvent({ kind: 'hide', binding }, { postData: undefined }),
+    makeEvent({ kind: 'hide', binding }, { parameters: { ...makeEvent({ kind: 'hide', binding }).parameters, extra: ['forbidden'] } }),
+    makeEvent({ kind: 'hide', binding }, { parameters: { ...makeEvent({ kind: 'hide', binding }).parameters, task: [task, task] } }),
+    makeEvent({ kind: 'hide', binding }, { postData: { type: 'application/json' } }),
+    makeEvent({ kind: 'hide', binding }, { queryString: 'task=must-not-be-in-url' }),
+    makeEvent({ kind: 'hide', binding, pageId: 'attacker-controlled' }),
+    makeEvent({ kind: 'edit', binding, name: 'Новое имя', section: 'Docs', idempotencyKey: 'leak' }),
+    makeEvent({ kind: 'edit', binding, name: '', section: 'Docs' }),
+    makeEvent({ kind: 'edit', binding, name: 'x'.repeat(181), section: 'Docs' }),
+    makeEvent({ kind: 'edit', binding, name: 'Новое имя', section: 'Unknown' }),
+    makeEvent({ kind: 'unknown', binding }),
+    makeEvent({ kind: 'hide', binding: 'a'.repeat(63) }),
+    makeEvent({ kind: 'hide', binding }, { parameters: { ...makeEvent({ kind: 'hide', binding }).parameters, mutationRequestId: ['12345678-1234-1abc-8def-1234567890ab'] } }),
+    makeEvent({ kind: 'hide', binding }, { parameters: { ...makeEvent({ kind: 'hide', binding }).parameters, accessToken: ['short'] } }),
+    makeEvent({ kind: 'hide', binding }, { parameters: { ...makeEvent({ kind: 'hide', binding }).parameters, mutationPayload: ['{not-json'] } }),
+    makeEvent({ kind: 'hide', binding }, { parameters: { ...makeEvent({ kind: 'hide', binding }).parameters, mutationPayload: ['x'.repeat(1001)] } })
+  ];
+  malformed.forEach((event, index) => assert.equal(backend.w20MutationPostFields_(event).valid, false, `malformed case ${index}`));
+});
+
+test('courier router selects exactly one route and rejects mixed create, download and mutation fields', () => {
+  const backend = loadBackend();
+  const event = (keys) => ({ parameters: Object.fromEntries(keys.map((key) => [key, ['value']])) });
+  assert.equal(backend.w20CourierPostKind_(event(['createRequestId'])), 'create');
+  assert.equal(backend.w20CourierPostKind_(event(['createSection'])), 'create');
+  assert.equal(backend.w20CourierPostKind_(event(['downloadTicket'])), 'download');
+  assert.equal(backend.w20CourierPostKind_(event(['downloadPageId'])), 'download');
+  assert.equal(backend.w20CourierPostKind_(event(['mutationRequestId'])), 'mutation');
+  assert.equal(backend.w20CourierPostKind_(event(['mutationPayload'])), 'mutation');
+  assert.equal(backend.w20CourierPostKind_(event(['createRequestId', 'downloadTicket'])), '');
+  assert.equal(backend.w20CourierPostKind_(event(['createSection', 'mutationPayload'])), '');
+  assert.equal(backend.w20CourierPostKind_(event(['downloadPageId', 'mutationRequestId'])), '');
+  assert.equal(backend.w20CourierPostKind_(event(['createRequestId', 'downloadTicket', 'mutationRequestId'])), '');
+  assert.equal(backend.w20CourierPostKind_({ parameters: {} }), '');
+});
+
+test('outer hide rechecks the registry under the mutation lock, archives only metadata and never deletes Drive', () => {
+  const fixture = installOuterMutationHarness();
+  const { backend, taskId, pageId, binding, requestId, current, calls } = fixture;
+  const response = backend.w20ApplyOuterMutation_(fixture.fields({ kind: 'hide', binding }));
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    ok: true,
+    data: { kind: 'hide', binding, material: null }
+  });
+  assert.equal(calls.fresh, 2, 'the signed registry binding is checked before and inside the lock');
+  assert.equal(calls.locks, 1);
+  assert.equal(calls.notionGet, 1, 'one exact authoritative Notion page check is retained');
+  assert.deepEqual(calls.notionIncludeArchived, [true]);
+  assert.equal(calls.invalidations, 1);
+  assert.equal(calls.cancelled, 1);
+  assert.deepEqual(calls.driveState, [{ task: taskId, state: 'archived' }]);
+  assert.equal(calls.notionUpdate.length, 1);
+  assert.equal(calls.notionUpdate[0].pageId, pageId);
+  assert.equal(calls.notionUpdate[0].properties['Архив'].checkbox, true);
+  assert.equal(calls.notionUpdate[0].properties['[SYS] Sync status'].select.name, 'archived');
+  assert.equal(calls.registryRemove, 1);
+  assert.deepEqual(calls.canonical, [[taskId, `outer-hide-${binding}`, requestId]]);
+  assert.deepEqual(calls.idempotency, ['server-private-canonical-key']);
+  assert.equal(current.googleFileId, 'NativeGoogleDoc123', 'the underlying Drive file remains intact');
+});
+
+test('an identical successful outer mutation retry returns the ledger result before resolving the consumed binding', () => {
+  const fixture = installOuterMutationHarness();
+  const originalFresh = fixture.backend.w20FreshRegistryMaterialByNavigationBinding_;
+  const completed = new Map();
+  let bindingStillLive = true;
+  fixture.backend.w20FreshRegistryMaterialByNavigationBinding_ = (...args) => bindingStillLive ? originalFresh(...args) : null;
+  fixture.backend.w19WithIdempotency_ = (key, operation) => {
+    fixture.calls.idempotency.push(key);
+    if (completed.has(key)) return completed.get(key);
+    const result = operation({ recovery: false });
+    completed.set(key, result);
+    return result;
+  };
+  const fields = fixture.fields({ kind: 'hide', binding: fixture.binding });
+  const first = fixture.backend.w20ApplyOuterMutation_(fields);
+  bindingStillLive = false;
+  const retry = fixture.backend.w20ApplyOuterMutation_(fields);
+  assert.deepEqual(JSON.parse(JSON.stringify(retry)), JSON.parse(JSON.stringify(first)));
+  assert.equal(retry.ok, true);
+  assert.equal(fixture.calls.fresh, 2, 'the replay never tries to resolve the binding after hide consumed it');
+  assert.equal(fixture.calls.notionUpdate.length, 1, 'the replay cannot repeat the Notion mutation');
+  assert.equal(fixture.calls.registryRemove, 1, 'the replay cannot write a second tombstone');
+});
+
+test('outer mutation fails closed when the registry proof is stale initially or changes before the locked recheck', () => {
+  const initial = installOuterMutationHarness();
+  initial.backend.w20FreshRegistryMaterialByNavigationBinding_ = () => null;
+  const initialResponse = initial.backend.w20ApplyOuterMutation_(initial.fields({ kind: 'hide', binding: initial.binding }));
+  assert.equal(initialResponse.ok, false);
+  assert.equal(initialResponse.error.code, 'MUTATION_REFRESH_REQUIRED');
+  assert.equal(initialResponse.error.retryable, true);
+  assert.equal(initial.calls.notionGet, 0);
+  assert.equal(initial.calls.notionUpdate.length, 0);
+
+  const recheck = installOuterMutationHarness();
+  let reads = 0;
+  recheck.backend.w20FreshRegistryMaterialByNavigationBinding_ = () => (++reads === 1 ? recheck.current : null);
+  const recheckResponse = recheck.backend.w20ApplyOuterMutation_(recheck.fields({ kind: 'edit', binding: recheck.binding, name: 'Новое имя', section: 'Docs' }));
+  assert.equal(recheckResponse.ok, false);
+  assert.equal(recheckResponse.error.code, 'MUTATION_REFRESH_REQUIRED');
+  assert.equal(recheckResponse.error.retryable, true);
+  assert.equal(reads, 2);
+  assert.equal(recheck.calls.notionGet, 0, 'a failed locked recheck stops before Notion');
+  assert.equal(recheck.calls.invalidations, 0);
+  assert.equal(recheck.calls.notionUpdate.length, 0);
+});
+
+test('outer hide reports an error if the registry tombstone cannot be committed', () => {
+  const fixture = installOuterMutationHarness();
+  fixture.backend.w20RegistryRemove_ = () => { fixture.calls.registryRemove += 1; return false; };
+  const response = fixture.backend.w20ApplyOuterMutation_(fixture.fields({ kind: 'hide', binding: fixture.binding }));
+  assert.equal(response.ok, false);
+  assert.equal(response.error.code, 'BUSY');
+  assert.equal(response.error.retryable, true);
+  assert.equal(fixture.calls.registryRemove, 1);
+  assert.deepEqual(fixture.calls.driveState, [{ task: fixture.taskId, state: 'archived' }]);
+  assert.equal(fixture.calls.notionUpdate.length, 1);
+});
+
+test('outer edit reports an error if the updated registry card cannot be committed', () => {
+  const fixture = installOuterMutationHarness();
+  fixture.backend.w20RegistryUpsert_ = () => { fixture.calls.registryUpsert += 1; return false; };
+  const response = fixture.backend.w20ApplyOuterMutation_(fixture.fields({
+    kind: 'edit',
+    binding: fixture.binding,
+    name: 'Другое имя',
+    section: 'Docs'
+  }));
+  assert.equal(response.ok, false);
+  assert.equal(response.error.code, 'BUSY');
+  assert.equal(response.error.retryable, true);
+  assert.equal(fixture.calls.registryUpsert, 1);
+  assert.equal(fixture.calls.driveRename.length, 1);
+  assert.equal(fixture.calls.notionUpdate.length, 1);
+});
+
+test('outer edit returns an exact safe presentation without page, Drive, token or idempotency identifiers', () => {
+  const fixture = installOuterMutationHarness();
+  const { backend, taskId, pageId, binding, nextBinding, requestId, accessToken, current, calls } = fixture;
+  const updatedMaterial = {
+    ...current,
+    name: 'Новое имя',
+    section: 'Sheets',
+    format: 'Google Sheets',
+    position: 9,
+    navigationBinding: nextBinding
+  };
+  backend.w19MaterialFromPage_ = (page) => page && page.updated ? updatedMaterial : ({ ...current });
+  let audit = null;
+  backend.w19Audit_ = (_type, details) => { audit = details; };
+  const response = backend.w20ApplyOuterMutation_(fixture.fields({ kind: 'edit', binding, name: 'Новое имя', section: 'Sheets' }));
+  assert.equal(response.ok, true, JSON.stringify({ response, audit }));
+  assert.equal(calls.fresh, 2);
+  assert.deepEqual(calls.notionIncludeArchived, [false]);
+  assert.equal(calls.driveRename.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.driveRename[0])), { resource: { name: 'Новое имя' }, fileId: current.googleFileId });
+  assert.equal(calls.notionUpdate.length, 1);
+  assert.equal(calls.notionUpdate[0].pageId, pageId);
+  assert.equal(calls.notionUpdate[0].properties.Name.title[0].text.content, 'Новое имя');
+  assert.equal(calls.notionUpdate[0].properties['[SYS] Раздел виджета'].select.name, 'Sheets');
+  assert.equal(calls.notionUpdate[0].properties['[SYS] Позиция'].number, 9);
+  assert.equal(calls.registryUpsert, 1);
+  const safe = backend.w20SafeMutationPostResult_(fixture.fields({ kind: 'edit', binding, name: 'Новое имя', section: 'Sheets' }), response);
+  assert.deepEqual(JSON.parse(JSON.stringify(safe)), {
+    requestId,
+    status: 'success',
+    kind: 'edit',
+    binding,
+    material: { name: 'Новое имя', section: 'Sheets', format: 'Google Sheets', position: 9, navigationBinding: nextBinding }
+  });
+  assert.deepEqual(Object.keys(safe.material).sort(), ['format', 'name', 'navigationBinding', 'position', 'section']);
+  const serialized = JSON.stringify(safe);
+  assert.doesNotMatch(serialized, new RegExp(pageId));
+  assert.doesNotMatch(serialized, new RegExp(current.googleFileId));
+  assert.doesNotMatch(serialized, new RegExp(accessToken));
+  assert.doesNotMatch(serialized, /idempotency|server-private/i);
+  assert.deepEqual(calls.canonical, [[taskId, `outer-edit-${binding}`, requestId]]);
+});
+
+test('mutation POST renders the dedicated template once with only the safe precomputed result', () => {
+  const backend = loadBackend();
+  const task = '3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const requestId = '12345678-1234-4abc-8def-1234567890ab';
+  const accessToken = 'outer_mutation_capability_0123456789_ABCDEFGH';
+  const binding = 'a'.repeat(64);
+  const nextBinding = 'b'.repeat(64);
+  const rendered = [];
+  const output = { setTitle() { return this; }, setXFrameOptionsMode() { return this; }, addMetaTag() { return this; } };
+  backend.HtmlService = {
+    XFrameOptionsMode: { ALLOWALL: 'ALLOWALL' },
+    createTemplateFromFile(name) {
+      assert.equal(name, 'Mutation');
+      const template = { evaluate() { rendered.push(template.precomputedResultJson); return output; } };
+      return template;
+    }
+  };
+  let mutationCalls = 0;
+  backend.w20ApplyOuterMutation_ = (fields) => {
+    mutationCalls += 1;
+    assert.equal(fields.valid, true);
+    return { ok: true, data: { kind: 'edit', binding, material: { name: 'Новое имя', section: 'Docs', format: 'Google Docs', position: 7, navigationBinding: nextBinding, id: 'must-be-removed' } } };
+  };
+  const event = {
+    parameters: { task: [task], accessToken: [accessToken], mutationRequestId: [requestId], mutationPayload: [JSON.stringify({ kind: 'edit', binding, name: 'Новое имя', section: 'Docs' })] },
+    postData: { type: 'application/x-www-form-urlencoded' }
+  };
+  assert.equal(backend.doPost(event), output);
+  assert.equal(mutationCalls, 1);
+  const safe = JSON.parse(rendered[0]);
+  assert.equal(safe.status, 'error', 'a material with any extra server field must fail closed');
+  assert.deepEqual(Object.keys(safe).sort(), ['message', 'requestId', 'retryable', 'status']);
+  assert.doesNotMatch(rendered[0], /must-be-removed|accessToken|capability|idempotency/i);
+
+  backend.w20ApplyOuterMutation_ = () => ({ ok: true, data: { kind: 'hide', binding, material: null } });
+  assert.equal(backend.doPost(event), output);
+  const hidden = JSON.parse(rendered[1]);
+  assert.deepEqual(hidden, { requestId, status: 'success', kind: 'hide', binding, material: null });
+  assert.doesNotMatch(rendered[1], new RegExp(accessToken));
+
+  backend.doPost({ ...event, parameters: { ...event.parameters, extra: ['forbidden'] } });
+  assert.equal(mutationCalls, 1, 'invalid mutation POST must fail before executing the backend mutation');
+  const invalid = JSON.parse(rendered[2]);
+  assert.equal(invalid.status, 'error');
+  assert.equal(invalid.retryable, false);
+  assert.doesNotMatch(rendered[2], new RegExp(accessToken));
 });
 
 test('concurrent create POST briefly recovers the completed registry result and otherwise reports pending without duplicating', () => {
@@ -3660,7 +4047,9 @@ test('prepare download revalidates server ownership before issuing an account-bo
   assert.equal(backend.w20FastDownloadPackage_(probeDirect,Date.now()),null);
   assert.equal(result.data.url,undefined,'the generic direct result shape is reserved for grant redemption');
   assert.equal(result.data.directDownloadUrl,expectedDriveUrl,'the authenticated priming call may return only the already ownership-checked Drive URL');
-  assert.equal(result.data.directDownloadExpiresAt,result.data.expiresAt,'the in-memory direct URL cannot outlive its HMAC grant');
+  assert.ok(Date.parse(result.data.directDownloadExpiresAt)-Date.now()>10*60_000,'the account-bound direct URL remains hot well beyond the short HMAC grant');
+  assert.ok(Date.parse(result.data.directDownloadExpiresAt)-Date.now()<=15*60_000);
+  assert.ok(Date.parse(result.data.directDownloadExpiresAt)>Date.parse(result.data.expiresAt));
   assert.equal(backend.w20GetDownloadGrant_(taskId,pageId,result.data.downloadGrant,cfg).url,expectedDriveUrl);
   assert.equal(guardCalls,1);
   cfg.allowedEmail='invalid-account';

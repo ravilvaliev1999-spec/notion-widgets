@@ -405,6 +405,7 @@
   const EMBED_BRIDGE_ORIGIN = 'https:\/\/ravilvaliev1999-spec.github.io';
   const DRIVE_POLL_INTERVAL_MS = 15000;
   const DRIVE_POLL_MIN_GAP_MS = 12000;
+  const DIRECT_DOWNLOAD_MAX_TTL_MS = 15*60*1000;
   const DOWNLOAD_GRANT_RENEW_LEAD_MS = 15000;
   const DOWNLOAD_GRANT_RETRY_DELAY_MS = 5000;
   const DOWNLOAD_GRANT_PRIME_WORKERS = 4;
@@ -1454,9 +1455,8 @@
 
   function nativeGoogleNavigationUrl(item) {
     const section=String(item&&item.section||''),format=String(item&&item.format||''),raw=String(item&&item.openUrl||'');
-    const expectedFormat=section==='Docs'?'Google Docs':section==='Sheets'?'Google Sheets':section==='Slides'?'Google Slides':'';
-    const segment=section==='Docs'?'document':section==='Sheets'?'spreadsheets':section==='Slides'?'presentation':'';
-    if(!segment||format!==expectedFormat||!raw||canPrepareDownload(item))return '';
+    const segment=format==='Google Docs'?'document':format==='Google Sheets'?'spreadsheets':format==='Google Slides'?'presentation':'';
+    if(!SECTIONS.includes(section)||!segment||!raw||canPrepareDownload(item))return '';
     try {
       const url=new URL(raw);
       const searchKeys=Array.from(url.searchParams.keys()),usp=String(url.searchParams.get('usp')||'');
@@ -1477,7 +1477,7 @@
       const directDownloadUrl=freshDirectDownloadUrl(item);
       if(!directDownloadUrl)return null;
       const record=downloadGrants.get(normalizeUuid(item.id)),expiresAt=Date.parse(String(record&&record.directDownloadExpiresAt||''));
-      if(!Number.isFinite(expiresAt)||expiresAt<=Date.now()+1000||expiresAt-Date.now()>60000)return null;
+      if(!Number.isFinite(expiresAt)||expiresAt<=Date.now()+1000||expiresAt-Date.now()>DIRECT_DOWNLOAD_MAX_TTL_MS)return null;
       return Object.assign({},presentation,{directDownloadUrl,directDownloadExpiresAt:new Date(expiresAt).toISOString()});
     }).filter(Boolean).slice(0,100);
   }
@@ -1511,6 +1511,9 @@
   async function receiveEmbedBridgeMessage(event) {
     const data=event.data;
     if(!validEmbedBridgeEvent(event,data))return;
+    if(data.type==='notion-widget-v20-outer-refresh'&&/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(String(data.requestId||'').toLowerCase())){
+      await refresh(true);return;
+    }
     if(data.type==='notion-widget-v20-primary-geometry-request'&&Number.isSafeInteger(Number(data.requestId))&&Number(data.requestId)>0){
       replyToEmbedBridge(event.source,event.origin,{type:'notion-widget-v20-primary-geometry',requestId:Number(data.requestId),geometry:primaryGeometry(),viewport:{width:window.innerWidth,height:window.innerHeight}});return;
     }
@@ -1616,7 +1619,7 @@
     const materialId=normalizeUuid(item&&item.id),record=materialId&&downloadGrants.get(materialId);
     const expiresAt=Date.parse(String(record&&record.directDownloadExpiresAt||''));
     const url=trustedPreparedDriveDownloadUrl(record&&record.directDownloadUrl,item);
-    if(!record||!url||!Number.isFinite(expiresAt)||expiresAt<=Date.now()+1000||expiresAt-Date.now()>60000)return '';
+    if(!record||!url||!Number.isFinite(expiresAt)||expiresAt<=Date.now()+1000||expiresAt-Date.now()>DIRECT_DOWNLOAD_MAX_TTL_MS)return '';
     return url;
   }
 
@@ -1663,7 +1666,7 @@
       const item=state.materials.find((candidate)=>candidate.id===pageId);
       if(!canPrepareDownload(item)||!downloadCardIsVisible(pageId))return;
       const directExpiresAt=Date.parse(String(record&&record.directDownloadExpiresAt||'')),packageExpiresAt=Date.parse(String(record&&record.packageExpiresAt||''));
-      const directValid=Boolean(trustedPreparedDriveDownloadUrl(record&&record.directDownloadUrl,item))&&Number.isFinite(directExpiresAt)&&directExpiresAt>now+1000&&directExpiresAt-now<=60000;
+      const directValid=Boolean(trustedPreparedDriveDownloadUrl(record&&record.directDownloadUrl,item))&&Number.isFinite(directExpiresAt)&&directExpiresAt>now+1000&&directExpiresAt-now<=DIRECT_DOWNLOAD_MAX_TTL_MS;
       const packageValid=/^[A-Za-z0-9_-]{40,9000}$/.test(String(record&&record.downloadPackage||''))&&Number.isFinite(packageExpiresAt)&&packageExpiresAt>now+1000&&packageExpiresAt-now<=60000;
       if(!directValid&&!packageValid)return;
       const expiresAt=directValid?directExpiresAt:packageExpiresAt;
@@ -1718,7 +1721,7 @@
         const packageExpiresAt=Date.parse(String(data&&data.packageExpiresAt||'')),downloadPackage=String(data&&data.downloadPackage||'');
         const packageValid=/^[A-Za-z0-9_-]{40,9000}$/.test(downloadPackage)&&Number.isFinite(packageExpiresAt)&&packageExpiresAt>Date.now()+1000&&packageExpiresAt-Date.now()<=60000;
         const directDownloadExpiresAt=Date.parse(String(data&&data.directDownloadExpiresAt||'')),directDownloadUrl=trustedPreparedDriveDownloadUrl(data&&data.directDownloadUrl,current);
-        const directValid=Boolean(directDownloadUrl)&&Number.isFinite(directDownloadExpiresAt)&&directDownloadExpiresAt>Date.now()+1000&&directDownloadExpiresAt-Date.now()<=60000;
+        const directValid=Boolean(directDownloadUrl)&&Number.isFinite(directDownloadExpiresAt)&&directDownloadExpiresAt>Date.now()+1000&&directDownloadExpiresAt-Date.now()<=DIRECT_DOWNLOAD_MAX_TTL_MS;
         if(current&&canPrepareDownload(current)&&data&&data.mode==='grant'&&/^[a-f0-9]{96}$/.test(grant)&&Number.isFinite(expiresAt)&&expiresAt>Date.now()+5000){
           downloadGrantRetryNotBefore.delete(materialId);
           downloadGrants.set(materialId,{downloadGrant:grant,expiresAt:new Date(expiresAt).toISOString(),downloadPackage:packageValid?downloadPackage:'',packageExpiresAt:packageValid?new Date(packageExpiresAt).toISOString():'',directDownloadUrl:directValid?directDownloadUrl:'',directDownloadExpiresAt:directValid?new Date(directDownloadExpiresAt).toISOString():'',refreshNotBefore:0,refreshFailures:0});refreshDownloadGrantLink(materialId);announceEmbedBridgeReady();

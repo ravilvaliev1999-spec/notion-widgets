@@ -9,6 +9,7 @@ const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const frontend = fs.readFileSync(path.join(root, 'Index.html'), 'utf8');
 const downloader = fs.readFileSync(path.join(root, 'Download.html'), 'utf8');
 const creator = fs.readFileSync(path.join(root, 'Create.html'), 'utf8');
+const mutationRunner = fs.readFileSync(path.join(root, 'Mutation.html'), 'utf8');
 const publicCourier = fs.readFileSync(path.join(root, '..', 'download-courier.html'), 'utf8');
 const publicCreateCourier = fs.readFileSync(path.join(root, '..', 'create-courier.html'), 'utf8');
 const original = fs.readFileSync(path.join(root, '..', 'google-buttons-widget.html'), 'utf8');
@@ -551,7 +552,7 @@ test('a fresh memory-only package uses v3 immediately while a grant keeps the st
   assert.notEqual(fallbackService.searchParams.get('downloadTicket'),grant);
 });
 
-test('a short-lived server-prepared Drive URL bypasses the courier only for the exact material', () => {
+test('a hot account-bound server-prepared Drive URL bypasses the courier only for the exact material', () => {
   const helpersSource = frontend.slice(frontend.indexOf('function strongDownloadTicket'), frontend.indexOf('function canPrepareDownload'));
   const normalizeUuid = (value) => String(value || '').toLowerCase();
   const canPrepareDownload = (item) => Boolean(item?.canDownload && item?.widgetOwned && !item?.archived);
@@ -560,8 +561,8 @@ test('a short-lived server-prepared Drive URL bypasses the courier only for the 
   const item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',googleFileId:'DRIVEFILE123',canDownload:true,widgetOwned:true};
   const direct='https://drive.google.com/uc?export=download&authuser=owner%40example.com&id=DRIVEFILE123';
   const downloadGrants=new Map([[item.id,{downloadGrant:'a'.repeat(96),expiresAt:new Date(Date.now()+30000).toISOString(),directDownloadUrl:direct,directDownloadExpiresAt:new Date(Date.now()+30000).toISOString()}]]);
-  const build = new Function('window','TextEncoder','btoa','URL','normalizeUuid','state','taskPageId','accessToken','canPrepareDownload','DOWNLOAD_COURIER_URL','downloadGrants',`${helpersSource};return {freshDirectDownloadUrl,downloadCourierHref};`);
-  const helpers = build({crypto:{getRandomValues(){}}},TextEncoder,btoa,URL,normalizeUuid,state,taskPageId,accessToken,canPrepareDownload,'https://ravilvaliev1999-spec.github.io/notion-widgets/download-courier.html',downloadGrants);
+  const build = new Function('window','TextEncoder','btoa','URL','normalizeUuid','state','taskPageId','accessToken','canPrepareDownload','DOWNLOAD_COURIER_URL','downloadGrants','DIRECT_DOWNLOAD_MAX_TTL_MS',`${helpersSource};return {freshDirectDownloadUrl,downloadCourierHref};`);
+  const helpers = build({crypto:{getRandomValues(){}}},TextEncoder,btoa,URL,normalizeUuid,state,taskPageId,accessToken,canPrepareDownload,'https://ravilvaliev1999-spec.github.io/notion-widgets/download-courier.html',downloadGrants,15*60*1000);
   assert.equal(helpers.freshDirectDownloadUrl(item),direct);
   assert.equal(helpers.downloadCourierHref(item),direct);
   assert.equal(direct.includes(accessToken),false);
@@ -580,14 +581,19 @@ test('the live bridge exposes only exact encrypted-navigation material for real 
   const disguised={id:'cccccccc-cccc-4ccc-8ccc-cccccccccccc',name:'Не Google',section:'Docs',format:'Word',position:3,openUrl:'https://docs.google.com/document/d/AnotherDocument123/edit',syncStatus:'synced'};
   const state={materials:[native,binary,disguised]},optimisticMaterialMutations=new Map();
   const direct='https://drive.google.com/uc?export=download&authuser=owner%40example.com&id=DRIVEFILE123';
-  const expiresAt=new Date(Date.now()+30000).toISOString(),downloadGrants=new Map([[binary.id,{directDownloadExpiresAt:expiresAt}]]);
-  const build=new Function('state','SECTIONS','canPrepareDownload','URL','optimisticMaterialMutations','freshDirectDownloadUrl','downloadGrants','normalizeUuid',`${source};return {presentationSnapshotMaterials,navigationSnapshotMaterials,nativeGoogleNavigationUrl};`);
-  const helpers=build(state,['Drive','Docs','Sheets','Slides'],(item)=>Boolean(item&&item.canDownload&&item.widgetOwned),URL,optimisticMaterialMutations,(item)=>item===binary?direct:'',downloadGrants,(value)=>String(value||'').toLowerCase());
+  const expiresAt=new Date(Date.now()+14*60*1000).toISOString(),downloadGrants=new Map([[binary.id,{directDownloadExpiresAt:expiresAt}]]);
+  const build=new Function('state','SECTIONS','canPrepareDownload','URL','optimisticMaterialMutations','freshDirectDownloadUrl','downloadGrants','normalizeUuid','DIRECT_DOWNLOAD_MAX_TTL_MS',`${source};return {presentationSnapshotMaterials,navigationSnapshotMaterials,nativeGoogleNavigationUrl};`);
+  const helpers=build(state,['Drive','Docs','Sheets','Slides'],(item)=>Boolean(item&&item.canDownload&&item.widgetOwned),URL,optimisticMaterialMutations,(item)=>item===binary?direct:'',downloadGrants,(value)=>String(value||'').toLowerCase(),15*60*1000);
   assert.deepEqual(helpers.presentationSnapshotMaterials()[0],{name:'Отчёт за август',section:'Docs',format:'Google Docs',position:1,navigationBinding:nativeBinding});
   assert.deepEqual(helpers.navigationSnapshotMaterials(),[
     {name:'Отчёт за август',section:'Docs',format:'Google Docs',position:1,navigationBinding:nativeBinding,openUrl:native.openUrl},
     {name:'Архив.zip',section:'Drive',format:'ZIP',position:2,navigationBinding:binaryBinding,directDownloadUrl:direct,directDownloadExpiresAt:expiresAt}
   ]);
+  downloadGrants.get(binary.id).directDownloadExpiresAt=new Date(Date.now()+16*60*1000).toISOString();
+  assert.deepEqual(helpers.navigationSnapshotMaterials(),[
+    {name:'Отчёт за август',section:'Docs',format:'Google Docs',position:1,navigationBinding:nativeBinding,openUrl:native.openUrl}
+  ],'a direct URL beyond fifteen minutes is never published to the wrapper');
+  downloadGrants.get(binary.id).directDownloadExpiresAt=expiresAt;
   native.navigationBinding='c'.repeat(64);
   assert.equal(helpers.navigationSnapshotMaterials()[0].navigationBinding,native.navigationBinding,'an otherwise identical replacement publishes a different opaque identity/revision binding');
   const canonicalNativeUrl=native.openUrl;
@@ -595,6 +601,9 @@ test('the live bridge exposes only exact encrypted-navigation material for real 
   assert.equal(helpers.nativeGoogleNavigationUrl(native),canonicalNativeUrl,'a single benign Drive usp marker is stripped before persistence');
   native.openUrl+='&unexpected=1';
   assert.equal(helpers.nativeGoogleNavigationUrl(native),'','other Google URL parameters fail closed');
+  native.openUrl=canonicalNativeUrl;
+  native.section='Sheets';
+  assert.equal(helpers.nativeGoogleNavigationUrl(native),canonicalNativeUrl,'moving a Docs material between widget columns keeps the exact link validated by its real format');
   optimisticMaterialMutations.set(native.id,{kind:'edit'});
   assert.deepEqual(helpers.navigationSnapshotMaterials(),[],'optimistic mutations are never persisted as confirmed navigation');
   assert.match(frontend,/navigationMaterials:navigationSnapshotMaterials\(\)/);
@@ -816,6 +825,7 @@ test('server-rendered safe registry cards paint before the first client RPC', ()
 
 test('visible download grants renew just before expiry with one timer, bounded workers and intent refresh', () => {
   const prime=frontend.slice(frontend.indexOf('function downloadCardIsVisible'),frontend.indexOf('function downloadCourierHref'));
+  assert.match(frontend,/const DIRECT_DOWNLOAD_MAX_TTL_MS = 15\*60\*1000/);
   assert.match(frontend,/const DOWNLOAD_GRANT_RENEW_LEAD_MS = 15000/);
   assert.match(prime,/document\.visibilityState==='hidden'/);
   assert.match(prime,/function scheduleDownloadGrantRenewal\(\)/);
@@ -859,7 +869,7 @@ test('grant refresh eligibility honors expiry lead and suppresses repeated proxy
   const source=frontend.slice(frontend.indexOf('function trustedPreparedDriveDownloadUrl'),frontend.indexOf('function deferDownloadGrantRefresh'));
   const downloadGrants=new Map(),downloadGrantRetryNotBefore=new Map();
   const normalizeUuid=(value)=>String(value||'').toLowerCase();
-  const needs=new Function('URL','normalizeUuid','downloadGrants','downloadGrantRetryNotBefore','DOWNLOAD_GRANT_RENEW_LEAD_MS',`${source};return downloadGrantNeedsRefresh;`)(URL,normalizeUuid,downloadGrants,downloadGrantRetryNotBefore,15000);
+  const needs=new Function('URL','normalizeUuid','downloadGrants','downloadGrantRetryNotBefore','DOWNLOAD_GRANT_RENEW_LEAD_MS','DIRECT_DOWNLOAD_MAX_TTL_MS',`${source};return downloadGrantNeedsRefresh;`)(URL,normalizeUuid,downloadGrants,downloadGrantRetryNotBefore,15000,15*60*1000);
   const item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',googleFileId:'DRIVEFILE123'},grant='a'.repeat(96),now=Date.now();
   downloadGrants.set(item.id,{downloadGrant:grant,expiresAt:new Date(now+30000).toISOString(),downloadPackage:'B'.repeat(80),packageExpiresAt:new Date(now+30000).toISOString()});
   assert.equal(needs(item,true),false);
@@ -870,7 +880,7 @@ test('grant refresh eligibility honors expiry lead and suppresses repeated proxy
   assert.equal(needs(item,true),true,'explicit intent upgrades a legacy grant to the fast path');
   downloadGrants.get(item.id).expiresAt=new Date(now-1000).toISOString();
   assert.equal(needs(item,false),true,'an expired fallback grant is renewed automatically');
-  downloadGrants.set(item.id,{downloadGrant:grant,expiresAt:new Date(now+30000).toISOString(),directDownloadUrl:'https://drive.google.com/uc?export=download&authuser=owner%40example.com&id=DRIVEFILE123',directDownloadExpiresAt:new Date(now+30000).toISOString()});
+  downloadGrants.set(item.id,{downloadGrant:grant,expiresAt:new Date(now+30000).toISOString(),directDownloadUrl:'https://drive.google.com/uc?export=download&authuser=owner%40example.com&id=DRIVEFILE123',directDownloadExpiresAt:new Date(now+10*60*1000).toISOString()});
   assert.equal(needs(item,true),false,'a fresh exact Drive link needs no refresh');
   downloadGrants.get(item.id).directDownloadExpiresAt=new Date(now+10000).toISOString();
   assert.equal(needs(item,false),true,'the direct link renews before expiry');
@@ -901,6 +911,7 @@ test('neutral courier is credentialless, fragment-only, strict, referrerless and
   assert.match(publicCourier, /allowed=new Set\(\['task','accessToken','downloadPageId','downloadTicket'\]\)/);
   assert.match(publicCourier, /entries\.length!==4/);
   assert.match(publicCourier, /form-action https:\/\/script\.google\.com https:\/\/\*\.googleusercontent\.com/);
+  assert.match(publicCourier, /frame-src https:\/\/script\.google\.com https:\/\/\*\.googleusercontent\.com/);
   assert.match(publicCourier, /const keys=\['task','accessToken','downloadPageId','downloadTicket'\]/);
   assert.match(publicCourier, /form\.method='post';form\.action=action\.href;form\.target='downloadRunner';form\.enctype='application\/x-www-form-urlencoded'/);
   assert.match(publicCourier, /document\.body\.appendChild\(form\);form\.submit\(\)/);
@@ -1018,9 +1029,10 @@ test('Apps Script courier uses a canonical prepared Drive URL without a second R
   assert.equal(serverPrecomputed.payload.name,'report.xlsx');
 
   const expiresAt=new Date(Date.now()+50_000).toISOString();
+  const directExpiresAt=new Date(Date.now()+10*60_000).toISOString();
   const valid=await run({
     mode:'grant',downloadGrant:'a'.repeat(96),expiresAt,
-    directDownloadUrl:driveUrl,directDownloadExpiresAt:expiresAt,directDownloadName:'report.xlsx'
+    directDownloadUrl:driveUrl,directDownloadExpiresAt:directExpiresAt,directDownloadName:'report.xlsx'
   });
   assert.deepEqual(valid.calls.map((call)=>call.method),['apiPrepareDownload']);
   assert.equal(valid.payload.status,'direct');
@@ -1030,7 +1042,7 @@ test('Apps Script courier uses a canonical prepared Drive URL without a second R
   const fallbackExpiresAt=new Date(Date.now()+120_000).toISOString();
   const malformed=await run({
     mode:'grant',downloadGrant:'b'.repeat(96),expiresAt,
-    directDownloadUrl:`${driveUrl}&extra=1`,directDownloadExpiresAt:expiresAt,directDownloadName:'report.xlsx'
+    directDownloadUrl:`${driveUrl}&extra=1`,directDownloadExpiresAt:directExpiresAt,directDownloadName:'report.xlsx'
   },{mode:'direct',url:driveUrl,name:'report.xlsx',expiresAt:fallbackExpiresAt});
   assert.deepEqual(malformed.calls.map((call)=>call.method),['apiPrepareDownload','apiDownload']);
   assert.equal(malformed.calls[1].input.downloadGrant,'b'.repeat(96));
@@ -1047,6 +1059,7 @@ test('create courier uses a credentialless fragment-only handoff and opens only 
   assert.match(publicCreateCourier, /entries\.length!==4/);
   assert.match(publicCreateCourier, /history\.replaceState\(null,'',location\.pathname\)/);
   assert.match(publicCreateCourier, /form-action https:\/\/script\.google\.com https:\/\/\*\.googleusercontent\.com/);
+  assert.match(publicCreateCourier, /frame-src https:\/\/script\.google\.com https:\/\/\*\.googleusercontent\.com/);
   assert.match(publicCreateCourier, /const keys=\['task','accessToken','createSection','createRequestId'\]/);
   assert.match(publicCreateCourier, /form\.method='post';form\.action=action\.href;form\.target='createRunner';form\.enctype='application\/x-www-form-urlencoded'/);
   assert.match(publicCreateCourier, /document\.body\.appendChild\(form\);form\.submit\(\)/);
@@ -1320,13 +1333,46 @@ test('a degraded force refresh never unlocks provisional cards', async () => {
   assert.equal(toasts.length,1);
 });
 
+test('outer mutation runner emits only an exact safe presentation to the fixed public origin', () => {
+  const script=mutationRunner.match(/<script>\s*([\s\S]*?)<\/script>/)?.[1]||'';
+  assert.ok(script);
+  assert.match(mutationRunner,/id="precomputedResult" data-result="<\?= precomputedResultJson \?>"/);
+  assert.match(script,/const TARGET_ORIGIN='https:\/\/ravilvaliev1999-spec\.github\.io'/);
+  assert.doesNotMatch(script,/accessToken|idempotencyKey|googleFileId|pageId|openUrl|window\.open/);
+  const requestId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',binding='b'.repeat(64),nextBinding='c'.repeat(64);
+  function run(value) {
+    const messages=[];
+    const parent={postMessage(message,origin){messages.push({message:JSON.parse(JSON.stringify(message)),origin});}};
+    parent.parent=parent;
+    vm.runInNewContext(script,{
+      window:{parent},
+      document:{getElementById(id){return id==='precomputedResult'?{dataset:{result:JSON.stringify(value)}}:null;}},
+      JSON,String,Number,Array,Object,RegExp
+    });
+    return messages;
+  }
+  const success=run({requestId,status:'success',kind:'edit',binding,material:{name:'Новое имя',section:'Docs',format:'Google Docs',position:2,navigationBinding:nextBinding}});
+  assert.equal(success.length,1);
+  assert.equal(success[0].origin,'https://ravilvaliev1999-spec.github.io');
+  assert.deepEqual(Object.keys(success[0].message).sort(),['binding','kind','material','requestId','status','type']);
+  assert.deepEqual(Object.keys(success[0].message.material).sort(),['format','name','navigationBinding','position','section']);
+  assert.equal(JSON.stringify(success).includes(binding),true);
+  assert.doesNotMatch(JSON.stringify(success),/accessToken|idempotency|googleFileId|pageId|openUrl/);
+  const hidden=run({requestId,status:'success',kind:'hide',binding,material:null});
+  assert.equal(hidden[0].message.material,null);
+  const error=run({requestId,status:'error',message:'Повторите действие',retryable:true});
+  assert.deepEqual(Object.keys(error[0].message).sort(),['message','requestId','retryable','status','type']);
+  assert.equal(run({requestId,status:'success',kind:'edit',binding,material:{name:'X',section:'Docs',format:'Google Docs',position:1,navigationBinding:nextBinding,idempotencyKey:'forbidden'}}).length,0);
+  assert.equal(run({requestId,status:'success',kind:'hide',binding,material:null,accessToken:'forbidden'}).length,0);
+});
+
 test('production bridge and local mock expose all required scenarios and scripts parse', () => {
   assert.match(frontend, /window\.google && google\.script && google\.script\.run/);
   for (const method of ['apiBootstrap','apiPollDriveMetadata','apiSyncTask','apiCreateGoogle','apiAddLink','apiUpload','apiDownload']) assert.ok(frontend.includes(`method==='${method}'`), `mock does not implement ${method}`);
   assert.match(frontend,/const mockActionProof=\(\)=>\(\{authoritative:true,actionReady:true,trustedUntil:new Date\(Date\.now\(\)\+120000\)\.toISOString\(\)\}\)/);
   assert.match(frontend,/method==='apiBootstrap'[\s\S]*mockActionProof\(\)/);
   assert.match(frontend,/method==='apiSyncTask'[\s\S]*mockActionProof\(\)/);
-  for (const html of [frontend,downloader,creator,publicCourier,publicCreateCourier]) {
+  for (const html of [frontend,downloader,creator,mutationRunner,publicCourier,publicCreateCourier]) {
     const scripts=[...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match)=>match[1]);
     assert.ok(scripts.length>0);scripts.forEach((script)=>assert.doesNotThrow(()=>new Function(script)));
   }

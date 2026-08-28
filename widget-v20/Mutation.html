@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <base target="_self">
+  <meta charset="utf-8">
+  <meta name="referrer" content="no-referrer">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta id="precomputedResult" data-result="<?= precomputedResultJson ?>">
+  <title>Изменение материала</title>
+</head>
+<body>
+  <script>
+  (()=>{
+    'use strict';
+    const TARGET_ORIGIN='https://ravilvaliev1999-spec.github.io';
+
+    function exact(value,expected){
+      if(!value||typeof value!=='object'||Array.isArray(value))return false;
+      const keys=Object.keys(value).sort(),wanted=expected.slice().sort();
+      return keys.length===wanted.length&&keys.every((key,index)=>key===wanted[index]);
+    }
+
+    function safeMaterial(value){
+      if(!exact(value,['name','section','format','position','navigationBinding']))return null;
+      const name=String(value.name||'').replace(/\s+/g,' ').trim();
+      const section=String(value.section||''),format=String(value.format||'').replace(/\s+/g,' ').trim();
+      const position=Number(value.position),navigationBinding=String(value.navigationBinding||'').toLowerCase();
+      if(!name||name.length>180||!['Drive','Docs','Sheets','Slides'].includes(section)||format.length>100||
+        !Number.isFinite(position)||position<0||position>10000||!/^[a-f0-9]{64}$/.test(navigationBinding))return null;
+      return{name,section,format:format||'Файл',position:Math.round(position),navigationBinding};
+    }
+
+    function result(){
+      const meta=document.getElementById('precomputedResult');
+      let value=null;
+      try{value=JSON.parse(String(meta&&meta.dataset&&meta.dataset.result||'null'));}catch(_error){}
+      const requestId=String(value&&value.requestId||'').toLowerCase();
+      if(!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(requestId))return null;
+      if(value.status==='error'&&exact(value,['requestId','status','message','retryable'])){
+        return{type:'notion-widget-v20-mutation-result',requestId,status:'error',message:String(value.message||'Изменение не сохранено.').slice(0,500),retryable:value.retryable===true};
+      }
+      if(value.status!=='success'||!exact(value,['requestId','status','kind','binding','material'])||
+        !['edit','hide'].includes(value.kind)||!/^[a-f0-9]{64}$/.test(String(value.binding||'')))return null;
+      const material=value.kind==='edit'?safeMaterial(value.material):null;
+      if((value.kind==='edit'&&!material)||(value.kind==='hide'&&value.material!==null))return null;
+      return{type:'notion-widget-v20-mutation-result',requestId,status:'success',kind:value.kind,binding:value.binding,material};
+    }
+
+    const message=result();
+    if(!message)return;
+    let ancestor=window.parent;
+    for(let depth=0;depth<5;depth+=1){
+      try{ancestor.postMessage(message,TARGET_ORIGIN);}catch(_error){}
+      let next;
+      try{next=ancestor.parent;}catch(_error){return;}
+      if(!next||next===ancestor)return;
+      ancestor=next;
+    }
+  })();
+  </script>
+</body>
+</html>
