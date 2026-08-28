@@ -573,7 +573,7 @@ test('cached bootstrap paints safe registry cards without Notion or Drive calls'
   assert.ok(Array.isArray(ssr.preparedCreates));
 });
 
-test('cached action proof expires after seven minutes and fails closed on a registry count mismatch', () => {
+test('cached action proof keeps trigger headroom, then expires and fails closed on a registry count mismatch', () => {
   const backend=loadBackend();
   const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
   const pageId='3c72d627-39a1-8120-bd0a-f969e6846945';
@@ -594,7 +594,7 @@ test('cached action proof expires after seven minutes and fails closed on a regi
   }]);
   assert.equal(replacement.ok,true);
   const folderValidatedAt=new Date().toISOString();
-  const staleAt=new Date(Date.now()-421000).toISOString();
+  const staleAt=new Date(Date.now()-(20*60*1000+1000)).toISOString();
   backend.w20RegistryWriteTaskMeta_(taskId,{
     taskName:'Задача',folderId:'TaskFolder12345',rootFolderId:'RootFolder12345',folderVerified:true,
     folderValidatedAt,taskValidatedAt:staleAt,snapshotValidatedAt:staleAt,snapshotActiveCount:replacement.activeCount
@@ -1029,7 +1029,7 @@ test('create context warming verifies the task folder once without a Notion requ
   assert.equal(folderChecks,1);
 });
 
-test('live bootstrap returns saved cards before Drive folder warming and proof-only warm stays off Notion', () => {
+test('live bootstrap refreshes stale folder proof in the same response and later proof-only warm stays cached', () => {
   const backend=loadBackend();
   const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
   const pageId='3c72d627-39a1-8120-bd0a-f969e6846945';
@@ -1056,11 +1056,11 @@ test('live bootstrap returns saved cards before Drive folder warming and proof-o
   assert.equal(boot.ok,true,JSON.stringify(boot));
   assert.equal(boot.data.cached,false);
   assert.equal(boot.data.authoritative,true);
-  assert.equal(boot.data.actionReady,false);
-  assert.equal(boot.data.folderUrl,null);
+  assert.equal(boot.data.actionReady,true);
+  assert.equal(boot.data.folderUrl,'https://drive.google.com/drive/folders/WarmFolder12345');
   assert.equal(boot.data.materials.length,1);
   assert.equal(boot.data.materials[0].name,'Готовая карточка');
-  assert.deepEqual(calls,{schema:1,task:1,materials:1,folder:0,pool:0},'card readiness must not wait for Drive folder verification');
+  assert.deepEqual(calls,{schema:1,task:1,materials:1,folder:1,pool:0},'one force refresh must return a complete action proof without a second client RPC');
 
   backend.w19AssertSchema_=()=>{throw new Error('proof-only warm must not inspect Notion schema');};
   backend.w19AssertTaskPage_=()=>{throw new Error('proof-only warm must not fetch the Notion task');};
@@ -1068,11 +1068,11 @@ test('live bootstrap returns saved cards before Drive folder warming and proof-o
   const warmed=backend.apiWarmCreateContext({taskPageId:taskId,proofOnly:true});
   assert.equal(warmed.ok,true,JSON.stringify(warmed));
   assert.equal(warmed.data.ready,true);
-  assert.equal(warmed.data.cached,false);
+  assert.equal(warmed.data.cached,true);
   assert.equal(warmed.data.folderUrl,'https://drive.google.com/drive/folders/WarmFolder12345');
   assert.match(warmed.data.trustedUntil,/^\d{4}-\d{2}-\d{2}T/);
   assert.deepEqual(JSON.parse(JSON.stringify(warmed.data.preparedCreates)),[]);
-  assert.equal(calls.folder,1);
+  assert.equal(calls.folder,1,'the proof-only follow-up reuses the folder proof established by bootstrap');
   assert.equal(calls.pool,0);
 });
 
@@ -1864,7 +1864,7 @@ test('scheduled sync cleans v2 reservations without warming the unreachable lega
   assert.doesNotMatch(scheduled, /create_reservation_background_deferred/);
 });
 
-function runScheduledProofCycle({cursor=null,hasMore=false,errorPage='' }={}) {
+function runScheduledProofCycle({cursor=null,hasMore=false,paginated=false,errorPage='' }={}) {
   const backend=loadBackend();
   const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
   const rootFolderId='ScheduledRootFolder123',folderId='ScheduledTaskFolder123';
@@ -1880,7 +1880,13 @@ function runScheduledProofCycle({cursor=null,hasMore=false,errorPage='' }={}) {
   backend.w19ClaimScheduledSync_=()=>({token:'scheduled-lease-token',cursor});
   backend.w19FinishScheduledSync_=(...args)=>calls.finishes.push(args);
   backend.w19AssertSchema_=()=>({ok:true});
-  backend.w19NotionRequest_=()=>({results:pages,has_more:hasMore,next_cursor:hasMore?'next-page':null});
+  backend.w19NotionRequest_=(_method,_path,body)=>{
+    if(paginated){
+      const continuation=body&&body.start_cursor==='next-page';
+      return {results:continuation?pages.slice(1):pages.slice(0,1),has_more:!continuation,next_cursor:continuation?null:'next-page'};
+    }
+    return {results:pages,has_more:hasMore,next_cursor:hasMore?'next-page':null};
+  };
   backend.w19SyncOnePage_=(page)=>{if(page.id===errorPage)throw new Error('sync failed');return page;};
   backend.w19MarkSyncError_=()=>{};
   backend.w19MaterialFromPage_=(page)=>page.material;
@@ -1939,6 +1945,18 @@ test('scheduled sync refreshes action proof only from a coherent complete single
   assert.equal(storedRegistry.integrityOk,true);
   assert.equal(storedRegistry.activeCount,pages.length);
   assert.equal(backend.w20RegistryActionProof_(storedMeta,storedRegistry,rootFolderId).ready,true);
+});
+
+test('scheduled sync completes pagination in one lease and refreshes one coherent proof', () => {
+  const {result,calls,pages}=runScheduledProofCycle({paginated:true});
+  assert.equal(result.proofRefreshed,true);
+  assert.equal(result.checked,pages.length);
+  assert.equal(calls.replacements.length,1);
+  assert.equal(calls.replacements[0].materials.length,pages.length);
+  assert.equal(calls.meta.length,1);
+  assert.equal(calls.proof,1);
+  assert.equal(calls.upserts.length,0);
+  assert.deepEqual(calls.finishes,[['scheduled-lease-token',true,null]]);
 });
 
 test('scheduled sync partial, error and cursor cycles never confirm action proof', () => {
@@ -3518,7 +3536,7 @@ test('prepare download cold cache rejects stale registry proof and keeps the ful
   const backend = loadBackend();
   const realFreshRegistryDownloadProof = backend.w20FreshRegistryDownloadProof_;
   const fixture = installFastPrepareDownloadFixture(backend);
-  const stale = new Date(Date.now() - 10 * 60_000).toISOString();
+  const stale = new Date(Date.now() - 21 * 60_000).toISOString();
   fixture.meta.taskValidatedAt = stale;
   fixture.meta.snapshotValidatedAt = stale;
   const values = {};
@@ -3552,7 +3570,7 @@ test('prepare download stale or mismatched registry proof uses the full ownershi
     const backend = loadBackend();
     const fixture = installFastPrepareDownloadFixture(backend);
     if (scenario === 'stale proof') {
-      const stale = new Date(Date.now() - 10 * 60_000).toISOString();
+      const stale = new Date(Date.now() - 21 * 60_000).toISOString();
       fixture.meta.taskValidatedAt = stale;
       fixture.meta.snapshotValidatedAt = stale;
     } else if (scenario === 'registry file mismatch') {

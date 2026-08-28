@@ -23,8 +23,8 @@ test('public wrapper isolates Apps Script from multi-login cookies', () => {
   assert.match(wrapper, /connect-src https:\/\/script\.google\.com https:\/\/\*\.googleusercontent\.com/);
   assert.match(wrapper, /<link rel="dns-prefetch" href="\/\/script\.google\.com">/);
   assert.match(wrapper, /<link rel="preconnect" href="https:\/\/script\.google\.com" crossorigin>/);
-  assert.match(wrapper, /<link rel="preload" href="apps-script-embed\.js\?v=52" as="script" fetchpriority="high">/);
-  assert.match(wrapper, /j\.src='apps-script-embed\.js\?v=52'/);
+  assert.match(wrapper, /<link rel="preload" href="apps-script-embed\.js\?v=53" as="script" fetchpriority="high">/);
+  assert.match(wrapper, /j\.src='apps-script-embed\.js\?v=53'/);
   assert.doesNotMatch(wrapper, /<script[^>]+src="apps-script-embed\.js/);
   assert.match(wrapper, /class="skeleton"/);
   assert.match(wrapper, /body\.widget-ready iframe\{opacity:1\}/);
@@ -45,16 +45,20 @@ test('wrapper exposes its shell before starting the credentialless Apps Script f
   const hash = crypto.createHash('sha256').update(earlyBootstrap).digest('base64');
   assert.match(wrapper, new RegExp(`script-src 'self' 'sha256-${hash.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
 
-  const widget = { src: '' };
+  let widgetValue='',widgetAssignments=0;
+  const widget = { get src(){return widgetValue;}, set src(value){widgetAssignments+=1;widgetValue=String(value);} };
   const bytes = Uint8Array.from({ length: 16 }, (_value, index) => index + 1);
   const earlyListeners = {};
   const timers = [];
+  const frames = [];
   const scripts = [];
   const earlyStorage = new Map();
   const earlyLocalStorage = {getItem(key){return earlyStorage.get(key)||null;},setItem(key,value){earlyStorage.set(key,String(value));}};
   const windowObject = {
     addEventListener(type, listener) { earlyListeners[type] = listener; },
-    setTimeout(callback, delay) { const timer={callback,delay};timers.push(timer);return timer; }
+    setTimeout(callback, delay) { const timer={callback,delay,cancelled:false};timers.push(timer);return timer; },
+    clearTimeout(timer) { if(timer)timer.cancelled=true; },
+    requestAnimationFrame(callback) { frames.push(callback); return frames.length; }
   };
   vm.runInNewContext(earlyBootstrap, {
     window: windowObject,
@@ -70,25 +74,28 @@ test('wrapper exposes its shell before starting the credentialless Apps Script f
     URL, URLSearchParams, Uint8Array, Array, String
   });
   assert.equal(widget.src, '', 'the nested request cannot hold the outer shell load open');
-  assert.equal(scripts.length, 0, 'the full runtime cannot execute before the shell is visible');
-  assert.equal(timers.length, 0);
-  assert.equal(windowObject.__notionWidgetDeferChild, true);
-  assert.equal(typeof earlyListeners.load, 'function');
-  assert.equal(typeof earlyListeners.message, 'function');
-
-  earlyListeners.load();
-  assert.equal(scripts.length, 1, 'the preloaded runtime starts as soon as the outer shell has loaded');
-  assert.equal(scripts[0].src, 'apps-script-embed.js?v=52');
+  assert.equal(scripts.length, 1, 'the preloaded runtime starts immediately after the static shell');
+  assert.equal(scripts[0].src, 'apps-script-embed.js?v=53');
   assert.equal(scripts[0].async, true);
   assert.equal(scripts[0].fetchPriority, 'high');
-  assert.equal(widget.src, '', 'the child starts in the task after the outer load event');
   assert.equal(timers.length, 1);
-  assert.equal(timers[0].delay, 0);
-  earlyListeners.load();
-  assert.equal(scripts.length, 1, 'duplicate load delivery cannot start a second runtime or frame');
-  assert.equal(timers.length, 1);
-  timers[0].callback();
+  assert.equal(timers[0].delay, 200);
+  assert.equal(windowObject.__notionWidgetDeferChild, true);
+  assert.equal(earlyListeners.load, undefined, 'startup must not wait for window.load');
+  assert.equal(typeof earlyListeners.message, 'function');
+  assert.equal(frames.length,1);
+  frames.shift()();
+  assert.equal(widget.src,'','the child stays deferred through the first paint frame');
+  assert.equal(frames.length,1);
+  frames.shift()();
   assert.equal(windowObject.__notionWidgetDeferChild, false);
+  assert.equal(widgetAssignments,1);
+  assert.equal(timers[0].cancelled,true,'the second frame cancels the bounded fallback');
+  const frameUrl=widget.src;
+  timers[0].callback();
+  assert.equal(widget.src,frameUrl);
+  assert.equal(widgetAssignments,1,'fallback delivery cannot assign the iframe twice');
+  assert.equal(scripts.length,1,'frame and fallback delivery cannot append a second runtime');
 
   const earlyUrl = new URL(widget.src);
   assert.equal(earlyUrl.origin, 'https://script.google.com');
@@ -123,6 +130,7 @@ test('wrapper exposes its shell before starting the credentialless Apps Script f
   });
   assert.equal(completeScripts.length,1);
   assert.equal(completeTimers.length,1);
+  assert.ok(completeTimers[0].delay<=200,'the no-rAF fallback is bounded to 200 ms');
   completeTimers[0].callback();
   assert.equal(new URL(completeWidget.src).searchParams.get('clientId'),earlyUrl.searchParams.get('clientId'),'the per-task browser client id stays stable across reloads');
 
@@ -142,9 +150,10 @@ test('wrapper exposes its shell before starting the credentialless Apps Script f
     crypto: { getRandomValues() { throw new Error('invalid parameters must stop before entropy is requested'); } },
     URL, URLSearchParams, Uint8Array, Array, String
   });
-  assert.equal(rejectedScripts.length,0);
-  rejectedListeners.load();
-  assert.equal(rejectedScripts.length,1,'the runtime still renders the validation error after outer load');
+  assert.equal(rejectedScripts.length,1,'the runtime renders validation errors without waiting for outer load');
+  assert.equal(rejectedListeners.load,undefined);
+  assert.equal(rejectedTimers.length,1);
+  assert.ok(rejectedTimers[0].delay<=200);
   rejectedTimers[0].callback();
   assert.equal(rejectedWidget.src, '');
 });
@@ -174,11 +183,20 @@ test('wrapper caches only an encrypted passive presentation snapshot', () => {
   assert.match(wrapperJs, /if \(navigationBinding\) row\.navigationBinding = navigationBinding/);
   assert.match(wrapperJs, /window\.crypto\.subtle\.encrypt\(\{ name: 'AES-GCM', iv, additionalData: context\.aad \}/);
   assert.match(wrapperJs, /window\.crypto\.subtle\.decrypt\(\{ name: 'AES-GCM', iv, additionalData: context\.aad \}/);
-  assert.match(wrapperJs, /store\.setItem\(context\.slot, JSON\.stringify\(\{ schema: SNAPSHOT_CACHE_SCHEMA, savedAt, iv: bytesToBase64Url\(iv\), ciphertext: bytesToBase64Url\(ciphertext\) \}\)\)/);
+  assert.match(wrapperJs, /const SNAPSHOT_CACHE_LEGACY_SCHEMA = 1/);
+  assert.match(wrapperJs, /const SNAPSHOT_CACHE_SCHEMA = 2/);
+  assert.match(wrapperJs, /notion-widget-preview-key-v2\\u0000\$\{task\}\\u0000\$\{token\}/);
+  assert.match(wrapperJs, /notion-widget-preview-slot-v2\\u0000\$\{task\}\\u0000\$\{token\}/);
+  assert.match(wrapperJs, /aad: encoder\.encode\(`notion-widget-preview-v2\\u0000\$\{task\}`\)/);
+  assert.doesNotMatch(wrapperJs, /notion-widget-preview-v2\\u0000\$\{task\}\\u0000\$\{release\}/);
+  assert.match(wrapperJs, /store\.setItem\(contexts\.current\.slot, serialized\)/);
+  assert.match(wrapperJs, /store\.setItem\(context\.current\.slot, serialized\)[\s\S]+store\.removeItem\(context\.legacy\.slot\)/);
   assert.match(wrapperJs, /if \(generation !== snapshotPersistGeneration \|\| fingerprint !== lastPersistedSnapshotFingerprint\) return false/);
   assert.match(wrapperJs, /const generation = \+\+snapshotPersistGeneration/);
   assert.match(wrapperJs, /SNAPSHOT_CACHE_MAX_AGE_MS = 24 \* 60 \* 60 \* 1000/);
+  assert.match(wrapperJs, /key\.startsWith\('notion-widget-preview-v2:'\)/);
   assert.match(wrapperJs, /key\.startsWith\('notion-widget-preview-v1:'\)/);
+  assert.match(wrapperJs, /readSnapshotEnvelope\(store, context\.legacy, false\)/);
   assert.doesNotMatch(wrapperJs, /store\.setItem\([^\n]+materials/);
   assert.doesNotMatch(wrapperJs, /snapshot-card[^\n]+(?:openUrl|googleFileId|notion|accessToken|drivePollClaim)/i);
   assert.match(frontend, /type:'notion-widget-v20-snapshot-ready',embedNonce:nonce,materials/);
@@ -253,23 +271,30 @@ test('early encrypted snapshot cache paints only passive exact cards before the 
     { name: 'First document', section: 'Docs', format: 'Google Docs', position: 0 }
   ];
 
-  async function encryptedSnapshot(value = materials) {
+  async function encryptedSnapshot(value = materials, options = {}) {
+    const schema = options.schema === 1 ? 1 : 2;
+    const version = `v${schema}`;
+    const releaseValue = options.releaseValue === undefined ? release : String(options.releaseValue);
+    const savedAt = options.savedAt === undefined ? now : options.savedAt;
     const [keyDigest, slotDigest] = await Promise.all([
-      crypto.webcrypto.subtle.digest('SHA-256', encoder.encode(`notion-widget-preview-key-v1\u0000${task}\u0000${token}`)),
-      crypto.webcrypto.subtle.digest('SHA-256', encoder.encode(`notion-widget-preview-slot-v1\u0000${task}\u0000${token}`))
+      crypto.webcrypto.subtle.digest('SHA-256', encoder.encode(`notion-widget-preview-key-${version}\u0000${task}\u0000${token}`)),
+      crypto.webcrypto.subtle.digest('SHA-256', encoder.encode(`notion-widget-preview-slot-${version}\u0000${task}\u0000${token}`))
     ]);
     const key = await crypto.webcrypto.subtle.importKey('raw', keyDigest, { name: 'AES-GCM' }, false, ['encrypt']);
     const iv = crypto.webcrypto.getRandomValues(new Uint8Array(12));
+    const aad = schema === 2
+      ? `notion-widget-preview-v2\u0000${task}`
+      : `notion-widget-preview-v1\u0000${task}\u0000${releaseValue}`;
     const ciphertext = await crypto.webcrypto.subtle.encrypt(
-      { name: 'AES-GCM', iv, additionalData: encoder.encode(`notion-widget-preview-v1\u0000${task}\u0000${release}`) },
+      { name: 'AES-GCM', iv, additionalData: encoder.encode(aad) },
       key,
-      encoder.encode(JSON.stringify({ schema: 1, savedAt: now, materials: value }))
+      encoder.encode(JSON.stringify({ schema, savedAt, materials: value }))
     );
     return {
-      slot: `notion-widget-preview-v1:${Buffer.from(slotDigest).subarray(0, 18).toString('base64url')}`,
+      slot: `notion-widget-preview-${version}:${Buffer.from(slotDigest).subarray(0, 18).toString('base64url')}`,
       envelope: JSON.stringify({
-        schema: 1,
-        savedAt: now,
+        schema,
+        savedAt,
         iv: Buffer.from(iv).toString('base64url'),
         ciphertext: Buffer.from(ciphertext).toString('base64url')
       })
@@ -296,15 +321,20 @@ test('early encrypted snapshot cache paints only passive exact cards before the 
       __notionWidgetSnapshotRuntimeOwned: options.runtimeOwned === true,
       localStorage: {
         getItem(key) { return storage.get(key) || null; },
-        setItem(key, value) { storage.set(key, String(value)); },
+        setItem(key, value) {
+          if (options.failMigrationWrite && String(key).startsWith('notion-widget-preview-v2:')) throw new Error('QUOTA');
+          storage.set(key, String(value));
+        },
         removeItem(key) { storage.delete(key); }
       }
     };
     const nativeSubtle = crypto.webcrypto.subtle;
     windowObject.crypto = {
+      getRandomValues(target) { return crypto.webcrypto.getRandomValues(target); },
       subtle: options.markLiveDuringDecrypt||options.markRuntimeDuringDecrypt ? {
         digest(...args) { return nativeSubtle.digest(...args); },
         importKey(...args) { return nativeSubtle.importKey(...args); },
+        encrypt(...args) { return nativeSubtle.encrypt(...args); },
         async decrypt(...args) {
           const plaintext = await nativeSubtle.decrypt(...args);
           if(options.markLiveDuringDecrypt)windowObject.__notionWidgetLiveSnapshotSeen = true;
@@ -335,7 +365,7 @@ test('early encrypted snapshot cache paints only passive exact cards before the 
       context: {
         window: windowObject,
         document,
-        location: { hash: `#task=${task}&accessToken=${token}&release=${release}` },
+        location: { hash: `#task=${task}&accessToken=${token}&release=${options.release || release}` },
         URLSearchParams,
         TextEncoder,
         TextDecoder,
@@ -358,7 +388,7 @@ test('early encrypted snapshot cache paints only passive exact cards before the 
   const valid = await encryptedSnapshot();
   const unrelatedSlot = 'notion-widget-preview-v1:unrelated-envelope';
   const validStorage = new Map([[valid.slot, valid.envelope], [unrelatedSlot, 'keep-me']]);
-  const validHarness = createHarness(validStorage);
+  const validHarness = createHarness(validStorage, { release: 'next-runtime-release' });
   await vm.runInNewContext(earlySnapshotCache, validHarness.context);
 
   const descendants = (root) => root.children.flatMap((child) => [child, ...descendants(child)]);
@@ -378,6 +408,53 @@ test('early encrypted snapshot cache paints only passive exact cards before the 
   assert.equal(rendered.some((element) => element.tagName === 'IMG'), false, 'HTML-looking names remain textContent');
   assert.doesNotMatch(JSON.stringify(validHarness.snapshotGrid), new RegExp(binding));
   assert.equal(validStorage.get(unrelatedSlot), 'keep-me');
+  assert.equal(validStorage.has(valid.slot), true, 'release-independent v2 survives a runtime release change');
+
+  const legacy = await encryptedSnapshot(materials, { schema: 1 });
+  const legacyStorage = new Map([[legacy.slot, legacy.envelope]]);
+  const legacyHarness = createHarness(legacyStorage);
+  await vm.runInNewContext(earlySnapshotCache, legacyHarness.context);
+  assert.equal(legacyHarness.snapshotGrid.hidden, false, 'the current-release legacy cache can paint during migration');
+  assert.equal(legacyStorage.has(legacy.slot), false, 'legacy is removed only after its migrated envelope is stored');
+  assert.equal(legacyStorage.has(valid.slot), true, 'a successful migration writes the release-independent v2 slot');
+  const migratedEnvelope = JSON.parse(legacyStorage.get(valid.slot));
+  assert.equal(migratedEnvelope.schema, 2);
+  assert.equal(migratedEnvelope.savedAt, now, 'migration preserves the original age instead of extending it');
+  const migratedHarness = createHarness(legacyStorage, { release: 'later-release' });
+  await vm.runInNewContext(earlySnapshotCache, migratedHarness.context);
+  assert.equal(migratedHarness.snapshotGrid.hidden, false, 'migrated v2 restores under a later release');
+
+  const oldReleaseLegacy = await encryptedSnapshot(materials, { schema: 1, releaseValue: 'previous-release' });
+  const oldReleaseStorage = new Map([[oldReleaseLegacy.slot, oldReleaseLegacy.envelope]]);
+  const oldReleaseHarness = createHarness(oldReleaseStorage, { release: 'current-release' });
+  await vm.runInNewContext(earlySnapshotCache, oldReleaseHarness.context);
+  assert.equal(oldReleaseHarness.snapshotGrid.hidden, true, 'legacy ciphertext from another release is not accepted');
+  assert.equal(oldReleaseStorage.has(oldReleaseLegacy.slot), true, 'ambiguous legacy authentication failure is preserved');
+  assert.equal(oldReleaseStorage.has(valid.slot), false);
+
+  const priorityStorage = new Map([[valid.slot, valid.envelope], [oldReleaseLegacy.slot, oldReleaseLegacy.envelope]]);
+  const priorityHarness = createHarness(priorityStorage, { release: 'current-release' });
+  await vm.runInNewContext(earlySnapshotCache, priorityHarness.context);
+  assert.equal(priorityHarness.snapshotGrid.hidden, false, 'v2 is restored before any legacy candidate is considered');
+  assert.equal(priorityStorage.has(oldReleaseLegacy.slot), true, 'a valid v2 restore does not disturb an unrelated legacy-release candidate');
+
+  const failedMigrationStorage = new Map([[legacy.slot, legacy.envelope]]);
+  const failedMigrationHarness = createHarness(failedMigrationStorage, { failMigrationWrite: true });
+  await vm.runInNewContext(earlySnapshotCache, failedMigrationHarness.context);
+  assert.equal(failedMigrationHarness.snapshotGrid.hidden, false, 'a cache write failure does not block the valid legacy paint');
+  assert.equal(failedMigrationStorage.has(legacy.slot), true, 'legacy remains when v2 persistence fails');
+  assert.equal(failedMigrationStorage.has(valid.slot), false);
+
+  const expiredLegacy = await encryptedSnapshot(materials, { schema: 1, savedAt: now - 24 * 60 * 60 * 1000 - 1 });
+  const expiredLegacyStorage = new Map([[expiredLegacy.slot, expiredLegacy.envelope]]);
+  await vm.runInNewContext(earlySnapshotCache, createHarness(expiredLegacyStorage).context);
+  assert.equal(expiredLegacyStorage.has(expiredLegacy.slot), false, 'an explicitly expired legacy record is removed');
+
+  const malformedLegacyEnvelope = JSON.parse(legacy.envelope);
+  malformedLegacyEnvelope.unexpected = true;
+  const malformedLegacyStorage = new Map([[legacy.slot, JSON.stringify(malformedLegacyEnvelope)]]);
+  await vm.runInNewContext(earlySnapshotCache, createHarness(malformedLegacyStorage).context);
+  assert.equal(malformedLegacyStorage.has(legacy.slot), false, 'an explicitly malformed legacy record is removed');
 
   const tamperedBytes = Buffer.from(JSON.parse(valid.envelope).ciphertext, 'base64url');
   tamperedBytes[0] ^= 0xff;
@@ -390,6 +467,16 @@ test('early encrypted snapshot cache paints only passive exact cards before the 
   assert.equal(tamperedStorage.get(unrelatedSlot), 'keep-me');
   assert.equal(tamperedHarness.snapshotGrid.hidden, true);
   assert.equal(tamperedHarness.snapshotGrid.children.length, 0);
+
+  const tamperedLegacyBytes = Buffer.from(JSON.parse(legacy.envelope).ciphertext, 'base64url');
+  tamperedLegacyBytes[0] ^= 0xff;
+  const tamperedLegacyEnvelope = JSON.parse(legacy.envelope);
+  tamperedLegacyEnvelope.ciphertext = tamperedLegacyBytes.toString('base64url');
+  const tamperedLegacyStorage = new Map([[legacy.slot, JSON.stringify(tamperedLegacyEnvelope)]]);
+  const tamperedLegacyHarness = createHarness(tamperedLegacyStorage);
+  await vm.runInNewContext(earlySnapshotCache, tamperedLegacyHarness.context);
+  assert.equal(tamperedLegacyStorage.has(legacy.slot), true, 'legacy authentication failure is not treated as explicit corruption');
+  assert.equal(tamperedLegacyHarness.snapshotGrid.hidden, true);
 
   const racingStorage = new Map([[valid.slot, valid.envelope], [unrelatedSlot, 'keep-me']]);
   const racingHarness = createHarness(racingStorage, { markLiveDuringDecrypt: true });
@@ -407,6 +494,12 @@ test('early encrypted snapshot cache paints only passive exact cards before the 
   assert.equal(runtimeRaceHarness.snapshotGrid.children.length,1);
   assert.equal(runtimeRaceHarness.snapshotGrid.children[0].tagName,'A','late passive decrypt cannot replace a functional main-runtime anchor');
   assert.equal(runtimeRaceStorage.has(valid.slot),true);
+
+  const legacyRuntimeRaceStorage = new Map([[legacy.slot, legacy.envelope]]);
+  const legacyRuntimeRaceHarness = createHarness(legacyRuntimeRaceStorage, { markRuntimeDuringDecrypt: true });
+  await vm.runInNewContext(earlySnapshotCache, legacyRuntimeRaceHarness.context);
+  assert.equal(legacyRuntimeRaceStorage.has(legacy.slot), true, 'a live-runtime race leaves the legacy fallback recoverable');
+  assert.equal(legacyRuntimeRaceStorage.has(valid.slot), false, 'a late migration cannot overwrite runtime-owned presentation state');
 });
 
 test('prepared create cache is short-lived, encrypted, origin-bound and one-shot across tabs', () => {
@@ -677,7 +770,7 @@ test('wrapper runtime exposes validated native create links without opening a po
   }
   const windowObject = {
     crypto: { subtle:crypto.webcrypto.subtle,randomUUID: (() => { let index=1;return () => `11111111-1111-4111-8111-${String(index++).padStart(12,'0')}`; })(), getRandomValues(target) { return crypto.webcrypto.getRandomValues(target); } },
-    localStorage:{get length(){return persistedSnapshot.size;},key(index){return Array.from(persistedSnapshot.keys())[index]||null;},getItem(key){return persistedSnapshot.get(key)||null;},setItem(key,value){if(String(key).startsWith('notion-widget-preview-v1:'))snapshotSetCount+=1;persistedSnapshot.set(key,String(value));},removeItem(key){persistedSnapshot.delete(key);}},
+    localStorage:{get length(){return persistedSnapshot.size;},key(index){return Array.from(persistedSnapshot.keys())[index]||null;},getItem(key){return persistedSnapshot.get(key)||null;},setItem(key,value){if(String(key).startsWith('notion-widget-preview-v2:'))snapshotSetCount+=1;persistedSnapshot.set(key,String(value));},removeItem(key){persistedSnapshot.delete(key);}},
     BroadcastChannel:FakeBroadcastChannel,
     addEventListener(type, listener) { windowListeners[type] = listener; },
     setTimeout(callback,delay) { const timer={callback,delay,cancelled:false};timeouts.push(timer);return timer; },
@@ -897,19 +990,20 @@ test('wrapper runtime exposes validated native create links without opening a po
   const drivePrimary=slots.find((slot)=>slot.dataset.slot==='Drive').children[0];
   assert.equal(drivePrimary.href,'https://drive.google.com/drive/folders/TaskFolder12345');
 
-  for(let attempt=0;attempt<20&&!Array.from(persistedSnapshot.keys()).some((key)=>key.startsWith('notion-widget-preview-v1:'));attempt+=1)await new Promise((resolve)=>setImmediate(resolve));
-  const previewEntries=Array.from(persistedSnapshot.entries()).filter(([key])=>key.startsWith('notion-widget-preview-v1:'));
+  for(let attempt=0;attempt<20&&!Array.from(persistedSnapshot.keys()).some((key)=>key.startsWith('notion-widget-preview-v2:'));attempt+=1)await new Promise((resolve)=>setImmediate(resolve));
+  const previewEntries=Array.from(persistedSnapshot.entries()).filter(([key])=>key.startsWith('notion-widget-preview-v2:'));
   assert.equal(previewEntries.length,1,'one encrypted presentation envelope is persisted');
   assert.equal(snapshotSetCount,1,'an overtaken encryption can never write an older snapshot');
   const [[slotKey,storedEnvelope]]=previewEntries;
-  assert.match(slotKey,/^notion-widget-preview-v1:[A-Za-z0-9_-]+$/);
+  assert.match(slotKey,/^notion-widget-preview-v2:[A-Za-z0-9_-]+$/);
   assert.doesNotMatch(`${slotKey}\n${storedEnvelope}`,/Конфиденциальное|Последнее подтверждённое|MustNotPersist|docs\.google\.com|a{32}/);
   const envelope=JSON.parse(storedEnvelope);
   assert.deepEqual(Object.keys(envelope).sort(),['ciphertext','iv','savedAt','schema']);
-  const keyDigest=await crypto.webcrypto.subtle.digest('SHA-256',encoder.encode(`notion-widget-preview-key-v1\u0000${task}\u0000${token}`));
+  assert.equal(envelope.schema,2);
+  const keyDigest=await crypto.webcrypto.subtle.digest('SHA-256',encoder.encode(`notion-widget-preview-key-v2\u0000${task}\u0000${token}`));
   const key=await crypto.webcrypto.subtle.importKey('raw',keyDigest,{name:'AES-GCM'},false,['decrypt']);
   const iv=Buffer.from(envelope.iv,'base64url'),ciphertext=Buffer.from(envelope.ciphertext,'base64url');
-  const plaintext=await crypto.webcrypto.subtle.decrypt({name:'AES-GCM',iv,additionalData:encoder.encode(`notion-widget-preview-v1\u0000${task}\u0000test`)},key,ciphertext);
+  const plaintext=await crypto.webcrypto.subtle.decrypt({name:'AES-GCM',iv,additionalData:encoder.encode(`notion-widget-preview-v2\u0000${task}`)},key,ciphertext);
   const cachedPayload=JSON.parse(new TextDecoder().decode(plaintext));
   assert.deepEqual(cachedPayload.materials,[{name:'Последнее подтверждённое название',section:'Docs',format:'Google Docs',position:0}]);
   for(let attempt=0;attempt<20&&!persistedSnapshot.has(actionSlot);attempt+=1)await new Promise((resolve)=>setImmediate(resolve));
@@ -1011,7 +1105,7 @@ test('v2 cached navigation paints one real pending card and binds only after an 
   assert.equal(tombstone.schema,2);
   assert.ok(tombstone.entries[0].expiresAt-now>=30*24*60*60*1000,'the consumed proof stays tombstoned for at least thirty days');
   assert.doesNotMatch(JSON.stringify(tombstone),/DevicePrepared|Новый быстрый|d{32}|docs\.google\.com/);
-  assert.equal(Array.from(storage.entries()).some(([key,value])=>key.startsWith('notion-widget-preview-v1:')&&String(value).includes(descriptor.preparedName)),false,'the optimistic row is never persisted as confirmed presentation state');
+  assert.equal(Array.from(storage.entries()).some(([key,value])=>/^notion-widget-preview-v[12]:/.test(key)&&String(value).includes(descriptor.preparedName)),false,'the optimistic row is never persisted as confirmed presentation state');
   const mismatch=Object.assign({},descriptor,{generation:8,reservationProof:'e'.repeat(64)});
   listeners.message({source:bridgeSource,origin,data:{type:'notion-widget-v20-bridge-ready',embedNonce,instanceId:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',authoritative:true,actionReady:true,preparedCreates:[mismatch],geometry:[],viewport:{width:868,height:523}}});
   assert.equal(events.filter((entry)=>entry.message.type==='notion-widget-v20-primary-action').length,0,'a different generation/proof tuple never binds the cached navigation');

@@ -9,7 +9,8 @@
   const snapshotGrid = document.getElementById('snapshotGrid');
   const fatal = document.getElementById('fatal');
   const createRequests = new Map();
-  const SNAPSHOT_CACHE_SCHEMA = 1;
+  const SNAPSHOT_CACHE_LEGACY_SCHEMA = 1;
+  const SNAPSHOT_CACHE_SCHEMA = 2;
   const SNAPSHOT_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
   const ACTION_CACHE_SCHEMA = 1;
   const ACTION_CACHE_MAX_TTL_MS = 2 * 60 * 1000;
@@ -266,14 +267,32 @@
     const now = Date.now();
     for (let index = Number(store.length) - 1; index >= 0; index -= 1) {
       const key = String(store.key(index) || '');
-      if (!key.startsWith('notion-widget-preview-v1:')) continue;
-      let envelope = null;
-      try { envelope = JSON.parse(String(store.getItem(key) || '')); } catch (_error) {}
-      const savedAt = Number(envelope && envelope.savedAt);
-      if (!envelope || envelope.schema !== SNAPSHOT_CACHE_SCHEMA || !Number.isFinite(savedAt) || now - savedAt < -60000 || now - savedAt > SNAPSHOT_CACHE_MAX_AGE_MS) {
+      const schema = key.startsWith('notion-widget-preview-v2:')
+        ? SNAPSHOT_CACHE_SCHEMA
+        : (key.startsWith('notion-widget-preview-v1:') ? SNAPSHOT_CACHE_LEGACY_SCHEMA : 0);
+      if (!schema) continue;
+      let valid = false;
+      try { valid = Boolean(parseSnapshotEnvelope(String(store.getItem(key) || ''), schema, now)); } catch (_error) {}
+      if (!valid) {
         try { store.removeItem(key); } catch (_removeError) {}
       }
     }
+  }
+
+  function validSnapshotCacheTime(value, now) {
+    return Number.isSafeInteger(value) && now - value >= -60000 && now - value <= SNAPSHOT_CACHE_MAX_AGE_MS;
+  }
+
+  function parseSnapshotEnvelope(raw, schema, now) {
+    if (!raw || raw.length > 100000) throw new Error('INVALID_SNAPSHOT_SIZE');
+    const envelope = JSON.parse(raw);
+    if (!hasExactObjectKeys(envelope, ['schema', 'savedAt', 'iv', 'ciphertext']) || envelope.schema !== schema || !validSnapshotCacheTime(envelope.savedAt, now)) {
+      throw new Error('INVALID_SNAPSHOT_ENVELOPE');
+    }
+    const iv = base64UrlToBytes(envelope.iv);
+    const ciphertext = base64UrlToBytes(envelope.ciphertext);
+    if (iv.length !== 12 || ciphertext.length < 17 || ciphertext.length > 75000) throw new Error('INVALID_SNAPSHOT_CIPHERTEXT');
+    return { envelope, iv, ciphertext };
   }
 
   function bytesToBase64Url(bytes) {
@@ -299,26 +318,96 @@
       const release = params.get('release') || '';
       if (!task || !token) return null;
       const encoder = new TextEncoder();
-      const keyDigest = new Uint8Array(await window.crypto.subtle.digest('SHA-256', encoder.encode(`notion-widget-preview-key-v1\u0000${task}\u0000${token}`)));
-      const slotDigest = new Uint8Array(await window.crypto.subtle.digest('SHA-256', encoder.encode(`notion-widget-preview-slot-v1\u0000${task}\u0000${token}`)));
-      const key = await window.crypto.subtle.importKey('raw', keyDigest, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
-      return { key, slot: `notion-widget-preview-v1:${bytesToBase64Url(slotDigest.slice(0, 18))}`, aad: encoder.encode(`notion-widget-preview-v1\u0000${task}\u0000${release}`) };
+      const [keyDigest, slotDigest, legacyKeyDigest, legacySlotDigest] = await Promise.all([
+        window.crypto.subtle.digest('SHA-256', encoder.encode(`notion-widget-preview-key-v2\u0000${task}\u0000${token}`)),
+        window.crypto.subtle.digest('SHA-256', encoder.encode(`notion-widget-preview-slot-v2\u0000${task}\u0000${token}`)),
+        window.crypto.subtle.digest('SHA-256', encoder.encode(`notion-widget-preview-key-v1\u0000${task}\u0000${token}`)),
+        window.crypto.subtle.digest('SHA-256', encoder.encode(`notion-widget-preview-slot-v1\u0000${task}\u0000${token}`))
+      ]);
+      const [key, legacyKey] = await Promise.all([
+        window.crypto.subtle.importKey('raw', keyDigest, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']),
+        window.crypto.subtle.importKey('raw', legacyKeyDigest, { name: 'AES-GCM' }, false, ['decrypt'])
+      ]);
+      return {
+        current: {
+          schema: SNAPSHOT_CACHE_SCHEMA,
+          key,
+          slot: `notion-widget-preview-v2:${bytesToBase64Url(new Uint8Array(slotDigest).slice(0, 18))}`,
+          aad: encoder.encode(`notion-widget-preview-v2\u0000${task}`)
+        },
+        legacy: {
+          schema: SNAPSHOT_CACHE_LEGACY_SCHEMA,
+          key: legacyKey,
+          slot: `notion-widget-preview-v1:${bytesToBase64Url(new Uint8Array(legacySlotDigest).slice(0, 18))}`,
+          aad: encoder.encode(`notion-widget-preview-v1\u0000${task}\u0000${release}`)
+        }
+      };
     })().catch(() => null);
     return snapshotCacheContextPromise;
   }
 
+  async function encryptSnapshotEnvelope(context, rows, savedAt) {
+    const iv = new Uint8Array(12);
+    window.crypto.getRandomValues(iv);
+    const plaintext = new TextEncoder().encode(JSON.stringify({ schema: context.schema, savedAt, materials: rows }));
+    const ciphertext = new Uint8Array(await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: context.aad }, context.key, plaintext));
+    return JSON.stringify({ schema: context.schema, savedAt, iv: bytesToBase64Url(iv), ciphertext: bytesToBase64Url(ciphertext) });
+  }
+
+  async function readSnapshotEnvelope(store, context, removeAuthenticationFailure) {
+    let raw = '';
+    try { raw = String(store.getItem(context.slot) || ''); } catch (_error) { return { status: 'unavailable' }; }
+    if (!raw) return { status: 'missing' };
+    let parsed;
+    try { parsed = parseSnapshotEnvelope(raw, context.schema, Date.now()); }
+    catch (_error) {
+      try { store.removeItem(context.slot); } catch (_removeError) {}
+      return { status: 'invalid' };
+    }
+    let plaintext;
+    try {
+      plaintext = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: parsed.iv, additionalData: context.aad }, context.key, parsed.ciphertext);
+    } catch (_error) {
+      if (removeAuthenticationFailure) {
+        try { store.removeItem(context.slot); } catch (_removeError) {}
+      }
+      return { status: 'authentication-failed' };
+    }
+    try {
+      const payload = JSON.parse(new TextDecoder().decode(plaintext));
+      if (!hasExactObjectKeys(payload, ['schema', 'savedAt', 'materials']) || payload.schema !== context.schema || payload.savedAt !== parsed.envelope.savedAt || !validSnapshotCacheTime(payload.savedAt, Date.now())) {
+        throw new Error('INVALID_SNAPSHOT_PAYLOAD');
+      }
+      const rows = safeSnapshotMaterials(payload.materials);
+      if (!rows) throw new Error('INVALID_SNAPSHOT_MATERIALS');
+      return { status: 'valid', rows, savedAt: payload.savedAt };
+    } catch (_error) {
+      try { store.removeItem(context.slot); } catch (_removeError) {}
+      return { status: 'invalid' };
+    }
+  }
+
+  async function migrateLegacySnapshot(store, context, entry, generation) {
+    try {
+      const serialized = await encryptSnapshotEnvelope(context.current, entry.rows, entry.savedAt);
+      if (snapshotMessageSeen || generation !== snapshotPersistGeneration) return false;
+      if (String(store.getItem(context.current.slot) || '')) return false;
+      store.setItem(context.current.slot, serialized);
+      if (String(store.getItem(context.current.slot) || '') !== serialized) return false;
+      try { store.removeItem(context.legacy.slot); } catch (_removeError) {}
+      return true;
+    } catch (_error) { return false; }
+  }
+
   async function persistSafeSnapshotMaterials(rows, fingerprint, generation) {
     const store = snapshotCacheStore();
-    const context = await snapshotCacheContext();
-    if (!store || !context || generation !== snapshotPersistGeneration) return false;
+    const contexts = await snapshotCacheContext();
+    if (!store || !contexts || generation !== snapshotPersistGeneration) return false;
     try {
-      const iv = new Uint8Array(12);
-      window.crypto.getRandomValues(iv);
       const savedAt = Date.now();
-      const plaintext = new TextEncoder().encode(JSON.stringify({ schema: SNAPSHOT_CACHE_SCHEMA, savedAt, materials: rows }));
-      const ciphertext = new Uint8Array(await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: context.aad }, context.key, plaintext));
+      const serialized = await encryptSnapshotEnvelope(contexts.current, rows, savedAt);
       if (generation !== snapshotPersistGeneration || fingerprint !== lastPersistedSnapshotFingerprint) return false;
-      store.setItem(context.slot, JSON.stringify({ schema: SNAPSHOT_CACHE_SCHEMA, savedAt, iv: bytesToBase64Url(iv), ciphertext: bytesToBase64Url(ciphertext) }));
+      store.setItem(contexts.current.slot, serialized);
       return true;
     } catch (_error) {
       if (generation === snapshotPersistGeneration && fingerprint === lastPersistedSnapshotFingerprint) lastPersistedSnapshotFingerprint = '';
@@ -338,28 +427,17 @@
     const store = snapshotCacheStore();
     const context = await snapshotCacheContext();
     if (!store || !context || snapshotMessageSeen) return false;
-    let raw = '';
-    try { raw = String(store.getItem(context.slot) || ''); } catch (_error) { return false; }
-    if (!raw || raw.length > 100000) return false;
-    try {
-      const envelope = JSON.parse(raw);
-      if (!envelope || envelope.schema !== SNAPSHOT_CACHE_SCHEMA) throw new Error('INVALID_SNAPSHOT_SCHEMA');
-      const envelopeSavedAt = Number(envelope.savedAt);
-      if (!Number.isFinite(envelopeSavedAt) || Date.now() - envelopeSavedAt < -60000 || Date.now() - envelopeSavedAt > SNAPSHOT_CACHE_MAX_AGE_MS) throw new Error('STALE_SNAPSHOT');
-      const iv = base64UrlToBytes(envelope.iv);
-      const ciphertext = base64UrlToBytes(envelope.ciphertext);
-      if (iv.length !== 12 || ciphertext.length > 75000) throw new Error('INVALID_SNAPSHOT_SIZE');
-      const plaintext = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv, additionalData: context.aad }, context.key, ciphertext);
-      const payload = JSON.parse(new TextDecoder().decode(plaintext));
-      const savedAt = Number(payload && payload.savedAt);
-      if (!payload || payload.schema !== SNAPSHOT_CACHE_SCHEMA || savedAt !== envelopeSavedAt || !Number.isFinite(savedAt) || Date.now() - savedAt < -60000 || Date.now() - savedAt > SNAPSHOT_CACHE_MAX_AGE_MS) throw new Error('STALE_SNAPSHOT');
-      const rows = safeSnapshotMaterials(payload.materials);
-      if (!rows || snapshotMessageSeen) return false;
-      return renderSafeSnapshotMaterials(rows, snapshotFingerprint(rows));
-    } catch (_error) {
-      try { store.removeItem(context.slot); } catch (_removeError) {}
-      return false;
+    const generation = snapshotPersistGeneration;
+    const current = await readSnapshotEnvelope(store, context.current, true);
+    if (current.status === 'valid') {
+      if (snapshotMessageSeen) return false;
+      return renderSafeSnapshotMaterials(current.rows, snapshotFingerprint(current.rows));
     }
+    const legacy = await readSnapshotEnvelope(store, context.legacy, false);
+    if (legacy.status !== 'valid' || snapshotMessageSeen) return false;
+    const rendered = renderSafeSnapshotMaterials(legacy.rows, snapshotFingerprint(legacy.rows));
+    await migrateLegacySnapshot(store, context, legacy, generation);
+    return rendered;
   }
 
   function acceptSnapshotMaterials(value, render) {

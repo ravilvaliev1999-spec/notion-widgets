@@ -6,8 +6,11 @@ var W20_REGISTRY_TOMBSTONE_RECORD = 'tombstone';
 var W20_REGISTRY_META_PREFIX = 'w20:bootstrap-meta:';
 var W20_REGISTRY_META_SCHEMA = 2;
 var W20_REGISTRY_CREATE_POSITION_PREFIX = 'w20:create-position:';
-var W20_REGISTRY_ACTION_MAX_AGE_MS = 7 * 60 * 1000;
-var W20_REGISTRY_FOLDER_MAX_AGE_MS = 15 * 60 * 1000;
+// Keep enough headroom for a delayed five-minute trigger. These timestamps are
+// a client UX gate; every mutation still performs its own authorization and
+// exact resource checks on the server.
+var W20_REGISTRY_ACTION_MAX_AGE_MS = 20 * 60 * 1000;
+var W20_REGISTRY_FOLDER_MAX_AGE_MS = 30 * 60 * 1000;
 var W20_REGISTRY_TOMBSTONE_GRACE_MS = 15 * 60 * 1000;
 
 function w20RegistryTaskPrefix_(taskId) {
