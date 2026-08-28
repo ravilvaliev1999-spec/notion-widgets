@@ -461,8 +461,10 @@ test('mutation retries use per-session stable idempotency keys without persistin
 });
 
 test('the access capability is added centrally to backend payloads and is never logged', () => {
-  assert.match(frontend, /let accessToken = params\.get\('accessToken'\) \|\| ''/);
-  assert.match(frontend, /let clientIdInput = String\(params\.get\('clientId'\) \|\| ''\)\.slice\(0,80\)/);
+  assert.match(frontend, /id="runtimeParams" data-params="<\?= runtimeParamsJson \?>"/);
+  assert.match(frontend, /let accessToken = params\.get\('accessToken'\) \|\| String\(serverRuntimeParams\.accessToken\|\|''\)/);
+  assert.match(frontend, /let clientIdInput = String\(params\.get\('clientId'\) \|\| serverRuntimeParams\.clientId \|\| ''\)\.slice\(0,80\)/);
+  assert.match(frontend, /let embedNonce = params\.get\('embedNonce'\) \|\| String\(serverRuntimeParams\.embedNonce\|\|''\)/);
   assert.match(frontend, /let clientId = normalizeClientId\(clientIdInput\)/);
   assert.match(frontend, /function normalizeClientId\(value\)/);
   assert.match(frontend, /\^\[0-9a-f\]\{8\}-\[0-9a-f\]\{4\}-4\[0-9a-f\]\{3\}-\[89ab\]\[0-9a-f\]\{3\}-\[0-9a-f\]\{12\}\$/);
@@ -793,6 +795,7 @@ test('server-rendered safe registry cards paint before the first client RPC', ()
   const startup=frontend.slice(frontend.indexOf('function readInitialBootstrap'),frontend.indexOf('if(state.mock)'));
   const startupTail=frontend.slice(frontend.lastIndexOf('const initialBootstrap=readInitialBootstrap()'),frontend.indexOf('if(state.mock)'));
   assert.match(frontend,/id="initialBootstrap" data-bootstrap="<\?= initialBootstrapJson \?>"/);
+  assert.match(frontend,/id="runtimeParams" data-params="<\?= runtimeParamsJson \?>"/);
   assert.match(startup,/data\.cached!==true/);
   assert.match(startup,/data\.authoritative!==false/);
   assert.match(startup,/Array\.isArray\(data\.materials\)/);

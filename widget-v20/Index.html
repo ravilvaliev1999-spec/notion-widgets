@@ -6,10 +6,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <meta name="color-scheme" content="dark" />
 <meta id="initialBootstrap" data-bootstrap="<?= initialBootstrapJson ?>" />
+<meta id="runtimeParams" data-params="<?= runtimeParamsJson ?>" />
 <script>
   (()=>{
     try{
-      const nonce=String(new URLSearchParams(location.search).get('embedNonce')||'');
+      const runtimeMeta=document.getElementById('runtimeParams');
+      const runtime=JSON.parse(String(runtimeMeta&&runtimeMeta.dataset&&runtimeMeta.dataset.params||'{}'));
+      const nonce=String(runtime.embedNonce||new URLSearchParams(location.search).get('embedNonce')||'');
       if(!/^[0-9a-f]{32}$/.test(nonce))return;
       const meta=document.getElementById('initialBootstrap');
       const bootstrap=JSON.parse(String(meta&&meta.dataset&&meta.dataset.bootstrap||'null'));
@@ -387,11 +390,13 @@
   const editIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
   const chevronSvg = `<svg class="chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>`;
   const params = new URLSearchParams(window.location.search);
-  let taskPageId = normalizeUuid(params.get('task') || params.get('taskPageId'));
-  let accessToken = params.get('accessToken') || '';
-  let clientIdInput = String(params.get('clientId') || '').slice(0,80);
+  let serverRuntimeParams={};
+  try{const runtimeMeta=document.getElementById('runtimeParams');serverRuntimeParams=JSON.parse(String(runtimeMeta&&runtimeMeta.dataset&&runtimeMeta.dataset.params||'{}'));}catch(_error){}
+  let taskPageId = normalizeUuid(params.get('task') || params.get('taskPageId') || serverRuntimeParams.task);
+  let accessToken = params.get('accessToken') || String(serverRuntimeParams.accessToken||'');
+  let clientIdInput = String(params.get('clientId') || serverRuntimeParams.clientId || '').slice(0,80);
   let clientId = normalizeClientId(clientIdInput);
-  let embedNonce = params.get('embedNonce') || '';
+  let embedNonce = params.get('embedNonce') || String(serverRuntimeParams.embedNonce||'');
   const isLocal = location.protocol === 'file:' || ['localhost','127.0.0.1','::1'].includes(location.hostname);
   const isPublishedCanary = location.hostname.toLowerCase() === 'ravilvaliev1999-spec.github.io';
   const requestedMock = params.get('mock') === '1';

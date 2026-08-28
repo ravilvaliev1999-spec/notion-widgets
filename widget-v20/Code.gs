@@ -130,8 +130,15 @@ function doGet(event) {
   } else {
     var indexTemplate = HtmlService.createTemplateFromFile('Index');
     indexTemplate.initialBootstrapJson = 'null';
+    var initialTaskId = WidgetV19Core.normalizeUuid(params.task || params.taskPageId);
+    indexTemplate.runtimeParamsJson = JSON.stringify({
+      task: initialTaskId || '',
+      accessToken: String(params.accessToken || '').slice(0, 300),
+      clientId: String(params.clientId || '').slice(0, 80),
+      embedNonce: String(params.embedNonce || '').slice(0, 64),
+      release: String(params.release || '').slice(0, 80)
+    });
     try {
-      var initialTaskId = WidgetV19Core.normalizeUuid(params.task || params.taskPageId);
       var initialInput = {
         taskPageId: initialTaskId,
         accessToken: String(params.accessToken || '').slice(0, 300),
