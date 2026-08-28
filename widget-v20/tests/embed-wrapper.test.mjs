@@ -13,14 +13,18 @@ const wrapper = fs.readFileSync(path.join(root, 'apps-script-embed.html'), 'utf8
 const wrapperJs = fs.readFileSync(path.join(root, 'apps-script-embed.js'), 'utf8');
 const createCourier = fs.readFileSync(path.join(root, 'create-courier.html'), 'utf8');
 const earlyBootstrap = wrapper.match(/<script id="earlyWidgetBootstrap">([\s\S]*?)<\/script>/)?.[1] || '';
+const earlySnapshotCache = wrapper.match(/<script id="earlySnapshotCache">([\s\S]*?)<\/script>/)?.[1] || '';
 const earlySnapshot = frontend.match(/<meta id="initialBootstrap"[\s\S]*?\/>\s*<script>\s*([\s\S]*?)<\/script>/)?.[1] || '';
 
 test('public wrapper isolates Apps Script from multi-login cookies', () => {
   assert.match(wrapper, /<iframe[^>]+id="widget"[^>]+credentialless|<iframe[^>]+credentialless[^>]+id="widget"/);
   assert.match(wrapper, /<iframe[^>]+loading="eager"[^>]+fetchpriority="high"/);
   assert.match(wrapper, /referrerpolicy="no-referrer"/);
-  assert.match(wrapper, /<link rel="preload" href="apps-script-embed\.js\?v=50" as="script" fetchpriority="high">/);
-  assert.match(wrapper, /j\.src='apps-script-embed\.js\?v=50'/);
+  assert.match(wrapper, /connect-src https:\/\/script\.google\.com https:\/\/\*\.googleusercontent\.com/);
+  assert.match(wrapper, /<link rel="dns-prefetch" href="\/\/script\.google\.com">/);
+  assert.match(wrapper, /<link rel="preconnect" href="https:\/\/script\.google\.com" crossorigin>/);
+  assert.match(wrapper, /<link rel="preload" href="apps-script-embed\.js\?v=51" as="script" fetchpriority="high">/);
+  assert.match(wrapper, /j\.src='apps-script-embed\.js\?v=51'/);
   assert.doesNotMatch(wrapper, /<script[^>]+src="apps-script-embed\.js/);
   assert.match(wrapper, /class="skeleton"/);
   assert.match(wrapper, /body\.widget-ready iframe\{opacity:1\}/);
@@ -32,9 +36,11 @@ test('public wrapper isolates Apps Script from multi-login cookies', () => {
   assert.match(wrapper,/\.skeleton-count:empty\{display:none\}/);
   assert.match(wrapper, /class="skeleton-pencil"/);
   assert.doesNotMatch(wrapper, /class="[^"]*chevron/);
+  const snapshotHash = crypto.createHash('sha256').update(earlySnapshotCache).digest('base64');
+  assert.match(wrapper, new RegExp(`'sha256-${snapshotHash.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
 });
 
-test('wrapper starts its local cache runtime immediately but defers the credentialless Apps Script frame', () => {
+test('wrapper exposes its shell before starting the credentialless Apps Script frame', () => {
   assert.ok(earlyBootstrap);
   const hash = crypto.createHash('sha256').update(earlyBootstrap).digest('base64');
   assert.match(wrapper, new RegExp(`script-src 'self' 'sha256-${hash.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
@@ -43,15 +49,12 @@ test('wrapper starts its local cache runtime immediately but defers the credenti
   const bytes = Uint8Array.from({ length: 16 }, (_value, index) => index + 1);
   const earlyListeners = {};
   const timers = [];
-  const frames = [];
   const scripts = [];
   const earlyStorage = new Map();
   const earlyLocalStorage = {getItem(key){return earlyStorage.get(key)||null;},setItem(key,value){earlyStorage.set(key,String(value));}};
   const windowObject = {
     addEventListener(type, listener) { earlyListeners[type] = listener; },
-    requestAnimationFrame(callback) { frames.push(callback); return frames.length; },
-    setTimeout(callback, delay) { const timer={callback,delay,cancelled:false};timers.push(timer);return timer; },
-    clearTimeout(timer) { if(timer)timer.cancelled=true; }
+    setTimeout(callback, delay) { const timer={callback,delay};timers.push(timer);return timer; }
   };
   vm.runInNewContext(earlyBootstrap, {
     window: windowObject,
@@ -66,27 +69,27 @@ test('wrapper starts its local cache runtime immediately but defers the credenti
     crypto: { getRandomValues(target) { target.set(bytes); return target; } },
     URL, URLSearchParams, Uint8Array, Array, String
   });
-  assert.equal(widget.src, '', 'the nested iframe waits for the first two shell paints');
-  assert.equal(scripts.length, 1, 'the local decrypt runtime starts immediately in parallel with the outer page load');
-  assert.equal(scripts[0].src, 'apps-script-embed.js?v=50');
+  assert.equal(widget.src, '', 'the nested request cannot hold the outer shell load open');
+  assert.equal(scripts.length, 0, 'the full runtime cannot execute before the shell is visible');
+  assert.equal(timers.length, 0);
+  assert.equal(windowObject.__notionWidgetDeferChild, true);
+  assert.equal(typeof earlyListeners.load, 'function');
+  assert.equal(typeof earlyListeners.message, 'function');
+
+  earlyListeners.load();
+  assert.equal(scripts.length, 1, 'the preloaded runtime starts as soon as the outer shell has loaded');
+  assert.equal(scripts[0].src, 'apps-script-embed.js?v=51');
   assert.equal(scripts[0].async, true);
   assert.equal(scripts[0].fetchPriority, 'high');
-  assert.equal(widget.src, '', 'the heavyweight work must wait until Notion can paint the shell');
-  assert.equal(earlyListeners.load, undefined, 'the Apps Script cold start must not wait for the wrapper load event');
-  assert.equal(scripts.length, 1);
-  assert.equal(windowObject.__notionWidgetDeferChild, true);
-  const watchdog=timers.find((timer)=>timer.delay===200);
-  assert.ok(watchdog,'hidden frames must still start the child within a bounded delay');
-  assert.equal(frames.length, 1);
-  frames[0]();
-  assert.equal(frames.length, 2);
-  assert.equal(timers.some((timer)=>timer.delay===0&&!timer.cancelled), false, 'one paint is not enough to start the nested frame');
-  frames[1]();
-  assert.equal(watchdog.cancelled,true,'the two-paint path cancels its hidden-frame watchdog');
-  const childStart=timers.find((timer)=>timer.delay===0&&!timer.cancelled);
-  assert.ok(childStart);
-  childStart.callback();
+  assert.equal(widget.src, '', 'the child starts in the task after the outer load event');
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delay, 0);
+  earlyListeners.load();
+  assert.equal(scripts.length, 1, 'duplicate load delivery cannot start a second runtime or frame');
+  assert.equal(timers.length, 1);
+  timers[0].callback();
   assert.equal(windowObject.__notionWidgetDeferChild, false);
+
   const earlyUrl = new URL(widget.src);
   assert.equal(earlyUrl.origin, 'https://script.google.com');
   assert.deepEqual(Array.from(earlyUrl.searchParams.keys()).sort(), ['accessToken', 'clientId', 'embedNonce', 'release', 'task']);
@@ -94,41 +97,40 @@ test('wrapper starts its local cache runtime immediately but defers the credenti
   assert.equal(earlyUrl.searchParams.get('clientId'),windowObject.__notionWidgetEarlyBridge.clientId);
   assert.equal(earlyUrl.searchParams.get('embedNonce'), windowObject.__notionWidgetEarlyBridge.nonce);
   assert.match(windowObject.__notionWidgetEarlyBridge.nonce, /^[0-9a-f]{32}$/);
-  assert.equal(scripts.length, 1);
   earlyListeners.message({origin:'https://evil.example',data:{embedNonce:windowObject.__notionWidgetEarlyBridge.nonce}});
   earlyListeners.message({origin:'https://script.googleusercontent.com',data:{embedNonce:windowObject.__notionWidgetEarlyBridge.nonce}});
   assert.equal(windowObject.__notionWidgetEarlyBridge.events.length, 1, 'only the authenticated early Google message is buffered');
   windowObject.__notionWidgetEarlyBridge.events.length=0;
   for(let sequence=0;sequence<10;sequence+=1)earlyListeners.message({origin:'https://script.googleusercontent.com',data:{embedNonce:windowObject.__notionWidgetEarlyBridge.nonce,sequence}});
-  assert.deepEqual(Array.from(windowObject.__notionWidgetEarlyBridge.events,(event)=>event.data.sequence),[2,3,4,5,6,7,8,9],'the bounded early FIFO evicts oldest bridge events so the latest authority cannot be dropped');
+  assert.deepEqual(Array.from(windowObject.__notionWidgetEarlyBridge.events,(event)=>event.data.sequence),[2,3,4,5,6,7,8,9],'the bounded early FIFO evicts oldest events');
 
-  const hiddenWidget={src:''},hiddenTimers=[],hiddenFrames=[],hiddenListeners={};
+  const completeWidget={src:''},completeTimers=[],completeScripts=[];
   vm.runInNewContext(earlyBootstrap,{
     window:{
-      addEventListener(type,listener){hiddenListeners[type]=listener;},
-      requestAnimationFrame(callback){hiddenFrames.push(callback);return hiddenFrames.length;},
-      setTimeout(callback,delay){const timer={callback,delay,cancelled:false};hiddenTimers.push(timer);return timer;},
-      clearTimeout(timer){if(timer)timer.cancelled=true;}
+      addEventListener(){},
+      setTimeout(callback,delay){const timer={callback,delay};completeTimers.push(timer);return timer;}
     },
-    document:{readyState:'loading',head:{appendChild(){}},createElement(){return {};},getElementById(){return hiddenWidget;}},
+    document:{
+      readyState:'complete',
+      head:{appendChild(value){completeScripts.push(value);}},
+      createElement(){return {};},
+      getElementById(){return completeWidget;}
+    },
     location:{hash:`#task=3c62d627-39a1-80a1-aac7-ec19ffc9ef8e&accessToken=${'a'.repeat(64)}`},
     localStorage:earlyLocalStorage,
-    crypto:{getRandomValues(target){target.set(bytes);return target;}},URL,URLSearchParams,Uint8Array,Array,String
+    crypto:{getRandomValues(target){target.set(bytes);return target;}},
+    URL,URLSearchParams,Uint8Array,Array,String
   });
-  assert.equal(hiddenFrames.length,1,'the hidden simulation intentionally leaves requestAnimationFrame suspended');
-  const hiddenWatchdog=hiddenTimers.find((timer)=>timer.delay===200);
-  hiddenWatchdog.callback();
-  hiddenTimers.find((timer)=>timer.delay===0&&!timer.cancelled).callback();
-  assert.equal(new URL(hiddenWidget.src).origin,'https://script.google.com','the watchdog starts Apps Script without a visible animation frame');
-  assert.equal(new URL(hiddenWidget.src).searchParams.get('clientId'),earlyUrl.searchParams.get('clientId'),'the per-task browser client id stays stable across reloads');
+  assert.equal(completeScripts.length,1);
+  assert.equal(completeTimers.length,1);
+  completeTimers[0].callback();
+  assert.equal(new URL(completeWidget.src).searchParams.get('clientId'),earlyUrl.searchParams.get('clientId'),'the per-task browser client id stays stable across reloads');
 
-  const rejectedWidget = { src: '' }, rejectedTimers = [], rejectedFrames = [], rejectedScripts = [], rejectedListeners = {};
+  const rejectedWidget = { src: '' }, rejectedTimers = [], rejectedScripts = [], rejectedListeners = {};
   vm.runInNewContext(earlyBootstrap, {
     window: {
       addEventListener(type, listener) { rejectedListeners[type] = listener; },
-      requestAnimationFrame(callback) { rejectedFrames.push(callback); return rejectedFrames.length; },
-      setTimeout(callback, delay) { const timer={callback,delay,cancelled:false};rejectedTimers.push(timer);return timer; },
-      clearTimeout(timer) { if(timer)timer.cancelled=true; }
+      setTimeout(callback, delay) { const timer={callback,delay};rejectedTimers.push(timer);return timer; }
     },
     document: {
       readyState: 'loading',
@@ -140,11 +142,11 @@ test('wrapper starts its local cache runtime immediately but defers the credenti
     crypto: { getRandomValues() { throw new Error('invalid parameters must stop before entropy is requested'); } },
     URL, URLSearchParams, Uint8Array, Array, String
   });
-  rejectedFrames[0]();
-  rejectedFrames[1]();
-  rejectedTimers.find((timer)=>timer.delay===0&&!timer.cancelled).callback();
+  assert.equal(rejectedScripts.length,0);
+  rejectedListeners.load();
+  assert.equal(rejectedScripts.length,1,'the runtime still renders the validation error after outer load');
+  rejectedTimers[0].callback();
   assert.equal(rejectedWidget.src, '');
-  assert.equal(rejectedScripts.length, 1, 'the runtime still renders the validation error after first paint');
 });
 
 test('wrapper forwards only validated task runtime parameters', () => {
@@ -182,6 +184,229 @@ test('wrapper caches only an encrypted passive presentation snapshot', () => {
   assert.match(frontend, /type:'notion-widget-v20-snapshot-ready',embedNonce:nonce,materials/);
   assert.match(frontend, /snapshotMaterials:presentationSnapshotMaterials\(\)/);
   assert.match(frontend, /item\.archived!==true[^\n]+!\['pending','deleting','deleted'\]\.includes/);
+});
+
+test('early encrypted snapshot cache paints only passive exact cards before the main runtime', async () => {
+  assert.ok(earlySnapshotCache, 'the inline critical cache renderer must be present');
+
+  class EarlyElement {
+    constructor(tagName = '') {
+      this.tagName = String(tagName).toUpperCase();
+      this.children = [];
+      this.dataset = {};
+      this.className = '';
+      this.textContent = '';
+      this.hidden = false;
+      this.isFragment = false;
+    }
+    get classList() {
+      return {
+        add: (...names) => {
+          const values = new Set(String(this.className || '').split(/\s+/).filter(Boolean));
+          names.forEach((name) => values.add(String(name)));
+          this.className = Array.from(values).join(' ');
+        }
+      };
+    }
+    appendChild(child) {
+      if (child && child.isFragment) this.children.push(...child.children);
+      else this.children.push(child);
+      return child;
+    }
+    append(...children) { children.forEach((child) => this.appendChild(child)); }
+    replaceChildren(...children) {
+      this.children = [];
+      children.forEach((child) => this.appendChild(child));
+    }
+    cloneNode(deep) {
+      const clone = new EarlyElement(this.tagName);
+      clone.dataset = { ...this.dataset };
+      clone.className = this.className;
+      clone.textContent = this.textContent;
+      clone.hidden = this.hidden;
+      if (deep) clone.children = this.children.map((child) => child.cloneNode(true));
+      return clone;
+    }
+    querySelector(selector) {
+      const className = String(selector || '').match(/^\.([A-Za-z0-9_-]+)$/)?.[1];
+      if (!className) return null;
+      const queue = this.children.slice();
+      while (queue.length) {
+        const current = queue.shift();
+        if (String(current.className || '').split(/\s+/).includes(className)) return current;
+        queue.push(...current.children);
+      }
+      return null;
+    }
+  }
+
+  const task = '3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const token = 'e'.repeat(64);
+  const release = 'early-cache-test';
+  const now = 4_000_000;
+  const encoder = new TextEncoder();
+  const binding = 'a'.repeat(64);
+  const hostileName = '<img src=x onerror=alert(1)> & exact';
+  const materials = [
+    { name: 'Drive binary.pdf', section: 'Drive', format: 'PDF', position: 0, navigationBinding: binding },
+    { name: hostileName, section: 'Docs', format: 'Google Docs', position: 1 },
+    { name: 'First document', section: 'Docs', format: 'Google Docs', position: 0 }
+  ];
+
+  async function encryptedSnapshot(value = materials) {
+    const [keyDigest, slotDigest] = await Promise.all([
+      crypto.webcrypto.subtle.digest('SHA-256', encoder.encode(`notion-widget-preview-key-v1\u0000${task}\u0000${token}`)),
+      crypto.webcrypto.subtle.digest('SHA-256', encoder.encode(`notion-widget-preview-slot-v1\u0000${task}\u0000${token}`))
+    ]);
+    const key = await crypto.webcrypto.subtle.importKey('raw', keyDigest, { name: 'AES-GCM' }, false, ['encrypt']);
+    const iv = crypto.webcrypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.webcrypto.subtle.encrypt(
+      { name: 'AES-GCM', iv, additionalData: encoder.encode(`notion-widget-preview-v1\u0000${task}\u0000${release}`) },
+      key,
+      encoder.encode(JSON.stringify({ schema: 1, savedAt: now, materials: value }))
+    );
+    return {
+      slot: `notion-widget-preview-v1:${Buffer.from(slotDigest).subarray(0, 18).toString('base64url')}`,
+      envelope: JSON.stringify({
+        schema: 1,
+        savedAt: now,
+        iv: Buffer.from(iv).toString('base64url'),
+        ciphertext: Buffer.from(ciphertext).toString('base64url')
+      })
+    };
+  }
+
+  function createHarness(storage, options = {}) {
+    const snapshotGrid = new EarlyElement('div');
+    snapshotGrid.hidden = true;
+    const bodyClasses = new Set();
+    const skeletons = new Map(['Drive', 'Docs', 'Sheets', 'Slides'].map((section) => {
+      const card = new EarlyElement('div');
+      card.className = 'skeleton-card';
+      card.dataset.snapshotSection = section;
+      const icon = new EarlyElement('span');
+      icon.className = 'skeleton-icon';
+      const count = new EarlyElement('span');
+      count.className = 'skeleton-count';
+      card.append(icon, count);
+      return [section, card];
+    }));
+    const windowObject = {
+      __notionWidgetLiveSnapshotSeen: options.liveSnapshotSeen === true,
+      __notionWidgetSnapshotRuntimeOwned: options.runtimeOwned === true,
+      localStorage: {
+        getItem(key) { return storage.get(key) || null; },
+        setItem(key, value) { storage.set(key, String(value)); },
+        removeItem(key) { storage.delete(key); }
+      }
+    };
+    const nativeSubtle = crypto.webcrypto.subtle;
+    windowObject.crypto = {
+      subtle: options.markLiveDuringDecrypt||options.markRuntimeDuringDecrypt ? {
+        digest(...args) { return nativeSubtle.digest(...args); },
+        importKey(...args) { return nativeSubtle.importKey(...args); },
+        async decrypt(...args) {
+          const plaintext = await nativeSubtle.decrypt(...args);
+          if(options.markLiveDuringDecrypt)windowObject.__notionWidgetLiveSnapshotSeen = true;
+          if(options.markRuntimeDuringDecrypt){
+            windowObject.__notionWidgetSnapshotRuntimeOwned = true;
+            const anchor=new EarlyElement('a');anchor.className='snapshot-card runtime-anchor';
+            snapshotGrid.replaceChildren(anchor);snapshotGrid.hidden=false;
+          }
+          return plaintext;
+        }
+      } : nativeSubtle
+    };
+    const document = {
+      body: { classList: { add(value) { bodyClasses.add(value); } } },
+      getElementById(id) { return id === 'snapshotGrid' ? snapshotGrid : null; },
+      querySelector(selector) {
+        const section = String(selector || '').match(/^\[data-snapshot-section="([A-Za-z]+)"\]$/)?.[1];
+        return section ? skeletons.get(section) || null : null;
+      },
+      createElement(tagName) { return new EarlyElement(tagName); },
+      createDocumentFragment() { const fragment = new EarlyElement(); fragment.isFragment = true; return fragment; }
+    };
+    class ClockDate extends globalThis.Date { static now() { return now; } }
+    return {
+      snapshotGrid,
+      bodyClasses,
+      windowObject,
+      context: {
+        window: windowObject,
+        document,
+        location: { hash: `#task=${task}&accessToken=${token}&release=${release}` },
+        URLSearchParams,
+        TextEncoder,
+        TextDecoder,
+        Uint8Array,
+        Array,
+        Object,
+        String,
+        Number,
+        Date: ClockDate,
+        Math,
+        RegExp,
+        Error,
+        JSON,
+        atob,
+        btoa
+      }
+    };
+  }
+
+  const valid = await encryptedSnapshot();
+  const unrelatedSlot = 'notion-widget-preview-v1:unrelated-envelope';
+  const validStorage = new Map([[valid.slot, valid.envelope], [unrelatedSlot, 'keep-me']]);
+  const validHarness = createHarness(validStorage);
+  await vm.runInNewContext(earlySnapshotCache, validHarness.context);
+
+  const descendants = (root) => root.children.flatMap((child) => [child, ...descendants(child)]);
+  const rendered = descendants(validHarness.snapshotGrid);
+  const columns = validHarness.snapshotGrid.children;
+  assert.equal(validHarness.snapshotGrid.hidden, false, 'the real cached snapshot is visible before the main runtime');
+  assert.equal(validHarness.bodyClasses.has('snapshot-ready'), true);
+  assert.equal(columns.length, 4);
+  const countFor = (section) => columns.find((column) => column.dataset.snapshotColumn === section)
+    .querySelector('.skeleton-count').textContent;
+  assert.deepEqual(['Drive', 'Docs', 'Sheets', 'Slides'].map(countFor), ['1', '2', '0', '0']);
+  const passiveCards = rendered.filter((element) => String(element.className).split(/\s+/).includes('snapshot-card'));
+  assert.equal(passiveCards.length, materials.length);
+  assert.ok(passiveCards.every((card) => card.tagName === 'ARTICLE'), 'critical cards are passive articles');
+  assert.equal(rendered.some((element) => element.tagName === 'A'), false, 'critical rendering exposes no native or raw navigation');
+  assert.ok(rendered.some((element) => element.className === 'skeleton-title' && element.textContent === hostileName));
+  assert.equal(rendered.some((element) => element.tagName === 'IMG'), false, 'HTML-looking names remain textContent');
+  assert.doesNotMatch(JSON.stringify(validHarness.snapshotGrid), new RegExp(binding));
+  assert.equal(validStorage.get(unrelatedSlot), 'keep-me');
+
+  const tamperedBytes = Buffer.from(JSON.parse(valid.envelope).ciphertext, 'base64url');
+  tamperedBytes[0] ^= 0xff;
+  const tamperedEnvelope = JSON.parse(valid.envelope);
+  tamperedEnvelope.ciphertext = tamperedBytes.toString('base64url');
+  const tamperedStorage = new Map([[valid.slot, JSON.stringify(tamperedEnvelope)], [unrelatedSlot, 'keep-me']]);
+  const tamperedHarness = createHarness(tamperedStorage);
+  await vm.runInNewContext(earlySnapshotCache, tamperedHarness.context);
+  assert.equal(tamperedStorage.has(valid.slot), false, 'authentication failure removes only the exact derived slot');
+  assert.equal(tamperedStorage.get(unrelatedSlot), 'keep-me');
+  assert.equal(tamperedHarness.snapshotGrid.hidden, true);
+  assert.equal(tamperedHarness.snapshotGrid.children.length, 0);
+
+  const racingStorage = new Map([[valid.slot, valid.envelope], [unrelatedSlot, 'keep-me']]);
+  const racingHarness = createHarness(racingStorage, { markLiveDuringDecrypt: true });
+  await vm.runInNewContext(earlySnapshotCache, racingHarness.context);
+  assert.equal(racingHarness.windowObject.__notionWidgetLiveSnapshotSeen, true);
+  assert.equal(racingHarness.snapshotGrid.hidden, true, 'a live snapshot that wins the decrypt race suppresses stale cached DOM');
+  assert.equal(racingHarness.snapshotGrid.children.length, 0);
+  assert.equal(racingStorage.has(valid.slot), true, 'a valid superseded envelope is preserved for normal runtime reconciliation');
+  assert.equal(racingStorage.get(unrelatedSlot), 'keep-me');
+
+  const runtimeRaceStorage = new Map([[valid.slot, valid.envelope]]);
+  const runtimeRaceHarness = createHarness(runtimeRaceStorage, { markRuntimeDuringDecrypt: true });
+  await vm.runInNewContext(earlySnapshotCache, runtimeRaceHarness.context);
+  assert.equal(runtimeRaceHarness.windowObject.__notionWidgetSnapshotRuntimeOwned,true);
+  assert.equal(runtimeRaceHarness.snapshotGrid.children.length,1);
+  assert.equal(runtimeRaceHarness.snapshotGrid.children[0].tagName,'A','late passive decrypt cannot replace a functional main-runtime anchor');
+  assert.equal(runtimeRaceStorage.has(valid.slot),true);
 });
 
 test('prepared create cache is short-lived, encrypted, origin-bound and one-shot across tabs', () => {
@@ -307,6 +532,8 @@ test('server-rendered early snapshot posts only passive card presentation fields
 
 test('wrapper binds one authenticated child channel without relaying local file contents', () => {
   assert.match(wrapperJs, /type === 'notion-widget-v20-bridge-ready'/);
+  assert.match(wrapperJs,/function renderSnapshotView\(fingerprint\) \{\s+if \(!snapshotGrid\) return false;\s+window\.__notionWidgetSnapshotRuntimeOwned = true;/);
+  assert.equal((wrapperJs.match(/window\.__notionWidgetLiveSnapshotSeen = true/g)||[]).length,2,'either authenticated live snapshot path must win the early decrypt race');
   assert.match(wrapperJs, /bridge = \{ source: event\.source, origin: event\.origin, instanceId: data\.instanceId, authoritative: data\.authoritative === true, actionReady: data\.actionReady === true, folderUrl: allowedDriveFolderUrl\(data\.folderUrl\), preparedCreates:/);
   assert.match(wrapperJs, /document\.body\.classList\.toggle\('widget-action-ready', bridge\.authoritative && bridge\.actionReady\)/);
   assert.match(wrapperJs, /data\.authoritative === true && data\.actionReady === true \? preparedCreateMap\(data\.preparedCreates\) : \{\}/);

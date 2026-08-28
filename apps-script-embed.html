@@ -5,8 +5,10 @@
   <meta name="robots" content="noindex,nofollow">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="color-scheme" content="dark">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src https://script.google.com https://*.googleusercontent.com; script-src 'self' 'sha256-T7XPw5TZju1iSULza6wZCTkA/TpgX7c4iBTmhLanDic='; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
-  <link rel="preload" href="apps-script-embed.js?v=50" as="script" fetchpriority="high">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src https://script.google.com https://*.googleusercontent.com; frame-src https://script.google.com https://*.googleusercontent.com; script-src 'self' 'sha256-zjPRUWMYR/BBgFadHP1jtNJgZeRy+9PXprRlGWkEzVI=' 'sha256-1mKqXk8bbZvOq2wqdQbrvGn6tJPIsgXw2SJec1U+pHs='; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <link rel="dns-prefetch" href="//script.google.com">
+  <link rel="preconnect" href="https://script.google.com" crossorigin>
+  <link rel="preload" href="apps-script-embed.js?v=51" as="script" fetchpriority="high">
   <title>Файлы задачи</title>
   <style>
     * { box-sizing: border-box; }
@@ -14,12 +16,12 @@
     .shell { position: relative; width: 100%; min-height: 100vh; }
     iframe {
       position: relative; z-index: 2; display: block; width: 100%; min-height: 100vh; border: 0;
-      background: #191919; opacity: 0; transition: opacity 120ms ease;
+      background: #191919; opacity: 0;
     }
     .skeleton {
       position: absolute; z-index: 3; inset: 0 auto auto 0; width: 100%; padding: 0 4px;
       display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px;
-      opacity: 1; visibility: visible; transition: opacity 100ms ease,visibility 0s linear 100ms;
+      opacity: 1; visibility: visible;
       pointer-events: none;
     }
     .skeleton-card {
@@ -40,7 +42,7 @@
     .skeleton-count{position:relative;min-width:20px;padding:2px 7px;border-radius:10px;background:rgba(255,255,255,.1);font:600 11px/1.15 system-ui;text-align:center;color:rgba(255,255,255,.85)}.skeleton-count:empty{display:none}
     .skeleton-pencil{position:absolute;z-index:2;top:6px;right:6px;width:22px;height:22px;display:grid;place-items:center;border:1px solid rgba(255,255,255,.08);border-radius:6px;background:rgba(0,0,0,.25);color:rgba(255,255,255,.7)}
     .skeleton-pencil svg{width:11px;height:11px;display:block}
-    .snapshot-grid{position:absolute;z-index:4;inset:0 auto auto 0;width:100%;padding:0 4px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;pointer-events:auto;opacity:1;visibility:visible;transition:opacity 100ms ease,visibility 0s linear 100ms}
+    .snapshot-grid{position:absolute;z-index:4;inset:0 auto auto 0;width:100%;padding:0 4px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;pointer-events:auto;opacity:1;visibility:visible}
     .snapshot-grid[hidden]{display:none}.snapshot-column{display:flex;min-width:0;flex-direction:column;gap:8px}
     .snapshot-card{position:relative;display:flex;align-items:center;gap:12px;min-width:0;min-height:58px;padding:16px 18px;border:1px solid rgba(255,255,255,.13);border-radius:12px;overflow:hidden;color:#e6e6e4}
     a.snapshot-card{text-decoration:none;cursor:pointer}
@@ -95,6 +97,152 @@
       <div class="interaction-slot" data-slot="Slides"></div>
     </div>
   </div>
-  <script id="earlyWidgetBootstrap">(()=>{let u='',c=false,w=0;window.__notionWidgetDeferChild=true;try{if(location.hash.length>1){const s=new URLSearchParams(location.hash.slice(1)),t=String(s.get('task')||s.get('taskPageId')||'').toLowerCase(),a=String(s.get('accessToken')||''),r=String(s.get('release')||'');if(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(t)&&/^[A-Za-z0-9._~-]{32,256}$/.test(a)&&(!r||/^[A-Za-z0-9._-]{1,80}$/.test(r))){const v=x=>/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(x),g=()=>{const b=new Uint8Array(16);crypto.getRandomValues(b);b[6]=b[6]&15|64;b[8]=b[8]&63|128;const x=Array.from(b,y=>y.toString(16).padStart(2,'0')).join('');return x.slice(0,8)+'-'+x.slice(8,12)+'-'+x.slice(12,16)+'-'+x.slice(16,20)+'-'+x.slice(20)},k='notion-widget-client-v1:'+t;let i='';try{i=String(localStorage.getItem(k)||'')}catch(_){}if(!v(i))i=g();try{localStorage.setItem(k,i)}catch(_){}const b=new Uint8Array(16);crypto.getRandomValues(b);const n=Array.from(b,x=>x.toString(16).padStart(2,'0')).join(''),p=new URLSearchParams({task:t,accessToken:a,embedNonce:n,clientId:i}),q=[],h=e=>{try{const o=new URL(e.origin);if(e.data&&e.data.embedNonce===n&&o.protocol==='https:'&&(o.hostname==='script.google.com'||o.hostname.endsWith('.googleusercontent.com'))){if(q.length>=8)q.shift();q.push(e)}}catch(_){}};if(r)p.set('release',r);window.__notionWidgetEarlyBridge={nonce:n,clientId:i,events:q,listener:h};window.addEventListener('message',h);u='https://script.google.com/macros/s/AKfycbxrGUXhfRsvqjUrLSDFyhmjl3bJjbx-XtOjicHh7E7dAUVJW6Qi2F_K889ckvOCzu7KiQ/exec?'+p}}}catch(_){}const s=()=>{const j=document.createElement('script');j.src='apps-script-embed.js?v=50';j.async=true;j.fetchPriority='high';document.head.appendChild(j)},f=()=>{if(c)return;c=true;if(w)window.clearTimeout(w);window.setTimeout(()=>{window.__notionWidgetDeferChild=false;if(u)document.getElementById('widget').src=u},0)},l=()=>{w=window.setTimeout(f,200);if(typeof window.requestAnimationFrame==='function')window.requestAnimationFrame(()=>window.requestAnimationFrame(f));else window.setTimeout(f,34)};s();l()})();</script>
+  <script id="earlyWidgetBootstrap">(()=>{let u='',c=false;window.__notionWidgetDeferChild=true;try{if(location.hash.length>1){const s=new URLSearchParams(location.hash.slice(1)),t=String(s.get('task')||s.get('taskPageId')||'').toLowerCase(),a=String(s.get('accessToken')||''),r=String(s.get('release')||'');if(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(t)&&/^[A-Za-z0-9._~-]{32,256}$/.test(a)&&(!r||/^[A-Za-z0-9._-]{1,80}$/.test(r))){const v=x=>/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(x),g=()=>{const b=new Uint8Array(16);crypto.getRandomValues(b);b[6]=b[6]&15|64;b[8]=b[8]&63|128;const x=Array.from(b,y=>y.toString(16).padStart(2,'0')).join('');return x.slice(0,8)+'-'+x.slice(8,12)+'-'+x.slice(12,16)+'-'+x.slice(16,20)+'-'+x.slice(20)},k='notion-widget-client-v1:'+t;let i='';try{i=String(localStorage.getItem(k)||'')}catch(_){}if(!v(i))i=g();try{localStorage.setItem(k,i)}catch(_){}const b=new Uint8Array(16);crypto.getRandomValues(b);const n=Array.from(b,x=>x.toString(16).padStart(2,'0')).join(''),p=new URLSearchParams({task:t,accessToken:a,embedNonce:n,clientId:i}),q=[],h=e=>{try{const o=new URL(e.origin);if(e.data&&e.data.embedNonce===n&&o.protocol==='https:'&&(o.hostname==='script.google.com'||o.hostname.endsWith('.googleusercontent.com'))){if(q.length>=8)q.shift();q.push(e)}}catch(_){}};if(r)p.set('release',r);window.__notionWidgetEarlyBridge={nonce:n,clientId:i,events:q,listener:h};window.addEventListener('message',h);u='https://script.google.com/macros/s/AKfycbxrGUXhfRsvqjUrLSDFyhmjl3bJjbx-XtOjicHh7E7dAUVJW6Qi2F_K889ckvOCzu7KiQ/exec?'+p}}}catch(_){}const s=()=>{const j=document.createElement('script');j.src='apps-script-embed.js?v=51';j.async=true;j.fetchPriority='high';document.head.appendChild(j)},f=()=>{if(c)return;c=true;s();window.setTimeout(()=>{window.__notionWidgetDeferChild=false;if(u)document.getElementById('widget').src=u},0)};if(document.readyState==='complete')f();else window.addEventListener('load',f,{once:true})})();</script>
+  <script id="earlySnapshotCache">
+  (() => {
+    'use strict';
+    const SECTIONS=['Drive','Docs','Sheets','Slides'];
+    const COLORS={Drive:'gray',Docs:'blue',Sheets:'green',Slides:'orange'};
+    const MAX_AGE=24*60*60*1000;
+
+    function params() {
+      if(location.hash.length<=1)return null;
+      const source=new URLSearchParams(location.hash.slice(1));
+      const task=String(source.get('task')||source.get('taskPageId')||'').toLowerCase();
+      const token=String(source.get('accessToken')||'');
+      const release=String(source.get('release')||'');
+      if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(task))return null;
+      if(!/^[A-Za-z0-9._~-]{32,256}$/.test(token))return null;
+      if(release&&!/^[A-Za-z0-9._-]{1,80}$/.test(release))return null;
+      return {task,token,release};
+    }
+
+    function encode(bytes) {
+      let binary='';
+      for(const byte of bytes)binary+=String.fromCharCode(byte);
+      return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/g,'');
+    }
+
+    function decode(value) {
+      const source=String(value||'');
+      if(!/^[A-Za-z0-9_-]{1,100000}$/.test(source))throw new Error('INVALID_ENCODING');
+      const padded=source.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-source.length%4)%4);
+      const binary=atob(padded);
+      return Uint8Array.from(binary,(character)=>character.charCodeAt(0));
+    }
+
+    function exact(value,keys) {
+      if(!value||typeof value!=='object'||Array.isArray(value))return false;
+      const actual=Object.keys(value).sort();
+      const wanted=keys.slice().sort();
+      return actual.length===wanted.length&&actual.every((key,index)=>key===wanted[index]);
+    }
+
+    function rows(value) {
+      if(!Array.isArray(value)||value.length>100)return null;
+      const safe=[];
+      for(const source of value) {
+        if(!exact(source,['name','section','format','position'].concat(source&&source.navigationBinding!==undefined?['navigationBinding']:[])))return null;
+        const section=String(source.section||'');
+        const name=String(source.name||'').replace(/\s+/g,' ').trim();
+        const format=String(source.format||'').replace(/\s+/g,' ').trim();
+        const position=Number(source.position);
+        const binding=String(source.navigationBinding||'').toLowerCase();
+        if(!SECTIONS.includes(section)||!name||name.length>180||format.length>100||!Number.isFinite(position)||position<0||position>10000)return null;
+        if(binding&&!/^[a-f0-9]{64}$/.test(binding))return null;
+        const row={name,section,format:format||'Файл',position:Math.round(position)};
+        if(binding)row.navigationBinding=binding;
+        safe.push(row);
+      }
+      return safe.sort((left,right)=>SECTIONS.indexOf(left.section)-SECTIONS.indexOf(right.section)||left.position-right.position||left.name.localeCompare(right.name)||String(left.navigationBinding||'').localeCompare(String(right.navigationBinding||'')));
+    }
+
+    async function context(runtime) {
+      const encoder=new TextEncoder();
+      const [keyDigest,slotDigest]=await Promise.all([
+        window.crypto.subtle.digest('SHA-256',encoder.encode(`notion-widget-preview-key-v1\u0000${runtime.task}\u0000${runtime.token}`)),
+        window.crypto.subtle.digest('SHA-256',encoder.encode(`notion-widget-preview-slot-v1\u0000${runtime.task}\u0000${runtime.token}`))
+      ]);
+      const key=await window.crypto.subtle.importKey('raw',keyDigest,{name:'AES-GCM'},false,['decrypt']);
+      return {key,slot:`notion-widget-preview-v1:${encode(new Uint8Array(slotDigest).slice(0,18))}`,aad:encoder.encode(`notion-widget-preview-v1\u0000${runtime.task}\u0000${runtime.release}`)};
+    }
+
+    function render(materials) {
+      const grid=document.getElementById('snapshotGrid');
+      if(!grid||window.__notionWidgetLiveSnapshotSeen===true||window.__notionWidgetSnapshotRuntimeOwned===true)return false;
+      const fragment=document.createDocumentFragment();
+      for(const section of SECTIONS) {
+        const sectionRows=materials.filter((row)=>row.section===section);
+        const column=document.createElement('section');
+        column.className='snapshot-column';
+        column.dataset.snapshotColumn=section;
+        const source=document.querySelector(`[data-snapshot-section="${section}"]`);
+        const icon=source&&source.querySelector('.skeleton-icon');
+        if(source) {
+          const top=source.cloneNode(true);
+          top.classList.add('snapshot-top');
+          const count=top.querySelector('.skeleton-count');
+          if(count)count.textContent=String(sectionRows.length);
+          column.appendChild(top);
+        }
+        for(const row of sectionRows) {
+          const card=document.createElement('article');
+          card.className=`snapshot-card ${COLORS[section]}`;
+          if(icon)card.appendChild(icon.cloneNode(true));
+          const meta=document.createElement('span');
+          meta.className='skeleton-meta';
+          const title=document.createElement('span');
+          title.className='skeleton-title';
+          title.textContent=row.name;
+          const sub=document.createElement('span');
+          sub.className='skeleton-sub';
+          sub.textContent=row.format;
+          meta.append(title,sub);
+          card.appendChild(meta);
+          column.appendChild(card);
+        }
+        fragment.appendChild(column);
+      }
+      if(window.__notionWidgetLiveSnapshotSeen===true||window.__notionWidgetSnapshotRuntimeOwned===true)return false;
+      grid.replaceChildren(fragment);
+      grid.hidden=false;
+      document.body.classList.add('snapshot-ready');
+      return true;
+    }
+
+    async function restore() {
+      const runtime=params();
+      if(!runtime||!window.crypto||!window.crypto.subtle)return false;
+      let store;
+      try{store=window.localStorage;}catch(_error){return false;}
+      const cache=await context(runtime);
+      let raw='';
+      try{raw=String(store.getItem(cache.slot)||'');}catch(_error){return false;}
+      if(!raw)return false;
+      try {
+        if(raw.length>100000)throw new Error('INVALID_SIZE');
+        const envelope=JSON.parse(raw);
+        if(!exact(envelope,['schema','savedAt','iv','ciphertext'])||envelope.schema!==1)throw new Error('INVALID_SCHEMA');
+        const savedAt=Number(envelope.savedAt);
+        const age=Date.now()-savedAt;
+        if(!Number.isFinite(savedAt)||age< -60000||age>MAX_AGE)throw new Error('STALE');
+        const iv=decode(envelope.iv);
+        const ciphertext=decode(envelope.ciphertext);
+        if(iv.length!==12||ciphertext.length>75000)throw new Error('INVALID_CIPHERTEXT');
+        const plaintext=await window.crypto.subtle.decrypt({name:'AES-GCM',iv,additionalData:cache.aad},cache.key,ciphertext);
+        const payload=JSON.parse(new TextDecoder().decode(plaintext));
+        if(!exact(payload,['schema','savedAt','materials'])||payload.schema!==1||Number(payload.savedAt)!==savedAt)throw new Error('INVALID_PAYLOAD');
+        const materials=rows(payload.materials);
+        if(!materials)return false;
+        return render(materials);
+      } catch(_error) {
+        try{store.removeItem(cache.slot);}catch(_removeError){}
+        return false;
+      }
+    }
+
+    return restore();
+  })();
+  </script>
 </body>
 </html>

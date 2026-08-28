@@ -82,9 +82,10 @@ test('create GET rendezvous is noopener, exact-field and status-only', () => {
   assert.doesNotMatch(status,/canonicalKey|attemptId|driveReadyAt/);
 });
 
-test('download POST is an exact four-field route and only a cached HMAC grant can precompute a direct result', () => {
+test('download POST is exact-field and precomputes direct only from a supplied or freshly re-redeemed HMAC grant', () => {
   const backend=text('Code.gs');
   const fields=backend.slice(backend.indexOf('function w20DownloadPostFields_'),backend.indexOf('function w20SafeCreateOpenUrl_'));
+  const prepared=backend.slice(backend.indexOf('function w20PreparedDownloadPostDirect_'),backend.indexOf('function doPost'));
   const post=backend.slice(backend.indexOf('function doPost'),backend.indexOf('/* ========================= Public client API'));
   const grant=backend.slice(backend.indexOf('function w20DownloadGrantCacheKey_'),backend.indexOf('function w19MaterialFromPage_'));
   assert.match(fields,/\['task', 'accessToken', 'downloadPageId', 'downloadTicket'\]/);
@@ -94,8 +95,19 @@ test('download POST is an exact four-field route and only a cached HMAC grant ca
   assert.match(post,/kind === 'download'/);
   assert.match(post,/w19AuthorizedConfig_\(\{/);
   assert.match(post,/w20GetDownloadGrant_\(downloadFields\.taskPageId, downloadFields\.pageId, downloadFields\.ticket, cfg\)/);
+  assert.match(post,/if \(!direct\) \{[\s\S]*apiPrepareDownload\(\{[\s\S]*taskPageId: downloadFields\.taskPageId,[\s\S]*pageId: downloadFields\.pageId,[\s\S]*accessToken: downloadFields\.accessToken/);
+  assert.match(post,/direct = w20PreparedDownloadPostDirect_\(prepared, downloadFields, cfg\)/);
+  assert.ok(post.indexOf('w19AuthorizedConfig_')<post.indexOf('apiPrepareDownload('),'cold preparation must stay behind capability authorization');
+  assert.match(prepared,/response && response\.ok === true && response\.data/);
+  assert.match(prepared,/prepared\.mode !== 'grant'/);
+  assert.match(prepared,/\^\[a-f0-9\]\{96\}\$/);
+  assert.match(prepared,/return w20GetDownloadGrant_\(fields\.taskPageId, fields\.pageId, grant, cfg\)/);
+  assert.doesNotMatch(prepared,/directDownloadUrl|directDownloadName|directDownloadExpiresAt|downloadPackage|accessToken/);
   assert.match(post,/downloadTemplate\.runtimeParamsJson = direct \? '\{\}'/);
   assert.match(post,/downloadTemplate\.precomputedResultJson = JSON\.stringify\(direct \?/);
+  const precomputed=post.slice(post.indexOf('downloadTemplate.precomputedResultJson'),post.indexOf('return downloadTemplate.evaluate'));
+  assert.doesNotMatch(precomputed,/downloadGrant|downloadPackage|accessToken/);
+  assert.match(precomputed,/downloadTicket: downloadFields\.ticket/);
   assert.match(grant,/W20_DOWNLOAD_GRANT_TTL_SECONDS/);
   assert.match(grant,/computeHmacSha256Signature/);
   assert.match(grant,/entry\.taskId === WidgetV19Core\.compactUuid\(task\)/);
@@ -275,7 +287,7 @@ test('bootstrap and sync seed the download cache while archive, update and delet
   const bootstrap = backend.slice(backend.indexOf('function apiBootstrap'), backend.indexOf('function apiCreateGoogle'));
   const sync = backend.slice(backend.indexOf('function apiSyncTask'), backend.indexOf('/* ========================= Admin-only setup'));
   const update = backend.slice(backend.indexOf('function apiUpdateMaterial'), backend.indexOf('function apiReorder'));
-  const upload = backend.slice(backend.indexOf('function apiUpload'), backend.indexOf('function apiUpdateMaterial'));
+  const upload = backend.slice(backend.indexOf('function apiUpload'), backend.indexOf('function w20AttachmentJobKey_'));
   const remove = backend.slice(backend.indexOf('function apiDeletePhysical'), backend.indexOf('function apiDownload'));
   const archive = backend.slice(backend.indexOf('function w19SetArchiveState_'), backend.indexOf('function w19Audit_'));
   assert.match(bootstrap, /w20CacheDownloadMaterials_\(task\.id, pages, cfg\)/);
@@ -289,7 +301,7 @@ test('bootstrap and sync seed the download cache while archive, update and delet
 
 test('binary upload hot path uses only fresh server registry context and recovery keeps the full durable lookup', () => {
   const backend = text('Code.gs');
-  const upload = backend.slice(backend.indexOf('function apiUpload'), backend.indexOf('function apiUpdateMaterial'));
+  const upload = backend.slice(backend.indexOf('function apiUpload'), backend.indexOf('function w20AttachmentJobKey_'));
   const schema = upload.indexOf('w19AssertSchema_(cfg);');
   const taskId = upload.indexOf('w20AssertAuthorizedTaskId_(input && input.taskPageId, cfg)');
   const idempotency = upload.indexOf('w19WithIdempotency_(idem, function (idempotencyState)');
@@ -310,9 +322,10 @@ test('binary upload hot path uses only fresh server registry context and recover
   assert.match(upload, /if \(recoveringAttempt\) \{\s*driveFile = w19FindDriveByIdempotency_\(task\.id, idemHash\)/);
   assert.match(upload, /if \(position === undefined\) position = w19NextPosition_\(task\.id, section, cfg\)/);
   assert.doesNotMatch(upload, /input\s*&&\s*input\.(?:folderId|position)|input\.(?:folderId|position)/);
-  assert.match(upload, /w19EffectiveUploadLimit_\(cfg\)/);
-  assert.match(upload, /w19CreateAndSendNotionUpload_\(bytes/);
-  assert.match(upload, /type:\s*'file_upload'/);
+  assert.doesNotMatch(upload, /w19EffectiveUploadLimit_\(cfg\)/);
+  assert.doesNotMatch(upload, /w19CreateAndSendNotionUpload_\(bytes/);
+  assert.match(upload, /attachments:\s*\[\]/);
+  assert.match(upload, /w20TryEnqueueAttachmentJob_\(taskId, outcome\.material, runtimeDriveMetadata\)/);
   assert.match(upload, /w19MarkDriveNotionPage_\(driveFile, task\.id, idemHash, page\.id, 'active'\)/);
   assert.match(upload, /w20MaterialForClient_\(outcome\.material, taskId, cfg\)/);
 });
@@ -320,16 +333,67 @@ test('binary upload hot path uses only fresh server registry context and recover
 test('workspace upload limit discovery remains isolated from bootstrap and task sync', () => {
   const backend = text('Code.gs');
   const bootstrap = backend.slice(backend.indexOf('function apiBootstrap'), backend.indexOf('function apiCreateGoogle'));
-  const upload = backend.slice(backend.indexOf('function apiUpload'), backend.indexOf('function apiUpdateMaterial'));
+  const upload = backend.slice(backend.indexOf('function apiUpload'), backend.indexOf('function w20AttachmentJobKey_'));
   const sync = backend.slice(backend.indexOf('function apiSyncTask'), backend.indexOf('/* ========================= Admin-only setup'));
   const limit = backend.slice(backend.indexOf('function w19EffectiveUploadLimit_'), backend.indexOf('function w19AssertTaskPage_'));
 
   assert.doesNotMatch(bootstrap, /w19EffectiveUploadLimit_|\/v1\/users\/me/);
   assert.doesNotMatch(sync, /w19EffectiveUploadLimit_|\/v1\/users\/me/);
-  assert.match(upload, /w19EffectiveUploadLimit_\(cfg\)/);
+  assert.doesNotMatch(upload, /w19EffectiveUploadLimit_\(cfg\)/);
+  const finalizer = backend.slice(backend.indexOf('function w20FinalizeClaimedAttachmentJob_'), backend.indexOf('function w20FinalizeAttachmentJob_'));
+  assert.match(finalizer, /w19EffectiveUploadLimit_\(cfg\)/);
   assert.match(limit, /w19NotionRequest_\('get', '\/v1\/users\/me', null, cfg\)/);
   assert.match(limit, /cache\.get\(cacheKey\)/);
   assert.match(limit, /cache\.put\(cacheKey, String\(effective\), 600\)/);
+});
+
+test('hosted attachment queue is metadata-only, bounded, durable and exact-target authorized', () => {
+  const backend=text('Code.gs');
+  const queue=backend.slice(backend.indexOf('function w20AttachmentJobKey_'),backend.indexOf('function apiUpdateMaterial'));
+  const enqueue=queue.slice(queue.indexOf('function w20EnqueueAttachmentJob_'),queue.indexOf('function w20TryEnqueueAttachmentJob_'));
+  const finalize=queue.slice(queue.indexOf('function w20FinalizeClaimedAttachmentJob_'),queue.indexOf('function w20FinalizeAttachmentJob_'));
+  const api=queue.slice(queue.indexOf('function apiFinalizeUploadAttachment'),queue.indexOf('function apiUpdateMaterial'));
+  assert.match(backend,/W20_ATTACHMENT_JOB_MAX\s*=\s*100/);
+  assert.match(backend,/W20_ATTACHMENT_JOB_LEASE_MS\s*=\s*8\s*\*\s*60\s*\*\s*1000/);
+  assert.match(queue,/\['attempts', 'createdAt', 'fileId', 'folderId', 'idemHash', 'lastCode', 'leaseToken', 'leaseUntil',[\s\S]*'sentMd5', 'sentSize'/);
+  assert.match(queue,/w20PruneAttachmentJobsUnlocked_\(props, all, now\)/);
+  assert.match(queue,/if \(!job \|\| now - job\.createdAt > W20_ATTACHMENT_JOB_TTL_MS\)/);
+  assert.match(enqueue,/notionUploadId:\s*''/);
+  assert.match(enqueue,/sentMd5:\s*''/);
+  assert.match(enqueue,/sentSize:\s*0/);
+  assert.match(enqueue,/tryLock\(100\)/);
+  assert.doesNotMatch(enqueue,/dataBase64|base64Decode|accessToken|notionToken|sourceUrl|openUrl|downloadUrl|attachmentUrl/);
+  assert.doesNotMatch(queue,/attempts\s*<\s*12/);
+  assert.match(api,/w19AuthorizedConfig_\(input\)/);
+  assert.match(api,/w20AssertAuthorizedTaskId_\(input && input\.taskPageId, cfg\)/);
+  assert.match(api,/w20EnsureAttachmentJobForPage_\(taskId, pageId, cfg\)/);
+  assert.match(finalize,/w19AssertMaterialForTask_|w20AssertAttachmentJobPage_/);
+  assert.match(finalize,/markers\.widgetIdem !== job\.idemHash/);
+  assert.match(finalize,/sentMd5/);
+  assert.match(finalize,/sentSize/);
+  assert.match(finalize,/w20Md5Hex_\(bytes\) !== driveMd5/);
+  assert.match(finalize,/upload\.status === 'uploaded' && !job\.sentMd5/);
+  assert.match(finalize,/w20WriteClaimedAttachmentJob_\(claimed, \{ notionUploadId: upload\.id \}\)/);
+  assert.match(finalize,/w19WithMutationLock_\(function \(\) \{[\s\S]*w19AssertOwnedBinary_[\s\S]*w20AttachmentClaimIsCurrent_[\s\S]*w19UpdateNotionPage_/);
+  assert.ok(finalize.indexOf('DriveApp.getFileById')<finalize.indexOf('w19WithMutationLock_'), 'Drive blob I/O must finish before the final mutation fence');
+  assert.ok(finalize.indexOf('w20SendNotionUploadBlob_')<finalize.indexOf('w19WithMutationLock_'), 'Notion byte SEND must finish before the final mutation fence');
+});
+
+test('attachment jobs are canceled by archive/delete, restored conditionally and drained with a bounded repair sweep', () => {
+  const backend=text('Code.gs');
+  const archive=backend.slice(backend.indexOf('function w19SetArchiveState_'),backend.indexOf('function w19Audit_'));
+  const remove=backend.slice(backend.indexOf('function apiDeletePhysical'),backend.indexOf('function apiPrepareDownload'));
+  const scheduled=backend.slice(backend.indexOf('function scheduledSync'),backend.indexOf('function w19ClaimScheduledSync_'));
+  const installer=backend.slice(backend.indexOf('function adminInstallSyncTrigger'),backend.indexOf('function scheduledSync'));
+  const frontend=text('Index.html');
+  assert.match(archive,/w20CancelAttachmentJob_\(task\.id, materialId\)/);
+  assert.match(archive,/updatedRawMaterial\.widgetOwnedBinary && !updatedRawMaterial\.hostedAttachment/);
+  assert.match(archive,/w20TryEnqueueAttachmentJob_\(task\.id, updatedRawMaterial, null\)/);
+  assert.match(remove,/w20CancelAttachmentJob_\(task\.id, materialId\)/);
+  assert.match(scheduled,/w20SweepMissingAttachmentJobs_\(syncedPages, cfg, W20_ATTACHMENT_JOB_DRAIN_LIMIT\)/);
+  assert.match(scheduled,/w20DrainAttachmentJobs_\(cfg, 1\)/);
+  assert.match(installer,/newTrigger\('scheduledFinalizeUploads'\)\.timeBased\(\)\.everyMinutes\(1\)\.create\(\)/);
+  assert.match(frontend,/call\('apiFinalizeUploadAttachment',\{taskPageId,pageId:data\.material\.id\}\)\.catch\(\(\)=>\{\}\)/);
 });
 
 test('archiving revokes stale download couriers through the private Drive marker', () => {
@@ -337,9 +401,9 @@ test('archiving revokes stale download couriers through the private Drive marker
   const archive = backend.slice(backend.indexOf('function w19SetArchiveState_'), backend.indexOf('function w19Audit_'));
   const markerFallback = backend.slice(backend.indexOf('function w20FindOwnedBinaryMaterialByMarkers_'), backend.indexOf('function w19AssertOwnedBinary_'));
   const ownershipGuard = backend.slice(backend.indexOf('function w19AssertOwnedBinary_'), backend.indexOf('function w19IsDriveNotFound_'));
-  const revoke = archive.indexOf("if (archived) w20SetDriveMaterialState_(material, task.id, 'archived')");
+  const revoke = archive.indexOf("w20SetDriveMaterialState_(material, task.id, 'archived')");
   const notionWrite = archive.indexOf('var updated = w19UpdateNotionPage_');
-  const restore = archive.indexOf("if (!archived) w20SetDriveMaterialState_(updatedMaterial, task.id, 'active')");
+  const restore = archive.indexOf("w20SetDriveMaterialState_(updatedRawMaterial, task.id, 'active')");
   assert.ok(revoke !== -1 && revoke < notionWrite, 'archive must revoke Drive before the Notion PATCH');
   assert.ok(restore > notionWrite, 'restore must not reactivate Drive before the Notion PATCH succeeds');
   assert.match(markerFallback, /w20IsDriveMaterialActive_\(driveProps\)/);
@@ -492,7 +556,7 @@ test('task-folder creation and material creation are serialized with position as
   const backend = text('Code.gs');
   const bootstrapBody = backend.slice(backend.indexOf('function apiBootstrap'), backend.indexOf('function apiCreateGoogle'));
   const createBody = backend.slice(backend.indexOf('function apiCreateGoogle'), backend.indexOf('function apiAddLink'));
-  const uploadBody = backend.slice(backend.indexOf('function apiUpload'), backend.indexOf('function apiUpdateMaterial'));
+  const uploadBody = backend.slice(backend.indexOf('function apiUpload'), backend.indexOf('function w20AttachmentJobKey_'));
   assert.ok(bootstrapBody.indexOf('w19WithMutationLock_') < bootstrapBody.indexOf('w19EnsureTaskFolder_'));
   assert.ok(createBody.indexOf('w19WithMutationLock_') < createBody.indexOf('w19EnsureTaskFolder_'));
   assert.ok(createBody.indexOf('w19WithMutationLock_') < createBody.indexOf('w19NextPosition_'));
@@ -509,6 +573,24 @@ test('scheduled sync uses a run lease and a stable pagination sort', () => {
   assert.match(body, /timestamp:\s*'created_time'/);
   assert.doesNotMatch(body, /timestamp:\s*'last_edited_time'/);
   assert.match(body, /current\.token\s*!==\s*token/);
+});
+
+test('scheduled action proof refresh is complete-cycle-only, coherent and bounded to seven minutes', () => {
+  const backend = text('Code.gs');
+  const registry = text('Registry.gs');
+  const scheduled = backend.slice(backend.indexOf('function scheduledSync'), backend.indexOf('function w19ClaimScheduledSync_'));
+  const bootstrap = backend.slice(backend.indexOf('function apiBootstrap'), backend.indexOf('function apiCreateGoogle'));
+  const sync = backend.slice(backend.indexOf('function apiSyncTask'), backend.indexOf('/* ========================= Admin-only setup'));
+  assert.match(registry, /W20_REGISTRY_ACTION_MAX_AGE_MS\s*=\s*7\s*\*\s*60\s*\*\s*1000/);
+  assert.match(scheduled, /fullSinglePageCycle\s*=\s*!lease\.cursor\s*&&\s*!result\.has_more\s*&&\s*errors\s*===\s*0/);
+  assert.match(scheduled, /w19AssertTaskPage_\(cfg\.authorizedTaskPageId, cfg\)/);
+  assert.match(scheduled, /task\.id\s*!==\s*cfg\.authorizedTaskPageId/);
+  assert.match(scheduled, /w19EnsureTaskFolder_\(task, cfg\)/);
+  assert.match(scheduled, /w20RegistryReplaceTaskResult_\(task\.id, materials, registrySnapshotStartedAt\)/);
+  assert.match(scheduled, /w20RegistryWriteTaskMetaResult_\(task\.id/);
+  assert.match(scheduled, /metaWrite\.registry\.activeCount\s*!==\s*replacement\.activeCount\s*\|\|\s*!proof\.ready/);
+  assert.ok(scheduled.indexOf('if (fullSinglePageCycle)') < scheduled.indexOf('w19AssertTaskPage_(cfg.authorizedTaskPageId, cfg)'));
+  for (const source of [bootstrap,sync,scheduled]) assert.doesNotMatch(source,/w19SyncPageList_/);
 });
 
 test('scheduled sync claims its lease before schema access and releases it from the same try/finally', () => {

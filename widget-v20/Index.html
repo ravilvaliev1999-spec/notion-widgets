@@ -726,6 +726,7 @@
       if (method==='apiCreateGoogle') { const format=payload.section==='Docs'?'Google Docs':payload.section==='Sheets'?'Google Sheets':'Google Slides'; const googleFileId=`mock-${uid().replace(/-/g,'')}`; const path=payload.section==='Docs'?'document':payload.section==='Sheets'?'spreadsheets':'presentation'; const item={id:uid(),name:payload.name||`Новый ${format}`,section:payload.section,format,provider:'Google Drive',openUrl:`https:\/\/docs.google.com/${path}/d/${googleFileId}/edit`,canDownload:false,googleFileId,folderId:'mockfolder123',widgetOwned:true,position:mockNextPosition(items,payload.section),syncStatus:'synced',updatedAt:now}; items.push(item); return ok({material:item,duplicate:false}); }
       if (method==='apiAddLink') { const normalized=mockNormalizeUrl(payload.url);if(!normalized)return fail('INVALID_URL','Нужна корректная HTTPS-ссылка.'); const meta=mockLinkMeta(normalized,payload.section); const existing=items.find(x=>(meta.googleFileId&&x.googleFileId===meta.googleFileId)||x.openUrl===normalized); if(existing){if(existing.syncStatus==='deleted')return fail('MATERIAL_DELETED','Эта ссылка относится к физически удалённому материалу и не может быть восстановлена.');if(existing.archived){const nextPosition=mockNextPosition(items,existing.section);existing.archived=false;existing.syncStatus='synced';existing.position=nextPosition;return ok({material:existing,duplicate:true,restored:true});}return ok({material:existing,duplicate:true});} const fallback=meta.format==='Google Docs'?'Документ по ссылке':meta.format==='Google Sheets'?'Таблица по ссылке':meta.format==='Google Slides'?'Презентация по ссылке':new URL(normalized).hostname; const item={id:uid(),name:payload.name||fallback,section:meta.section,format:meta.format,provider:meta.provider,openUrl:normalized,canDownload:false,googleFileId:meta.googleFileId,widgetOwned:false,position:mockNextPosition(items,meta.section),syncStatus:'synced',archived:false,updatedAt:new Date().toISOString()}; items.push(item); return ok({material:item,duplicate:false}); }
       if (method==='apiUpload') { const section=payload.section||classify(payload.name,payload.mimeType,''); const item={id:uid(),name:payload.name,section,format:section==='Docs'?'Word':section==='Sheets'?'Excel':section==='Slides'?'PowerPoint':'Other File',provider:'Google Drive',openUrl:'https:\/\/drive.google.com/',downloadUrl:'https:\/\/drive.google.com/',canDownload:true,googleFileId:`mock-${uid().replace(/-/g,'')}`,folderId:'mockfolder123',widgetOwned:true,mimeType:payload.mimeType,size:Math.floor(payload.dataBase64.length*3/4),position:mockNextPosition(items,section),syncStatus:'synced',updatedAt:new Date().toISOString(),_mockBase64:payload.dataBase64}; items.push(item); return ok({material:item,duplicate:false}); }
+      if (method==='apiFinalizeUploadAttachment') return ok({status:'complete'});
       if (method==='apiDownload') { const item=items.find(x=>x.id===payload.pageId);if(!item||!item.widgetOwned||!item.canDownload)return fail('DOWNLOAD_NOT_ALLOWED','Этот материал нельзя скачать напрямую.');const base64=item._mockBase64||'VjIwIG1vY2sgZmlsZQ==';return ok({name:item.name,mimeType:item.mimeType||'application/octet-stream',size:Math.floor(base64.length*3/4)-(base64.endsWith('==')?2:base64.endsWith('=')?1:0),base64}); }
       if (method==='apiUpdateMaterial') {
         const item=items.find(x=>x.id===payload.pageId);if(!item)return fail('MATERIAL_ID_REQUIRED','Материал не найден.');
@@ -801,9 +802,14 @@
     grid.addEventListener('focusin',handleDownloadGrantIntent);
   }
 
+  function cachedMutationReady() {
+    return Boolean(runtimeLocationResolved&&state.bootstrapped&&state.actionReady&&
+      (state.authoritative||state.snapshotTrusted));
+  }
+
   function render() {
     closeMaterialMenu({restoreFocus:Boolean(openMaterialMenuId),afterRender:true});
-    const actionReady=state.actionReady,mutationReady=state.authoritative&&actionReady;
+    const actionReady=state.actionReady,mutationReady=cachedMutationReady();
     SECTIONS.forEach((section)=>{
       const col=document.querySelector(`.col[data-section="${section}"]`);
       if(!col)return;
@@ -897,7 +903,7 @@
     const action=canPrepareDownload(item)?'Скачать':(item.openUrl?'Открыть':'Повторить');
     main.setAttribute('aria-label',`${action}: ${item.name||'Без названия'}`);main.setAttribute('aria-busy',String(item.syncStatus==='pending'));
     card.setAttribute('aria-busy',String(item.syncStatus==='pending'));main.innerHTML=materialCardMarkup(section,count);main.querySelector('.title').textContent=item.name||'Без названия';
-    const menuButton=materialMenuTrigger(item);menuButton.disabled=!state.authoritative||String(item.id).startsWith('pending:');card.append(main,menuButton);
+    const menuButton=materialMenuTrigger(item);menuButton.disabled=!cachedMutationReady()||String(item.id).startsWith('pending:');card.append(main,menuButton);
     return card;
   }
 
@@ -1252,13 +1258,13 @@
   }
 
   function openLinkModal(section,returnFocus) {
-    if(!state.authoritative||!state.actionReady){toast('Завершаю синхронизацию…');return;}
+    if(!cachedMutationReady()){toast('Завершаю синхронизацию…');return;}
     $('linkSection').value=section;$('linkUrl').value='';openModal('linkModal',returnFocus);setTimeout(()=>$('linkUrl').focus(),40);
   }
 
   async function addLink(event) {
     event.preventDefault();
-    if(!state.authoritative||!state.actionReady){toast('Завершаю синхронизацию…');return;}
+    if(!cachedMutationReady()){toast('Завершаю синхронизацию…');return;}
     const section=$('linkSection').value||'Drive',url=$('linkUrl').value.trim();
     const operation=stableIdempotency('add-link',`${section}:${url}`);state.busy.add(`link:${section}`);$('linkSubmit').disabled=true;render();
     try {
@@ -1269,12 +1275,12 @@
   }
 
   function chooseFiles(section) {
-    if(!state.authoritative||!state.actionReady){toast('Завершаю синхронизацию…');return;}
+    if(!cachedMutationReady()){toast('Завершаю синхронизацию…');return;}
     const input=$('fileInput');input.dataset.section=section;input.click();
   }
 
   function openAddDocumentModal(section) {
-    if(!state.authoritative||!state.actionReady){toast('Завершаю синхронизацию…');return;}
+    if(!cachedMutationReady()){toast('Завершаю синхронизацию…');return;}
     $('addDocumentSection').value=SECTIONS.includes(section)?section:'Drive';openModal('addDocumentModal');
     setTimeout(()=>document.querySelector('[data-document-action="link"]')?.focus(),40);
   }
@@ -1316,7 +1322,7 @@
 
   function toggleMaterialMenu(id,trigger) {
     const item=state.materials.find((material)=>material.id===id);
-    if(!state.authoritative||!item||String(id).startsWith('pending:')){toast('Завершаю синхронизацию…');return;}
+    if(!cachedMutationReady()||!item||String(id).startsWith('pending:')){toast('Завершаю синхронизацию…');return;}
     if(optimisticMaterialMutations.has(id)){toast('Изменения этого документа сохраняются…');return;}
     if(openMaterialMenuId===id){closeMaterialMenu({restoreFocus:true});return;}
     closeMaterialMenu();openMaterialMenuId=id;openMaterialMenuTrigger=trigger;trigger.setAttribute('aria-expanded','true');
@@ -1338,7 +1344,7 @@
 
   function refreshMaterialMenuOpenTarget(target) {
     const id=openMaterialMenuId,item=state.materials.find((material)=>material.id===id);
-    const href=state.authoritative&&item?materialMenuHref(item):'';
+    const href=cachedMutationReady()&&item?materialMenuHref(item):'';
     target.removeAttribute('href');if(href)target.href=href;
     return {item,href};
   }
@@ -1526,7 +1532,7 @@
   }
 
   async function uploadFiles(files,forcedSection) {
-    if(!state.authoritative||!state.actionReady){toast('Завершаю синхронизацию…');return;}
+    if(!cachedMutationReady()){toast('Завершаю синхронизацию…');return;}
     for(const file of Array.from(files||[])) {
       if(file.size>state.maxUploadBytes){toast(`«${file.name}» превышает лимит загрузки`);continue;}
       const section=forcedSection||classify(file.name,file.type,'');
@@ -1539,7 +1545,7 @@
         try {
           const dataBase64=await readFileBase64(file);
           const data=await call('apiUpload',{taskPageId,name:file.name,mimeType:file.type||'application/octet-stream',section,dataBase64,idempotencyKey:operation.value});
-          clearIdempotency(operation);state.materials=state.materials.filter(item=>item.id!==pendingId);retryUpload.delete(pendingId);upsert(data.material);render();primeDownloadGrant(data.material&&data.material.id,downloadPrimeGeneration);toast(`«${file.name}» загружен и сохранён как знание`);
+          clearIdempotency(operation);state.materials=state.materials.filter(item=>item.id!==pendingId);retryUpload.delete(pendingId);upsert(data.material);render();primeDownloadGrant(data.material&&data.material.id,downloadPrimeGeneration);if(data.material&&data.material.id)call('apiFinalizeUploadAttachment',{taskPageId,pageId:data.material.id}).catch(()=>{});toast(`«${file.name}» загружен и сохранён как знание`);
         } catch(error) { pending.syncStatus='error';pending.error=error.message;retryUpload.set(pendingId,attempt);render();toast(`Не удалось загрузить «${file.name}». Нажмите карточку, чтобы повторить.`); }
       };
       await attempt();
@@ -1809,7 +1815,7 @@
   }
 
   function openEdit(id,returnFocus) {
-    if(!state.authoritative){toast('Завершаю синхронизацию…');return;}
+    if(!cachedMutationReady()){toast('Завершаю синхронизацию…');return;}
     const item=state.materials.find(material=>material.id===id);if(!item||String(id).startsWith('pending:'))return;
     $('editId').value=item.id;$('editName').value=item.name||'';$('editSection').value=sectionFor(item);$('editUrl').value=item.openUrl||'';
     const external=item.provider==='External URL';$('editUrl').hidden=!external;$('editUrlLabel').hidden=!external;openModal('editModal',returnFocus);setTimeout(()=>$('editName').focus(),40);
@@ -1868,7 +1874,7 @@
 
   async function saveEdit(event) {
     event.preventDefault();const item=currentItem();if(!item)return;
-    if(!state.authoritative){toast('Завершаю синхронизацию…');return;}
+    if(!cachedMutationReady()){toast('Завершаю синхронизацию…');return;}
     if(materialMutationBlockedByOrderSave())return;
     const attempted={name:$('editName').value.trim(),section:$('editSection').value,url:$('editUrl').value.trim()};
     if(!attempted.name){toast('Введите название документа');$('editName').focus();return;}
@@ -1902,7 +1908,7 @@
 
   async function archiveMaterial(item,returnFocus) {
     if(!item)return;
-    if(!state.authoritative){toast('Завершаю синхронизацию…');return;}
+    if(!cachedMutationReady()){toast('Завершаю синхронизацию…');return;}
     if(materialMutationBlockedByOrderSave())return;
     const operation=stableIdempotency('archive',item.id);
     const record=beginOptimisticMaterialMutation(item,'hide',{});if(!record){toast('Этот документ уже скрывается');return;}

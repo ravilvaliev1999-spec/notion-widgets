@@ -52,11 +52,11 @@ function loadBackend(activeEmail = '') {
       getUserLock: () => ({ tryLock: () => true, waitLock() {}, releaseLock() {} })
     },
     Utilities: {
-      DigestAlgorithm: { SHA_256: 'SHA_256' },
+      DigestAlgorithm: { SHA_256: 'SHA_256', MD5: 'MD5' },
       getUuid: () => crypto.randomUUID(),
       newBlob: (value) => ({ getBytes: () => [...Buffer.from(String(value), 'utf8')] }),
       base64EncodeWebSafe: (bytes) => Buffer.from(bytes).toString('base64url'),
-      computeDigest: (_algorithm, bytes) => [...crypto.createHash('sha256').update(Buffer.from(bytes)).digest()],
+      computeDigest: (algorithm, bytes) => [...crypto.createHash(algorithm === 'MD5' ? 'md5' : 'sha256').update(Buffer.from(bytes)).digest()],
       computeHmacSha256Signature: (value, key) => [...crypto.createHmac('sha256', String(key)).update(String(value)).digest()]
     }
   });
@@ -191,6 +191,7 @@ function installUploadApiHarness({ recovery = false, slot, existingPage = null }
     marker: [],
     cache: [],
     registry: [],
+    queue: [],
     idempotencyKey: ''
   };
 
@@ -231,6 +232,7 @@ function installUploadApiHarness({ recovery = false, slot, existingPage = null }
   backend.w19MarkDriveNotionPage_ = (...args) => { calls.marker.push(args); return true; };
   backend.w20CacheDownloadMaterials_ = (...args) => calls.cache.push(args);
   backend.w20RegistryUpsert_ = (...args) => { calls.registry.push(args); return true; };
+  backend.w20TryEnqueueAttachmentJob_ = (...args) => { calls.queue.push(args); return { state: 'pending' }; };
 
   return {
     backend,
@@ -358,7 +360,8 @@ test('confirmed owner identity remains an independent authorization path', () =>
 test('every public data API authenticates the same input payload', () => {
   for (const name of [
     'apiBootstrap', 'apiCreateGoogle', 'apiGetCreateStatus', 'apiWarmCreateContext', 'apiAddLink', 'apiUpload', 'apiUpdateMaterial',
-    'apiReorder', 'apiDeletePhysical', 'apiPrepareDownload', 'apiDownload', 'apiPollDriveMetadata', 'apiSyncTask', 'w19SetArchiveState_'
+    'apiReorder', 'apiDeletePhysical', 'apiPrepareDownload', 'apiDownload', 'apiFinalizeUploadAttachment',
+    'apiPollDriveMetadata', 'apiSyncTask', 'w19SetArchiveState_'
   ]) {
     const start = backendSource.indexOf(`function ${name}`);
     assert.notEqual(start, -1, `${name} must exist`);
@@ -570,7 +573,7 @@ test('cached bootstrap paints safe registry cards without Notion or Drive calls'
   assert.ok(Array.isArray(ssr.preparedCreates));
 });
 
-test('cached action proof expires after two minutes and fails closed on a registry count mismatch', () => {
+test('cached action proof expires after seven minutes and fails closed on a registry count mismatch', () => {
   const backend=loadBackend();
   const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
   const pageId='3c72d627-39a1-8120-bd0a-f969e6846945';
@@ -591,7 +594,7 @@ test('cached action proof expires after two minutes and fails closed on a regist
   }]);
   assert.equal(replacement.ok,true);
   const folderValidatedAt=new Date().toISOString();
-  const staleAt=new Date(Date.now()-121000).toISOString();
+  const staleAt=new Date(Date.now()-421000).toISOString();
   backend.w20RegistryWriteTaskMeta_(taskId,{
     taskName:'Задача',folderId:'TaskFolder12345',rootFolderId:'RootFolder12345',folderVerified:true,
     folderValidatedAt,taskValidatedAt:staleAt,snapshotValidatedAt:staleAt,snapshotActiveCount:replacement.activeCount
@@ -1399,6 +1402,20 @@ test('reservation file guards are exact, owned and phase-aware without rejecting
   assert.equal(backend.w20ClaimedCreateFile_({...marked,appProperties:{...marked.appProperties,unexpected:'x'}},claim,pageId),null);
 });
 
+test('fresh prepared Drive metadata is reused only after an observed rename and an uncontended one-second claim handoff', () => {
+  const backend = loadBackend();
+  const drive = { id: 'ReservedGoogleFile123', name: 'Имя пользователя' };
+  let now = 10_000;
+  backend.Date = { now: () => now };
+  assert.equal(backend.w20RecentlyVerifiedPreparedDrive_(drive, 9_000, 'Подготовленное имя'), drive);
+  assert.equal(backend.w20RecentlyVerifiedPreparedDrive_({...drive,name:'Подготовленное имя'}, 9_000, 'Подготовленное имя'), null,
+    'an unchanged placeholder must be re-read immediately before the conditional rename');
+  now = 10_001;
+  assert.equal(backend.w20RecentlyVerifiedPreparedDrive_(drive, 9_000, 'Подготовленное имя'), null);
+  now = 8_999;
+  assert.equal(backend.w20RecentlyVerifiedPreparedDrive_(drive, 9_000, 'Подготовленное имя'), null);
+});
+
 test('post-CAS reservation failures preserve the reverse claim and can never fall back to another file', () => {
   const backend=loadBackend();
   const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
@@ -1573,6 +1590,7 @@ test('reservation v2 claims the exact file once, preserves idempotency and refil
   assert.equal(first.ok,true,JSON.stringify(first));assert.equal(first.data.duplicate,false);
   assert.equal(first.data.material.googleFileId,reservedFile.id);assert.equal(first.data.material.name,'Имя из Google Docs');
   assert.equal(notionCreates,1);assert.equal(drive.creates,1,'click uses the prepared file and never Drive CREATE');
+  assert.equal(drive.gets,1,'the exact metadata verified by the atomic claim is reused by the transition');
   assert.deepEqual(reservedFile.parents,[taskFolderId]);
   assert.deepEqual(Object.keys(reservedFile.appProperties).sort(),['materialState','notionPageId','taskPageId','widgetIdem','widgetVersion']);
   const clientHash=backend.w20CreateClientHash_(taskId,clientId);
@@ -1834,7 +1852,8 @@ test('scheduled sync rejects browser calls that are neither owner nor the instal
   const guard = backendSource.slice(backendSource.indexOf('function w19AssertScheduledInvocation_'), backendSource.indexOf('/* ========================= Authorization/config'));
   assert.match(scheduled, /w19AssertScheduledInvocation_\(cfg, event\)/);
   assert.match(guard, /event && event\.triggerUid/);
-  assert.match(guard, /trigger\.getHandlerFunction\(\) === 'scheduledSync'/);
+  assert.match(guard, /trigger\.getHandlerFunction\(\) === expectedHandler/);
+  assert.match(guard, /\['scheduledSync', 'scheduledFinalizeUploads'\]/);
   assert.match(guard, /trigger\.getUniqueId\(\)/);
 });
 
@@ -1845,10 +1864,128 @@ test('scheduled sync cleans v2 reservations without warming the unreachable lega
   assert.doesNotMatch(scheduled, /create_reservation_background_deferred/);
 });
 
-test('background rename trigger uses a five-minute cadence to stay below shared API limits', () => {
+function runScheduledProofCycle({cursor=null,hasMore=false,errorPage='' }={}) {
+  const backend=loadBackend();
+  const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const rootFolderId='ScheduledRootFolder123',folderId='ScheduledTaskFolder123';
+  const cfg={authorizedTaskPageId:taskId,dataSourceId:'3822d627-39a1-8018-a2dc-000b95bf5722',rootFolderId,
+    notionToken:'scheduled-proof-test-secret',deniedPageIds:{}};
+  const pageIds=['3c72d627-39a1-8120-bd0a-f969e6846945','3c82d627-39a1-8120-bd0a-f969e6846946'];
+  const pages=pageIds.map((id,index)=>({id,material:{id,name:`Material ${index+1}`,section:'Docs',format:'Google Docs',provider:'Google Drive',
+    openUrl:`https://docs.google.com/document/d/ScheduledGoogleDoc${index+1}/edit`,googleFileId:`ScheduledGoogleDoc${index+1}`,
+    folderId,widgetOwned:true,widgetOwnedBinary:false,position:index,syncStatus:'synced',archived:false,updatedAt:new Date().toISOString()}}));
+  const calls={task:[],folders:0,replacements:[],meta:[],proof:0,upserts:[],finishes:[]};
+  backend.w19Config_=()=>cfg;
+  backend.w19AssertScheduledInvocation_=()=>{};
+  backend.w19ClaimScheduledSync_=()=>({token:'scheduled-lease-token',cursor});
+  backend.w19FinishScheduledSync_=(...args)=>calls.finishes.push(args);
+  backend.w19AssertSchema_=()=>({ok:true});
+  backend.w19NotionRequest_=()=>({results:pages,has_more:hasMore,next_cursor:hasMore?'next-page':null});
+  backend.w19SyncOnePage_=(page)=>{if(page.id===errorPage)throw new Error('sync failed');return page;};
+  backend.w19MarkSyncError_=()=>{};
+  backend.w19MaterialFromPage_=(page)=>page.material;
+  backend.w20PreserveRegistryRuntimeMetadata_=(_task,materials)=>materials;
+  backend.w19AssertTaskPage_=(value)=>{calls.task.push(value);return {id:taskId,name:'Scheduled task',page:{properties:{}}};};
+  backend.w19WithMutationLock_=(fn)=>fn();
+  backend.w19EnsureTaskFolder_=()=>{calls.folders+=1;return {id:folderId,mimeType:'application/vnd.google-apps.folder',trashed:false,
+    appProperties:{widgetVersion:'v20',taskPageId:taskId.replace(/-/g,'')}};};
+  const replaceTaskResult=backend.w20RegistryReplaceTaskResult_;
+  backend.w20RegistryReplaceTaskResult_=(receivedTask,materials,preserveAfter)=>{
+    calls.replacements.push({taskId:receivedTask,materials,preserveAfter});
+    return replaceTaskResult(receivedTask,materials,preserveAfter);
+  };
+  const writeTaskMetaResult=backend.w20RegistryWriteTaskMetaResult_;
+  backend.w20RegistryWriteTaskMetaResult_=(receivedTask,meta)=>{
+    calls.meta.push({taskId:receivedTask,meta});
+    return writeTaskMetaResult(receivedTask,meta);
+  };
+  const actionProof=backend.w20RegistryActionProof_;
+  backend.w20RegistryActionProof_=(...args)=>{calls.proof+=1;return actionProof(...args);};
+  const registryUpsert=backend.w20RegistryUpsert_;
+  backend.w20RegistryUpsert_=(...args)=>{calls.upserts.push(args);return registryUpsert(...args);};
+  backend.w19PruneLedger_=()=>{};
+  backend.w20CleanupExpiredCreateReservationsV2_=()=>{};
+  const result=backend.scheduledSync({triggerUid:'scheduled-trigger'});
+  return {backend,result,calls,taskId,rootFolderId,folderId,pages};
+}
+
+test('scheduled sync refreshes action proof only from a coherent complete single-page cycle', () => {
+  const {backend,result,calls,taskId,rootFolderId,folderId,pages}=runScheduledProofCycle();
+  assert.equal(result.ok,true);
+  assert.equal(result.proofRefreshed,true);
+  assert.deepEqual(calls.task,[taskId]);
+  assert.equal(calls.folders,1);
+  assert.equal(calls.replacements.length,1);
+  assert.equal(calls.replacements[0].taskId,taskId);
+  assert.equal(calls.replacements[0].materials.length,pages.length);
+  assert.ok(Number.isFinite(calls.replacements[0].preserveAfter)&&calls.replacements[0].preserveAfter>0);
+  assert.equal(calls.meta.length,1);
+  const meta=calls.meta[0].meta;
+  assert.equal(calls.meta[0].taskId,taskId);
+  assert.equal(meta.taskName,'Scheduled task');
+  assert.equal(meta.folderId,folderId);
+  assert.equal(meta.rootFolderId,rootFolderId);
+  assert.equal(meta.folderVerified,true);
+  assert.equal(meta.snapshotActiveCount,pages.length);
+  assert.equal(meta.taskValidatedAt,meta.snapshotValidatedAt);
+  assert.equal(meta.taskValidatedAt,meta.folderValidatedAt);
+  assert.ok(Number.isFinite(Date.parse(meta.taskValidatedAt)));
+  assert.equal(calls.proof,1);
+  assert.equal(calls.upserts.length,0);
+  assert.deepEqual(calls.finishes,[['scheduled-lease-token',true,null]]);
+  const storedMeta=backend.w20RegistryReadTaskMeta_(taskId);
+  const storedRegistry=backend.w20RegistryReadTaskResult_(taskId,null);
+  assert.equal(storedMeta.snapshotActiveCount,pages.length);
+  assert.equal(storedRegistry.integrityOk,true);
+  assert.equal(storedRegistry.activeCount,pages.length);
+  assert.equal(backend.w20RegistryActionProof_(storedMeta,storedRegistry,rootFolderId).ready,true);
+});
+
+test('scheduled sync partial, error and cursor cycles never confirm action proof', () => {
+  const cases=[
+    {name:'has more',options:{hasMore:true},expectedUpserts:2},
+    {name:'continuation cursor',options:{cursor:'prior-page'},expectedUpserts:2},
+    {name:'page error',options:{errorPage:'3c82d627-39a1-8120-bd0a-f969e6846946'},expectedUpserts:1}
+  ];
+  cases.forEach(({name,options,expectedUpserts})=>{
+    const {result,calls}=runScheduledProofCycle(options);
+    assert.equal(result.proofRefreshed,false,name);
+    assert.equal(calls.task.length,0,name);
+    assert.equal(calls.folders,0,name);
+    assert.equal(calls.replacements.length,0,name);
+    assert.equal(calls.meta.length,0,name);
+    assert.equal(calls.proof,0,name);
+    assert.equal(calls.upserts.length,expectedUpserts,name);
+  });
+});
+
+test('bootstrap, task sync and scheduled proof refresh never call the legacy sequential page sync', () => {
+  const bootstrap = backendSource.slice(backendSource.indexOf('function apiBootstrap'), backendSource.indexOf('function apiCreateGoogle'));
+  const sync = backendSource.slice(backendSource.indexOf('function apiSyncTask'), backendSource.indexOf('/* ========================= Admin-only setup'));
+  const scheduled = backendSource.slice(backendSource.indexOf('function scheduledSync'), backendSource.indexOf('function w19ClaimScheduledSync_'));
+  for (const source of [bootstrap,sync,scheduled]) assert.doesNotMatch(source,/w19SyncPageList_/);
+});
+
+test('background triggers keep rename at five minutes and finalize a bounded queue every minute', () => {
   const installer = backendSource.slice(backendSource.indexOf('function adminInstallSyncTrigger'), backendSource.indexOf('function scheduledSync'));
-  assert.match(installer, /everyMinutes\(5\)\.create\(\)/);
-  assert.doesNotMatch(installer, /everyMinutes\(1\)/);
+  assert.match(installer, /newTrigger\('scheduledSync'\)\.timeBased\(\)\.everyMinutes\(5\)\.create\(\)/);
+  assert.match(installer, /newTrigger\('scheduledFinalizeUploads'\)\.timeBased\(\)\.everyMinutes\(1\)\.create\(\)/);
+  assert.match(installer, /w20DrainAttachmentJobs_\(cfg, W20_ATTACHMENT_JOB_DRAIN_LIMIT\)/);
+});
+
+test('empty attachment queue returns before schema or Notion work', () => {
+  const backend=loadBackend();
+  const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const calls={prune:0,due:0,schema:0,drain:0};
+  backend.w19Config_=()=>({authorizedTaskPageId:taskId});
+  backend.w19AssertScheduledInvocation_=()=>{};
+  backend.w20PruneAttachmentJobs_=()=>{calls.prune+=1;};
+  backend.w20DueAttachmentJobs_=(receivedTask,limit)=>{calls.due+=1;assert.equal(receivedTask,taskId);assert.equal(limit,1);return [];};
+  backend.w19AssertSchema_=()=>{calls.schema+=1;};
+  backend.w20DrainAttachmentJobs_=()=>{calls.drain+=1;return {checked:0,attached:0,errors:0};};
+  const result=backend.scheduledFinalizeUploads({triggerUid:'scheduled-trigger'});
+  assert.deepEqual(JSON.parse(JSON.stringify(result)),{ok:true,checked:0,attached:0,errors:0});
+  assert.deepEqual(calls,{prune:1,due:1,schema:0,drain:0});
 });
 
 test('five-second Drive metadata poll authenticates without reading or writing Notion', () => {
@@ -2838,7 +2975,7 @@ test('fresh binary upload uses only the authoritative registry task, folder and 
 
   assert.equal(response.ok, true, JSON.stringify(response));
   assert.equal(harness.calls.schema, 1);
-  assert.equal(harness.calls.limit, 1);
+  assert.equal(harness.calls.limit, 0, 'workspace plan discovery is deferred to the attachment finalizer');
   assert.deepEqual(JSON.parse(JSON.stringify(harness.calls.claim)), [[harness.taskId, 'Docs', harness.cfg.rootFolderId]]);
   assert.equal(harness.calls.taskAssert, 0, 'hot upload must not GET the task');
   assert.equal(harness.calls.idemLookup, 0, 'fresh hot upload must not query duplicate knowledge');
@@ -2851,15 +2988,12 @@ test('fresh binary upload uses only the authoritative registry task, folder and 
   assert.equal(harness.calls.createBinary[0][0].name, 'Проверенная задача');
   assert.equal(harness.calls.createBinary[0][1], 'TrustedTaskFolder123');
   assert.deepEqual(Array.from(harness.calls.createBinary[0][4]), [1, 2, 3]);
-  assert.equal(harness.calls.notionUpload.length, 1);
+  assert.equal(harness.calls.notionUpload.length, 0);
   assert.equal(harness.calls.notionCreate.length, 1);
   assert.equal(harness.calls.notionCreate[0].data.googleFolderId, 'TrustedTaskFolder123');
   assert.equal(harness.calls.notionCreate[0].data.position, 7);
-  assert.deepEqual(JSON.parse(JSON.stringify(harness.calls.notionCreate[0].data.attachments)), [{
-    name: 'brief.pdf',
-    type: 'file_upload',
-    file_upload: { id: '43833259-72ae-404e-8441-b6577f3159b4' }
-  }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.calls.notionCreate[0].data.attachments)), []);
+  assert.equal(harness.calls.queue.length, 1);
   assert.equal(harness.calls.idempotencyKey, '3c62d62739a180a1aac7ec19ffc9ef8e|upload|upload-request-0001');
   assert.equal(harness.calls.notionCreate[0].data.idempotency, harness.calls.idempotencyKey);
   assert.equal(Object.hasOwn(response.data.material, 'idempotency'), false, 'full internal key must not reach the client');
@@ -2947,19 +3081,166 @@ test('malformed fresh upload slot fails closed without falling through to caller
   assert.equal(harness.calls.notionCreate.length, 0);
 });
 
-test('hosted Notion attachments are attached on creation and preserved during Drive sync', () => {
-  const upload = backendSource.slice(backendSource.indexOf('function apiUpload'), backendSource.indexOf('function apiUpdateMaterial'));
+test('binary upload returns after an empty-attachment knowledge and queues the hosted copy', () => {
+  const upload = backendSource.slice(backendSource.indexOf('function apiUpload'), backendSource.indexOf('function w20AttachmentJobKey_'));
   const create = backendSource.slice(backendSource.indexOf('function w19CreateNotionMaterial_'), backendSource.indexOf('function w19AppendContextProperties_'));
   const sync = backendSource.slice(backendSource.indexOf('function w19SyncOnePageUnlocked_'), backendSource.indexOf('function w19MarkSyncError_'));
-  assert.match(upload, /w19CreateAndSendNotionUpload_\(bytes/);
-  assert.match(upload, /type:\s*'file_upload'/);
-  assert.match(upload, /file_upload:\s*\{\s*id:\s*notionUpload\.id\s*\}/);
+  assert.doesNotMatch(upload, /w19CreateAndSendNotionUpload_\(bytes/);
+  assert.match(upload, /attachments:\s*\[\]/);
+  assert.match(upload, /w20TryEnqueueAttachmentJob_\(taskId, outcome\.material, runtimeDriveMetadata\)/);
   assert.match(upload, /var outcome = w19WithIdempotency_/);
   assert.doesNotMatch(upload, /w19AssertMaterialForTask_\(outcome\.material\.id/);
   assert.match(upload, /pageForDownloadCache = page/);
   assert.match(upload, /w20CacheDownloadMaterials_\(taskId, \[pageForDownloadCache\], cfg\)/);
   assert.match(create, /Array\.isArray\(data\.attachments\)/);
   assert.match(sync, /driveData\.sourceUrl\s*&&\s*!material\.widgetOwnedBinary\s*&&\s*!material\.hostedAttachment/);
+});
+
+function installAttachmentFinalizerHarness() {
+  const backend=loadBackend();
+  const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const pageId='3c72d627-39a1-8120-bd0a-f969e6846945';
+  const fileId='UploadedDriveFile123',folderId='TrustedTaskFolder123';
+  const cfg={authorizedTaskPageId:taskId,deniedPageIds:{},rootFolderId:'TrustedRootFolder123',maxUploadBytes:8*1024*1024,
+    dataSourceId:'3822d627-39a1-8018-a2dc-000b95bf5722',notionVersion:'2026-03-11',notionToken:'private-test-token'};
+  const material={id:pageId,name:'brief.pdf',section:'Docs',format:'PDF',provider:'Google Drive',openUrl:'https://drive.google.com/',
+    googleFileId:fileId,folderId,widgetOwned:true,widgetOwnedBinary:true,hostedAttachment:false,syncStatus:'synced',archived:false,
+    idempotency:`${taskId.replaceAll('-','')}|upload|upload-request-0001`};
+  const page={id:pageId,properties:{'Вложения':{files:[]}}};
+  const idemHash=backend.w19Hash_(material.idempotency).slice(0,40);
+  const baseDrive={id:fileId,name:'brief.pdf',mimeType:'application/pdf',size:'3',md5Checksum:'5289df737df57326fcdd22597afb1fac',ownedByMe:true,
+    trashed:false,parents:[folderId],appProperties:{widgetVersion:'v20',materialState:'active',taskPageId:taskId.replaceAll('-',''),
+      notionPageId:pageId.replaceAll('-',''),widgetIdem:idemHash}};
+  const calls={create:0,send:0,patch:0,drive:0,mutation:0};
+  backend.w19AuthorizedConfig_=()=>cfg;
+  backend.w19AssertSchema_=()=>({ok:true});
+  backend.w20AssertAuthorizedTaskId_=(value)=>{assert.equal(value,taskId);return taskId;};
+  backend.w19AssertMaterialForTask_=(receivedPage,receivedTask,_cfg,allowArchived)=>{
+    assert.equal(receivedPage,pageId);assert.equal(receivedTask,taskId);assert.equal(allowArchived,true);return page;
+  };
+  backend.w19MaterialFromPage_=()=>material;
+  backend.w19AssertOwnedBinary_=()=>{calls.drive+=1;return {...baseDrive,appProperties:{...baseDrive.appProperties}};};
+  backend.w19EffectiveUploadLimit_=()=>1024;
+  backend.DriveApp={getFileById:(id)=>{assert.equal(id,fileId);return {getBlob:()=>({getBytes:()=>[1,2,3]})};}};
+  backend.w20CreateNotionUpload_=()=>{calls.create+=1;return {id:'43833259-72ae-404e-8441-b6577f3159b4',status:'pending',expiry_time:'2026-08-28T12:00:00Z'};};
+  backend.w20SendNotionUploadBlob_=()=>{calls.send+=1;return {id:'43833259-72ae-404e-8441-b6577f3159b4',status:'uploaded',expiry_time:null};};
+  backend.w20GetNotionUpload_=()=>({id:'43833259-72ae-404e-8441-b6577f3159b4',status:'uploaded',expiry_time:null});
+  backend.w19WithMutationLock_=(fn)=>{calls.mutation+=1;return fn();};
+  backend.w19UpdateNotionPage_=(_id,props)=>{calls.patch+=1;page.properties['Вложения']=props['Вложения'];material.hostedAttachment=true;return page;};
+  backend.w20EnqueueAttachmentJob_(taskId,material,baseDrive);
+  return {backend,taskId,pageId,fileId,folderId,cfg,material,page,baseDrive,calls};
+}
+
+test('attachment queue is compact metadata-only, idempotent, leased once and prunes malformed or expired records', () => {
+  const h=installAttachmentFinalizerHarness();
+  const props=h.backend.PropertiesService.getScriptProperties();
+  const key=h.backend.w20AttachmentJobKey_(h.taskId,h.pageId);
+  const raw=props.getProperty(key);
+  assert.ok(Buffer.byteLength(raw,'utf8')<9000);
+  assert.doesNotMatch(raw,/private-test-token|AQID|base64|https?:\/\//i);
+  assert.deepEqual(Object.keys(JSON.parse(raw)).sort(),['attempts','createdAt','fileId','folderId','idemHash','lastCode','leaseToken','leaseUntil',
+    'nextAt','notionUploadId','pageId','schema','sentMd5','sentSize','state','taskId','updatedAt']);
+  const first=JSON.parse(raw);
+  const duplicate=h.backend.w20EnqueueAttachmentJob_(h.taskId,h.material,h.baseDrive);
+  assert.equal(duplicate.createdAt,first.createdAt);
+  const claim=h.backend.w20ClaimAttachmentJob_(h.taskId,h.pageId);
+  assert.ok(claim);
+  assert.ok(claim.job.leaseUntil-Date.now()>=7*60*1000);
+  assert.equal(h.backend.w20ClaimAttachmentJob_(h.taskId,h.pageId),null);
+  const malformedKey='w20:attachment-job:malformed';
+  props.setProperty(malformedKey,'{"bytes":"secret"}');
+  const expired={...first,pageId:'3c82d627-39a1-8120-bd0a-f969e6846946',createdAt:Date.now()-h.backend.W20_ATTACHMENT_JOB_TTL_MS-1,
+    updatedAt:Date.now()-h.backend.W20_ATTACHMENT_JOB_TTL_MS-1};
+  const expiredKey=h.backend.w20AttachmentJobKey_(h.taskId,expired.pageId);
+  props.setProperty(expiredKey,JSON.stringify(expired));
+  assert.equal(h.backend.w20PruneAttachmentJobs_(),2);
+  assert.equal(props.getProperty(malformedKey),null);
+  assert.equal(props.getProperty(expiredKey),null);
+});
+
+test('finalizer attaches an uploaded null-expiry id to the exact empty target and verifies Drive twice', () => {
+  const h=installAttachmentFinalizerHarness();
+  const result=h.backend.apiFinalizeUploadAttachment({taskPageId:h.taskId,pageId:h.pageId});
+  assert.equal(result.ok,true,JSON.stringify(result));
+  assert.equal(result.data.status,'attached');
+  assert.equal(h.calls.create,1);
+  assert.equal(h.calls.send,1);
+  assert.equal(h.calls.patch,1,'expiry_time=null alone must not skip the exact target PATCH');
+  assert.equal(h.calls.drive,2,'Drive fingerprint is checked before SEND and immediately before PATCH');
+  assert.equal(h.calls.mutation,1,'only the final target recheck and PATCH use the mutation fence');
+  assert.equal(h.backend.w20ReadAttachmentJob_(h.taskId,h.pageId),null);
+});
+
+test('manual target attachments are never overwritten and a successful knowledge upload survives queue failure', () => {
+  const h=installAttachmentFinalizerHarness();
+  h.page.properties['Вложения']={files:[{name:'manual.pdf',type:'external',external:{url:'https://example.com/manual.pdf'}}]};
+  const blocked=h.backend.apiFinalizeUploadAttachment({taskPageId:h.taskId,pageId:h.pageId});
+  assert.equal(blocked.ok,false);
+  assert.equal(blocked.error.code,'ATTACHMENT_CONFLICT');
+  assert.equal(h.calls.patch,0);
+  assert.equal(h.backend.w20ReadAttachmentJob_(h.taskId,h.pageId).state,'error');
+  h.backend.w20EnqueueAttachmentJob_(h.taskId,h.material,h.baseDrive);
+  assert.equal(h.backend.w20ReadAttachmentJob_(h.taskId,h.pageId).state,'error','ordinary reconciliation must not revive a permanent conflict');
+
+  const upload=installUploadApiHarness();
+  upload.backend.w20TryEnqueueAttachmentJob_=()=>null;
+  const created=upload.backend.apiUpload(upload.input);
+  assert.equal(created.ok,true,JSON.stringify(created));
+  assert.equal(upload.calls.notionCreate.length,1);
+  assert.deepEqual(JSON.parse(JSON.stringify(upload.calls.notionCreate[0].data.attachments)),[]);
+
+  const hosted=installAttachmentFinalizerHarness();
+  hosted.material.hostedAttachment=true;
+  hosted.page.properties['Вложения']={files:[{name:'manual.pdf',type:'file',file:{url:'https://secure.notion-static.com/manual.pdf',expiry_time:'soon'}}]};
+  const hostedBlocked=hosted.backend.apiFinalizeUploadAttachment({taskPageId:hosted.taskId,pageId:hosted.pageId});
+  assert.equal(hostedBlocked.ok,false);
+  assert.equal(hostedBlocked.error.code,'ATTACHMENT_CONFLICT','a hosted target is not proof when this job never created an upload');
+  assert.equal(hosted.calls.patch,0);
+});
+
+test('a missing prior Notion upload resets its stale fingerprint before one exact replacement send', () => {
+  const h=installAttachmentFinalizerHarness();
+  const props=h.backend.PropertiesService.getScriptProperties();
+  const key=h.backend.w20AttachmentJobKey_(h.taskId,h.pageId);
+  const stale=JSON.parse(props.getProperty(key));
+  stale.notionUploadId='43833259-72ae-404e-8441-b6577f3159b4';
+  stale.sentMd5=h.baseDrive.md5Checksum;
+  stale.sentSize=Number(h.baseDrive.size);
+  props.setProperty(key,JSON.stringify(stale));
+  const newer={...h.baseDrive,md5Checksum:'b4a3ba90641372b4e4eaa841a5a400ec'};
+  h.backend.w19AssertOwnedBinary_=()=>{h.calls.drive+=1;return {...newer,appProperties:{...newer.appProperties}};};
+  h.backend.DriveApp={getFileById:()=>({getBlob:()=>({getBytes:()=>[4,5,6]})})};
+  h.backend.w20GetNotionUpload_=()=>null;
+  h.backend.w20CreateNotionUpload_=()=>{h.calls.create+=1;return {id:'54833259-72ae-404e-8441-b6577f3159b5',status:'pending',expiry_time:'soon'};};
+  h.backend.w20SendNotionUploadBlob_=(id)=>{h.calls.send+=1;return {id,status:'uploaded',expiry_time:null};};
+  const result=h.backend.apiFinalizeUploadAttachment({taskPageId:h.taskId,pageId:h.pageId});
+  assert.equal(result.ok,true,JSON.stringify(result));
+  assert.equal(h.calls.create,1);
+  assert.equal(h.calls.send,1);
+  assert.equal(h.calls.patch,1);
+  assert.equal(h.calls.drive,2);
+});
+
+test('Drive fingerprint changes abandon the old Notion upload and retry with a new exact version', () => {
+  const h=installAttachmentFinalizerHarness();
+  let driveReads=0,blobReads=0,creates=0,sends=0;
+  const newer={...h.baseDrive,md5Checksum:'b4a3ba90641372b4e4eaa841a5a400ec'};
+  h.backend.DriveApp={getFileById:()=>({getBlob:()=>({getBytes:()=>blobReads++===0?[1,2,3]:[4,5,6]})})};
+  h.backend.w19AssertOwnedBinary_=()=>{driveReads+=1;return driveReads===1?h.baseDrive:newer;};
+  h.backend.w20CreateNotionUpload_=()=>({id:creates++===0?'43833259-72ae-404e-8441-b6577f3159b4':'54833259-72ae-404e-8441-b6577f3159b5',status:'pending',expiry_time:'soon'});
+  h.backend.w20SendNotionUploadBlob_=(id)=>{sends+=1;return {id,status:'uploaded',expiry_time:null};};
+  const first=h.backend.apiFinalizeUploadAttachment({taskPageId:h.taskId,pageId:h.pageId});
+  assert.equal(first.ok,false);
+  assert.equal(first.error.code,'ATTACHMENT_DRIVE_CHANGED');
+  const props=h.backend.PropertiesService.getScriptProperties();
+  const key=h.backend.w20AttachmentJobKey_(h.taskId,h.pageId);
+  const retry=JSON.parse(props.getProperty(key));retry.nextAt=0;retry.leaseToken='';retry.leaseUntil=0;props.setProperty(key,JSON.stringify(retry));
+  h.backend.w19AssertOwnedBinary_=()=>newer;
+  const second=h.backend.apiFinalizeUploadAttachment({taskPageId:h.taskId,pageId:h.pageId});
+  assert.equal(second.ok,true,JSON.stringify(second));
+  assert.equal(creates,2);
+  assert.equal(sends,2);
+  assert.equal(h.calls.patch,1);
 });
 
 test('next position reads only the highest active position in the requested section', () => {
@@ -3431,7 +3712,7 @@ test('download grants are HMAC-bound to task and page, expire in 60 seconds and 
   assert.equal(backend.w20GetDownloadGrant_(taskId,pageId,replacement.downloadGrant,cfg),null);
 });
 
-test('download POST redeems a valid grant from cache without Notion or Drive and invalid grants fall back safely', () => {
+test('download POST redeems a supplied warm grant without preparing or touching Notion and Drive', () => {
   const backend=loadBackend();
   const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e',pageId='3c72d627-39a1-81e1-971f-c6b30665ce55';
   const cfg={authorizedTaskPageId:taskId,dataSourceId:'3822d627-39a1-8018-a2dc-000b95bf5722',notionToken:'test-notion-hmac-secret',deniedPageIds:{}};
@@ -3443,6 +3724,8 @@ test('download POST redeems a valid grant from cache without Notion or Drive and
   backend.w19AuthorizedConfig_=()=>{authCalls+=1;return cfg;};
   backend.w19AssertMaterialForTask_=()=>{throw new Error('valid POST grant must make zero Notion calls');};
   backend.w19AssertOwnedBinary_=()=>{throw new Error('valid POST grant must make zero Drive calls');};
+  let prepareCalls=0;
+  backend.apiPrepareDownload=()=>{prepareCalls+=1;throw new Error('a warm grant must not be prepared again');};
   const rendered=[];
   const output={setTitle(){return this;},setXFrameOptionsMode(){return this;},addMetaTag(){return this;}};
   backend.HtmlService={XFrameOptionsMode:{ALLOWALL:'ALLOWALL'},createTemplateFromFile(name){assert.equal(name,'Download');const template={evaluate(){rendered.push({runtime:template.runtimeParamsJson,result:template.precomputedResultJson});return output;}};return template;}};
@@ -3453,16 +3736,100 @@ test('download POST redeems a valid grant from cache without Notion or Drive and
   assert.equal(precomputed.mode,'direct');
   assert.equal(precomputed.downloadTicket,issued.downloadGrant);
   assert.equal(authCalls,1);
+  assert.equal(prepareCalls,0);
 
-  backend.doPost({...event,parameters:{...event.parameters,downloadTicket:['f'.repeat(96)]}});
-  assert.equal(JSON.parse(rendered[1].result),null);
-  assert.deepEqual(JSON.parse(rendered[1].runtime),{task:taskId,accessToken,downloadPageId:pageId,downloadTicket:'f'.repeat(96)});
-  assert.equal(authCalls,2);
   backend.doPost({...event,parameters:{...event.parameters,extra:['forbidden']}});
   backend.doPost({...event,parameters:{...event.parameters,task:[taskId,taskId]}});
-  assert.equal(authCalls,2,'extra and duplicate POST fields must fail before authorization');
+  assert.equal(authCalls,1,'extra and duplicate POST fields must fail before authorization');
+  assert.equal(prepareCalls,0);
+  assert.equal(JSON.parse(rendered[1].result),null);
   assert.equal(JSON.parse(rendered[2].result),null);
-  assert.equal(JSON.parse(rendered[3].result),null);
+});
+
+test('cold download POST prepares and re-redeems one ownership-checked grant before rendering direct', () => {
+  const backend=loadBackend();
+  const realIssueDownloadGrant=backend.w20IssueDownloadGrant_;
+  const fixture=installFastPrepareDownloadFixture(backend);
+  fixture.cfg.notionToken='test-notion-hmac-secret';
+  const accessToken='B'.repeat(48),originalTicket='c'.repeat(64),values=new Map();
+  backend.CacheService={getScriptCache:()=>({
+    put:(key,value)=>values.set(key,String(value)),get:(key)=>values.get(key)||null,
+    remove:(key)=>values.delete(key),removeAll:(keys)=>keys.forEach((key)=>values.delete(key))
+  })};
+  backend.w20IssueDownloadGrant_=realIssueDownloadGrant;
+  let prepareCalls=0;
+  const realPrepare=backend.apiPrepareDownload;
+  backend.apiPrepareDownload=(input)=>{
+    prepareCalls+=1;
+    assert.deepEqual(JSON.parse(JSON.stringify(input)),{taskPageId:fixture.taskId,pageId:fixture.pageId,accessToken});
+    return realPrepare(input);
+  };
+  const redemptionTickets=[];
+  const realGet=backend.w20GetDownloadGrant_;
+  backend.w20GetDownloadGrant_=(taskId,pageId,ticket,cfg)=>{
+    redemptionTickets.push(String(ticket));
+    return realGet(taskId,pageId,ticket,cfg);
+  };
+  const rendered=[];
+  const output={setTitle(){return this;},setXFrameOptionsMode(){return this;},addMetaTag(){return this;}};
+  backend.HtmlService={XFrameOptionsMode:{ALLOWALL:'ALLOWALL'},createTemplateFromFile(name){assert.equal(name,'Download');const template={evaluate(){rendered.push({runtime:template.runtimeParamsJson,result:template.precomputedResultJson});return output;}};return template;}};
+  const event={parameters:{task:[fixture.taskId],accessToken:[accessToken],downloadPageId:[fixture.pageId],downloadTicket:[originalTicket]},postData:{type:'application/x-www-form-urlencoded'}};
+
+  assert.equal(backend.doPost(event),output);
+  assert.equal(prepareCalls,1);
+  assert.equal(fixture.calls.driveGets,1,'cold preparation performs one exact live Drive ownership GET');
+  assert.equal(fixture.calls.notion,0,'a fresh exact registry proof avoids Notion on the cold POST path');
+  assert.equal(fixture.calls.root,0);
+  assert.equal(fixture.calls.fallback,0);
+  assert.equal(redemptionTickets.length,2,'the submitted ticket miss is followed by one fresh grant redemption');
+  assert.equal(redemptionTickets[0],originalTicket);
+  assert.match(redemptionTickets[1],/^[a-f0-9]{96}$/);
+  assert.equal(rendered[0].runtime,'{}','success never renders the access capability into the page');
+  const precomputed=JSON.parse(rendered[0].result);
+  assert.deepEqual(Object.keys(precomputed).sort(),['downloadTicket','expiresAt','mimeType','mode','name','size','url']);
+  assert.equal(precomputed.mode,'direct');
+  assert.equal(precomputed.downloadTicket,originalTicket,'the public courier correlation ticket is not replaced by the private grant');
+  assert.equal(precomputed.url,backend.w20DriveDownloadUrl_(fixture.fileId,fixture.cfg.allowedEmail));
+  assert.equal(precomputed.name,fixture.drive.name);
+  assert.equal(precomputed.mimeType,fixture.drive.mimeType);
+  assert.equal(precomputed.size,Number(fixture.drive.size));
+  assert.doesNotMatch(rendered[0].result,new RegExp(accessToken));
+  assert.doesNotMatch(rendered[0].result,new RegExp(redemptionTickets[1]));
+});
+
+test('cold download POST trusts neither prepare metadata nor an unredeemable fresh grant', () => {
+  const scenarios=[
+    {name:'API error',response:{ok:false,error:{code:'DOWNLOAD_NOT_OWNED'}}},
+    {name:'proxy',response:{ok:true,data:{mode:'proxy'}}},
+    {name:'malformed grant',response:{ok:true,data:{mode:'grant',downloadGrant:'d'.repeat(95),directDownloadUrl:'https://drive.google.com/uc?export=download&authuser=owner%40example.com&id=AttackerChosenFile123'}}},
+    {name:'uppercase grant',response:{ok:true,data:{mode:'grant',downloadGrant:'E'.repeat(96)}}},
+    {name:'epoch race',response:{ok:true,data:{mode:'grant',downloadGrant:'f'.repeat(96),directDownloadUrl:'https://drive.google.com/uc?export=download&authuser=owner%40example.com&id=AttackerChosenFile123'}}},
+    {name:'throw',throws:true}
+  ];
+  scenarios.forEach((scenario)=>{
+    const backend=loadBackend();
+    const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e',pageId='3c72d627-39a1-81e1-971f-c6b30665ce55';
+    const accessToken='G'.repeat(48),ticket='h'.repeat(64);
+    const cfg={authorizedTaskPageId:taskId,dataSourceId:'3822d627-39a1-8018-a2dc-000b95bf5722',notionToken:'test-notion-hmac-secret',deniedPageIds:{}};
+    backend.w19AuthorizedConfig_=()=>cfg;
+    let prepareCalls=0,redemptionCalls=0;
+    backend.apiPrepareDownload=()=>{prepareCalls+=1;if(scenario.throws)throw new Error('prepare unavailable');return scenario.response;};
+    backend.w20GetDownloadGrant_=(_task,_page,supplied)=>{
+      if(String(supplied)===ticket)return null;
+      redemptionCalls+=1;
+      return null;
+    };
+    const rendered=[];
+    const output={setTitle(){return this;},setXFrameOptionsMode(){return this;},addMetaTag(){return this;}};
+    backend.HtmlService={XFrameOptionsMode:{ALLOWALL:'ALLOWALL'},createTemplateFromFile(){const template={evaluate(){rendered.push({runtime:template.runtimeParamsJson,result:template.precomputedResultJson});return output;}};return template;}};
+    const event={parameters:{task:[taskId],accessToken:[accessToken],downloadPageId:[pageId],downloadTicket:[ticket]},postData:{type:'application/x-www-form-urlencoded'}};
+
+    backend.doPost(event);
+    assert.equal(prepareCalls,1,scenario.name);
+    assert.equal(JSON.parse(rendered[0].result),null,scenario.name);
+    assert.deepEqual(JSON.parse(rendered[0].runtime),{task:taskId,accessToken,downloadPageId:pageId,downloadTicket:ticket},scenario.name);
+    assert.equal(redemptionCalls,scenario.name==='epoch race'?1:0,scenario.name);
+  });
 });
 
 test('deployment contract supports a capability-authenticated iframe with full Drive metadata access', () => {

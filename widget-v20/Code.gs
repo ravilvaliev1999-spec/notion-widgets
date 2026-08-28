@@ -18,6 +18,12 @@ var W20_DOWNLOAD_GRANT_SCHEMA = 2;
 var W20_FAST_DOWNLOAD_PACKAGE_TTL_SECONDS = 60;
 var W20_DRIVE_DIRECT_SOURCE_TTL_SECONDS = 180;
 var W20_DRIVE_POLL_CLAIM_TTL_SECONDS = 60;
+var W20_ATTACHMENT_JOB_PREFIX = 'w20:attachment-job:';
+var W20_ATTACHMENT_JOB_SCHEMA = 1;
+var W20_ATTACHMENT_JOB_MAX = 100;
+var W20_ATTACHMENT_JOB_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+var W20_ATTACHMENT_JOB_LEASE_MS = 8 * 60 * 1000;
+var W20_ATTACHMENT_JOB_DRAIN_LIMIT = 2;
 var W20_CREATE_RESERVATION_PREFIX = 'w20:create-reservation:';
 var W20_CREATE_CLAIM_PREFIX = 'w20:create-claim:';
 var W20_CREATE_RESERVATION_SCHEMA = 1;
@@ -303,6 +309,14 @@ function w20RecoverConcurrentCreatePost_(fields, response) {
   };
 }
 
+function w20PreparedDownloadPostDirect_(response, fields, cfg) {
+  var prepared = response && response.ok === true && response.data;
+  var grant = String(prepared && prepared.downloadGrant || '');
+  if (!fields || fields.valid !== true || !cfg || !prepared || prepared.mode !== 'grant' ||
+      !/^[a-f0-9]{96}$/.test(grant)) return null;
+  return w20GetDownloadGrant_(fields.taskPageId, fields.pageId, grant, cfg);
+}
+
 function doPost(event) {
   var kind = w20CourierPostKind_(event);
   if (kind === 'download') {
@@ -315,6 +329,14 @@ function doPost(event) {
           accessToken: downloadFields.accessToken
         });
         direct = w20GetDownloadGrant_(downloadFields.taskPageId, downloadFields.pageId, downloadFields.ticket, cfg);
+        if (!direct) {
+          var prepared = apiPrepareDownload({
+            taskPageId: downloadFields.taskPageId,
+            pageId: downloadFields.pageId,
+            accessToken: downloadFields.accessToken
+          });
+          direct = w20PreparedDownloadPostDirect_(prepared, downloadFields, cfg);
+        }
       } catch (_downloadAuthError) { direct = null; }
     }
     var downloadTemplate = HtmlService.createTemplateFromFile('Download');
@@ -1495,6 +1517,7 @@ function w20ClaimCreateReservationV2_(taskId, section, requestId, descriptor, id
       slot && slot.navigateUntil <= Date.now() ? 'Срок действия резерва истёк.' : 'Резерв файла больше не актуален.', false);
   }
   var preparedDrive = w19GetDriveMetadata_(slot.fileId);
+  var preparedDriveVerifiedAt = Date.now();
   if (!w20PreparedCreateFileV2_(preparedDrive, taskId, section, descriptor.reservationId, descriptor.clientHash,
     descriptor.generation, descriptor.navigateUntil, cfg.rootFolderId)) {
     throw new W19Error_('RESERVATION_FILE_INVALID', 'Резервный файл изменён или недоступен.', false);
@@ -1557,7 +1580,8 @@ function w20ClaimCreateReservationV2_(taskId, section, requestId, descriptor, id
   } finally {
     lock.releaseLock();
   }
-  return { claim: claim, taskMeta: createSlot.taskMeta, recovered: false };
+  return { claim: claim, taskMeta: createSlot.taskMeta,
+    preparedDrive: w20RecentlyVerifiedPreparedDrive_(preparedDrive, preparedDriveVerifiedAt, descriptor.preparedName), recovered: false };
 }
 
 function w20ReadClaimedReservation_(canonicalHash) {
@@ -1594,6 +1618,7 @@ function w20ClaimCreateReservation_(taskId, section, requestId, reservationId, i
     throw new W19Error_('RESERVATION_STALE', 'Резерв файла больше не актуален.', false);
   }
   var preparedDrive = w19GetDriveMetadata_(slot.fileId);
+  var preparedDriveVerifiedAt = Date.now();
   if (!w20PreparedCreateFile_(preparedDrive, taskId, section, reservationId, cfg.rootFolderId)) {
     throw new W19Error_('RESERVATION_FILE_INVALID', 'Резервный файл изменён или недоступен.', false);
   }
@@ -1651,7 +1676,8 @@ function w20ClaimCreateReservation_(taskId, section, requestId, reservationId, i
   } finally {
     lock.releaseLock();
   }
-  return { claim: claim, taskMeta: createSlot.taskMeta, recovered: false };
+  return { claim: claim, taskMeta: createSlot.taskMeta,
+    preparedDrive: w20RecentlyVerifiedPreparedDrive_(preparedDrive, preparedDriveVerifiedAt, slot.preparedName), recovered: false };
 }
 
 function w20ResolveCreateReservation_(taskId, section, requestId, suppliedReservationId, idem) {
@@ -1695,8 +1721,14 @@ function w20ResolveCreateReservation_(taskId, section, requestId, suppliedReserv
   return '';
 }
 
-function w20TransitionClaimedReservationFile_(claim, name, cfg) {
-  var current = w19GetDriveMetadata_(claim.fileId);
+function w20RecentlyVerifiedPreparedDrive_(drive, verifiedAt, preparedName) {
+  var age = Date.now() - Number(verifiedAt || 0);
+  var observedRename = drive && String(drive.name || '') !== String(preparedName || '');
+  return observedRename && isFinite(age) && age >= 0 && age <= 1000 ? drive : null;
+}
+
+function w20TransitionClaimedReservationFile_(claim, name, cfg, preparedDrive) {
+  var current = preparedDrive || w19GetDriveMetadata_(claim.fileId);
   var alreadyClaimed = w20ClaimedCreateFile_(current, claim);
   if (alreadyClaimed) return alreadyClaimed.file;
   var prepared = claim.schema === W20_CREATE_RESERVATION_V2_SCHEMA ?
@@ -1774,7 +1806,7 @@ function w20CreateGoogleFromReservation_(taskId, section, name, requestId, reser
       return { material: w20MaterialWithRuntimeMetadata_(existingMaterial, existingDrive), duplicate: true };
     }
   }
-  var driveFile = w20TransitionClaimedReservationFile_(claim, name, cfg);
+  var driveFile = w20TransitionClaimedReservationFile_(claim, name, cfg, bound.preparedDrive);
   if (!w20WriteCreateDriveReady_(idem, idempotencyState.attemptId, driveFile, section)) {
     throw new W19Error_('RESERVATION_LEDGER_STALE', 'Не удалось зафиксировать готовый файл.', true);
   }
@@ -2209,7 +2241,8 @@ function apiUpload(input) {
     var cfg = w19AuthorizedConfig_(input);
     w19AssertSchema_(cfg);
     var taskId = w20AssertAuthorizedTaskId_(input && input.taskPageId, cfg);
-    var maxUploadBytes = w19EffectiveUploadLimit_(cfg);
+    var maxUploadBytes = Math.floor(Math.min(Number(cfg.maxUploadBytes) || W19_NOTION_SINGLE_PART_MAX_BYTES,
+      W19_NOTION_SINGLE_PART_MAX_BYTES));
     var name = WidgetV19Core.cleanName(input && input.name, 'Файл');
     var mime = WidgetV19Core.cleanMime(input && input.mimeType);
     var base64 = String(input && input.dataBase64 || '').replace(/^data:[^;]+;base64,/, '').replace(/\s/g, '');
@@ -2281,7 +2314,6 @@ function apiUpload(input) {
         runtimeDriveMetadata = driveFile;
         if (position === undefined) position = w19NextPosition_(task.id, section, cfg);
         var openUrl = driveFile.webViewLink || WidgetV19Core.makeDriveOpenUrl(driveFile.id, detected.format);
-        var notionUpload = w19CreateAndSendNotionUpload_(bytes, driveFile.mimeType || mime, driveFile.name || name, cfg);
         var page = w19CreateNotionMaterial_(task, {
           name: driveFile.name || name,
           sourceUrl: openUrl,
@@ -2296,11 +2328,7 @@ function apiUpload(input) {
           size: driveFile.size ? Number(driveFile.size) : bytes.length,
           driveMd5: driveFile.md5Checksum || '',
           downloadName: driveFile.name || name,
-          attachments: [{
-            name: WidgetV19Core.cleanName(driveFile.name || name, 'Файл'),
-            type: 'file_upload',
-            file_upload: { id: notionUpload.id }
-          }],
+          attachments: [],
           position: position,
           idempotency: idem
         }, cfg);
@@ -2310,12 +2338,503 @@ function apiUpload(input) {
       });
     });
     if (outcome && outcome.material && outcome.material.id) {
+      if (outcome.material.widgetOwnedBinary && !outcome.material.hostedAttachment) {
+        w20TryEnqueueAttachmentJob_(taskId, outcome.material, runtimeDriveMetadata);
+      }
       outcome.material = w20MaterialWithRuntimeMetadata_(outcome.material, runtimeDriveMetadata);
       outcome.material = w20MaterialForClient_(outcome.material, taskId, cfg);
       if (pageForDownloadCache) w20CacheDownloadMaterials_(taskId, [pageForDownloadCache], cfg);
       w20RegistryUpsert_(taskId, outcome.material);
     }
     return outcome;
+  });
+}
+
+function w20AttachmentJobKey_(taskId, pageId) {
+  var task = WidgetV19Core.compactUuid(taskId);
+  var page = WidgetV19Core.compactUuid(pageId);
+  return task && page ? W20_ATTACHMENT_JOB_PREFIX + w19Hash_(task + '|' + page).slice(0, 48) : '';
+}
+
+function w20ParseAttachmentJob_(value) {
+  var source = value;
+  if (typeof value === 'string') {
+    try { source = JSON.parse(value); } catch (_parseError) { return null; }
+  }
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return null;
+  var expected = ['attempts', 'createdAt', 'fileId', 'folderId', 'idemHash', 'lastCode', 'leaseToken', 'leaseUntil',
+    'nextAt', 'notionUploadId', 'pageId', 'schema', 'sentMd5', 'sentSize', 'state', 'taskId', 'updatedAt'];
+  var keys = Object.keys(source).sort();
+  if (keys.length !== expected.length || keys.some(function (key, index) { return key !== expected[index]; })) return null;
+  var taskId = WidgetV19Core.normalizeUuid(source.taskId);
+  var pageId = WidgetV19Core.normalizeUuid(source.pageId);
+  var fileId = w20SafeDriveId_(source.fileId);
+  var folderId = w20SafeDriveId_(source.folderId);
+  var uploadId = source.notionUploadId ? WidgetV19Core.normalizeUuid(source.notionUploadId) : '';
+  var attempts = Number(source.attempts);
+  var createdAt = Number(source.createdAt);
+  var updatedAt = Number(source.updatedAt);
+  var nextAt = Number(source.nextAt);
+  var leaseUntil = Number(source.leaseUntil);
+  var leaseToken = String(source.leaseToken || '').toLowerCase();
+  var lastCode = String(source.lastCode || '');
+  var sentMd5 = String(source.sentMd5 || '').toLowerCase();
+  var sentSize = Number(source.sentSize);
+  if (source.schema !== W20_ATTACHMENT_JOB_SCHEMA || !taskId || !pageId || !fileId || !folderId ||
+      !/^[a-f0-9]{40}$/.test(String(source.idemHash || '')) ||
+      ['pending', 'error'].indexOf(String(source.state || '')) === -1 ||
+      !Number.isSafeInteger(attempts) || attempts < 0 || attempts > 1000 ||
+      !Number.isSafeInteger(createdAt) || createdAt <= 0 || !Number.isSafeInteger(updatedAt) || updatedAt <= 0 ||
+      !Number.isSafeInteger(nextAt) || nextAt < 0 || !Number.isSafeInteger(leaseUntil) || leaseUntil < 0 ||
+      (leaseToken && !w20CreateReservationId_(leaseToken)) || (source.notionUploadId && !uploadId) ||
+      (sentMd5 && !/^[a-f0-9]{32}$/.test(sentMd5)) || !Number.isSafeInteger(sentSize) || sentSize < 0 ||
+      !/^[A-Z0-9_]{0,80}$/.test(lastCode)) return null;
+  return {
+    schema: W20_ATTACHMENT_JOB_SCHEMA,
+    taskId: taskId,
+    pageId: pageId,
+    fileId: fileId,
+    folderId: folderId,
+    idemHash: String(source.idemHash),
+    notionUploadId: uploadId,
+    sentMd5: sentMd5,
+    sentSize: sentSize,
+    state: String(source.state),
+    attempts: attempts,
+    nextAt: nextAt,
+    leaseToken: leaseToken,
+    leaseUntil: leaseUntil,
+    createdAt: createdAt,
+    updatedAt: updatedAt,
+    lastCode: lastCode
+  };
+}
+
+function w20AttachmentJobMatches_(job, taskId, pageId, fileId, folderId, idemHash) {
+  return Boolean(job && job.taskId === WidgetV19Core.normalizeUuid(taskId) && job.pageId === WidgetV19Core.normalizeUuid(pageId) &&
+    job.fileId === w20SafeDriveId_(fileId) && job.folderId === w20SafeDriveId_(folderId) && job.idemHash === String(idemHash || ''));
+}
+
+function w20PruneAttachmentJobsUnlocked_(props, all, now) {
+  var removed = 0;
+  Object.keys(all || {}).forEach(function (key) {
+    if (key.indexOf(W20_ATTACHMENT_JOB_PREFIX) !== 0) return;
+    var job = w20ParseAttachmentJob_(all[key]);
+    if (!job || now - job.createdAt > W20_ATTACHMENT_JOB_TTL_MS) {
+      props.deleteProperty(key);
+      delete all[key];
+      removed += 1;
+    }
+  });
+  return removed;
+}
+
+function w20PruneAttachmentJobs_() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return 0;
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var all = props.getProperties();
+    return w20PruneAttachmentJobsUnlocked_(props, all, Date.now());
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function w20EnqueueAttachmentJob_(taskId, material, drive) {
+  var task = WidgetV19Core.normalizeUuid(taskId);
+  var page = WidgetV19Core.normalizeUuid(material && material.id);
+  var fileId = w20SafeDriveId_(material && material.googleFileId);
+  var folderId = w20SafeDriveId_(material && material.folderId);
+  var canonicalIdem = String(material && material.idempotency || '');
+  var idemHash = canonicalIdem ? w19Hash_(canonicalIdem).slice(0, 40) : '';
+  var key = w20AttachmentJobKey_(task, page);
+  if (!task || !page || !fileId || !folderId || !key || !/^[a-f0-9]{40}$/.test(idemHash) ||
+      !material.widgetOwnedBinary || material.provider !== 'Google Drive' || material.archived ||
+      ['deleting', 'deleted'].indexOf(String(material.syncStatus || '')) !== -1 ||
+      drive && w20SafeDriveId_(drive.id) !== fileId) {
+    throw new W19Error_('ATTACHMENT_JOB_INVALID', 'Не удалось поставить вложение в безопасную очередь.', false);
+  }
+  var now = Date.now();
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(100)) throw new W19Error_('BUSY', 'Очередь вложений занята. Повторите операцию.', true);
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var all = props.getProperties();
+    w20PruneAttachmentJobsUnlocked_(props, all, now);
+    var existing = w20ParseAttachmentJob_(all[key]);
+    if (existing) {
+      if (!w20AttachmentJobMatches_(existing, task, page, fileId, folderId, idemHash)) {
+        throw new W19Error_('ATTACHMENT_JOB_CONFLICT', 'Очередь уже привязана к другому файлу.', false);
+      }
+      return existing;
+    }
+    var count = Object.keys(all).filter(function (propertyKey) {
+      return propertyKey.indexOf(W20_ATTACHMENT_JOB_PREFIX) === 0;
+    }).length;
+    if (count >= W20_ATTACHMENT_JOB_MAX) {
+      throw new W19Error_('ATTACHMENT_QUEUE_FULL', 'Очередь вложений заполнена. Повторите позже.', true);
+    }
+    var job = {
+      schema: W20_ATTACHMENT_JOB_SCHEMA,
+      taskId: task,
+      pageId: page,
+      fileId: fileId,
+      folderId: folderId,
+      idemHash: idemHash,
+      notionUploadId: '',
+      sentMd5: '',
+      sentSize: 0,
+      state: 'pending',
+      attempts: 0,
+      nextAt: now,
+      leaseToken: '',
+      leaseUntil: 0,
+      createdAt: now,
+      updatedAt: now,
+      lastCode: ''
+    };
+    props.setProperty(key, JSON.stringify(job));
+    return job;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function w20TryEnqueueAttachmentJob_(taskId, material, drive) {
+  try { return w20EnqueueAttachmentJob_(taskId, material, drive); }
+  catch (queueError) {
+    w19Audit_('attachment_queue_deferred', {
+      code: String(queueError && queueError.code || 'QUEUE_UNAVAILABLE').replace(/[^A-Z0-9_]/gi, '').slice(0, 80)
+    });
+    return null;
+  }
+}
+
+function w20ReadAttachmentJob_(taskId, pageId) {
+  var key = w20AttachmentJobKey_(taskId, pageId);
+  return key ? w20ParseAttachmentJob_(PropertiesService.getScriptProperties().getProperty(key)) : null;
+}
+
+function w20ClaimAttachmentJob_(taskId, pageId) {
+  var key = w20AttachmentJobKey_(taskId, pageId);
+  if (!key) return null;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return null;
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var job = w20ParseAttachmentJob_(props.getProperty(key));
+    var now = Date.now();
+    if (!job || job.state !== 'pending' || job.nextAt > now || job.leaseUntil > now) return null;
+    job.leaseToken = String(Utilities.getUuid()).toLowerCase();
+    job.leaseUntil = now + W20_ATTACHMENT_JOB_LEASE_MS;
+    job.updatedAt = now;
+    props.setProperty(key, JSON.stringify(job));
+    return { key: key, job: job };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function w20WriteClaimedAttachmentJob_(claimed, update) {
+  if (!claimed || !claimed.key || !claimed.job || !w20CreateReservationId_(claimed.job.leaseToken)) return null;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return null;
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var current = w20ParseAttachmentJob_(props.getProperty(claimed.key));
+    if (!current || current.leaseToken !== claimed.job.leaseToken ||
+        !w20AttachmentJobMatches_(current, claimed.job.taskId, claimed.job.pageId, claimed.job.fileId,
+          claimed.job.folderId, claimed.job.idemHash)) return null;
+    Object.keys(update || {}).forEach(function (key) { current[key] = update[key]; });
+    current.updatedAt = Date.now();
+    var checked = w20ParseAttachmentJob_(current);
+    if (!checked) return null;
+    props.setProperty(claimed.key, JSON.stringify(checked));
+    claimed.job = checked;
+    return checked;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function w20CompleteAttachmentJob_(claimed) {
+  if (!claimed || !claimed.key || !claimed.job) return false;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return false;
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var current = w20ParseAttachmentJob_(props.getProperty(claimed.key));
+    if (!current || current.leaseToken !== claimed.job.leaseToken ||
+        !w20AttachmentJobMatches_(current, claimed.job.taskId, claimed.job.pageId, claimed.job.fileId,
+          claimed.job.folderId, claimed.job.idemHash)) return false;
+    props.deleteProperty(claimed.key);
+    return true;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function w20AttachmentRetryDelayMs_(attempts) {
+  var delays = [5000, 30000, 2 * 60 * 1000, 10 * 60 * 1000, 60 * 60 * 1000];
+  return delays[Math.min(Math.max(Number(attempts || 1) - 1, 0), delays.length - 1)];
+}
+
+function w20Md5Hex_(bytes) {
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, bytes).map(function (value) {
+    return ((Number(value) + 256) % 256).toString(16).padStart(2, '0');
+  }).join('');
+}
+
+function w20FailAttachmentJob_(claimed, error) {
+  var attempts = Number(claimed && claimed.job && claimed.job.attempts || 0) + 1;
+  var retryable = !(error && error.retryable === false) && claimed && claimed.job &&
+    Date.now() - Number(claimed.job.createdAt || 0) <= W20_ATTACHMENT_JOB_TTL_MS;
+  var code = String(error && error.code || 'UNEXPECTED').toUpperCase().replace(/[^A-Z0-9_]/g, '').slice(0, 80) || 'UNEXPECTED';
+  return w20WriteClaimedAttachmentJob_(claimed, {
+    state: retryable ? 'pending' : 'error',
+    attempts: attempts,
+    nextAt: retryable ? Date.now() + w20AttachmentRetryDelayMs_(attempts) : 0,
+    leaseToken: '',
+    leaseUntil: 0,
+    lastCode: code
+  });
+}
+
+function w20CancelAttachmentJob_(taskId, pageId) {
+  var key = w20AttachmentJobKey_(taskId, pageId);
+  if (!key) return false;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return false;
+  try {
+    PropertiesService.getScriptProperties().deleteProperty(key);
+    return true;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function w20AttachmentClaimIsCurrent_(claimed) {
+  if (!claimed || !claimed.key || !claimed.job || !w20CreateReservationId_(claimed.job.leaseToken)) return false;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return false;
+  try {
+    var current = w20ParseAttachmentJob_(PropertiesService.getScriptProperties().getProperty(claimed.key));
+    return Boolean(current && current.leaseToken === claimed.job.leaseToken && current.leaseUntil > Date.now() &&
+      w20AttachmentJobMatches_(current, claimed.job.taskId, claimed.job.pageId, claimed.job.fileId,
+        claimed.job.folderId, claimed.job.idemHash));
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function w20AttachmentPropertyFiles_(page) {
+  var property = page && page.properties && page.properties[W19_P.ATTACHMENTS];
+  return property && Array.isArray(property.files) ? property.files : [];
+}
+
+function w20AssertAttachmentJobPage_(job, cfg, allowArchived) {
+  var denied = cfg.deniedPageIds || {};
+  if (!job || job.taskId !== cfg.authorizedTaskPageId || denied[job.taskId] || denied[job.pageId]) {
+    throw new W19Error_('WRITE_BARRIER', 'Задание вложения не принадлежит разрешённой задаче.', false);
+  }
+  var page = w19AssertMaterialForTask_(job.pageId, job.taskId, cfg, allowArchived === true);
+  var material = w19MaterialFromPage_(page);
+  var idemHash = material.idempotency ? w19Hash_(material.idempotency).slice(0, 40) : '';
+  if (!w20AttachmentJobMatches_(job, job.taskId, material.id, material.googleFileId, material.folderId, idemHash) ||
+      material.provider !== 'Google Drive' || !material.widgetOwnedBinary || material.syncStatus === 'deleting' ||
+      material.syncStatus === 'deleted') {
+    throw new W19Error_('ATTACHMENT_JOB_CONFLICT', 'Задание вложения больше не совпадает со знанием.', false);
+  }
+  if (material.archived) throw new W19Error_('ATTACHMENT_ARCHIVED', 'Скрытое знание будет обработано после восстановления.', true);
+  return { page: page, material: material };
+}
+
+function w20FinalizeClaimedAttachmentJob_(claimed, cfg) {
+  var job = claimed.job;
+  var exact = w20AssertAttachmentJobPage_(job, cfg, true);
+  var files = w20AttachmentPropertyFiles_(exact.page);
+  var upload = job.notionUploadId ? w20GetNotionUpload_(job.notionUploadId, cfg, true) : null;
+  if (files.length) {
+    if (exact.material.hostedAttachment && job.notionUploadId &&
+        upload && upload.status === 'uploaded' && upload.expiry_time === null) {
+      if (!w20CompleteAttachmentJob_(claimed)) throw new W19Error_('BUSY', 'Завершение вложения ещё фиксируется.', true);
+      return { status: 'attached' };
+    }
+    throw new W19Error_('ATTACHMENT_CONFLICT', 'Вложения знания были изменены вручную; автоматическая копия не перезаписана.', false);
+  }
+  if (!upload && job.notionUploadId) {
+    if (!w20WriteClaimedAttachmentJob_(claimed, { notionUploadId: '', sentMd5: '', sentSize: 0 })) {
+      throw new W19Error_('BUSY', 'Очередь вложений изменилась.', true);
+    }
+    job = claimed.job;
+  }
+  var drive = w19AssertOwnedBinary_(exact.material, { id: job.taskId, name: 'Задача' }, cfg);
+  var markers = drive && drive.appProperties || {};
+  if (w20SafeDriveId_(drive.id) !== job.fileId || markers.widgetIdem !== job.idemHash ||
+      WidgetV19Core.compactUuid(markers.notionPageId) !== WidgetV19Core.compactUuid(job.pageId)) {
+    throw new W19Error_('ATTACHMENT_DRIVE_CONFLICT', 'Файл больше не привязан к этому знанию.', false);
+  }
+  var driveMd5 = String(drive.md5Checksum || '').toLowerCase();
+  var driveSize = Number(drive.size || 0);
+  if (!/^[a-f0-9]{32}$/.test(driveMd5) || !Number.isSafeInteger(driveSize) || driveSize < 0) {
+    throw new W19Error_('ATTACHMENT_DRIVE_FINGERPRINT', 'Не удалось подтвердить содержимое файла Google Drive.', true);
+  }
+  if (upload && (job.sentMd5 && (job.sentMd5 !== driveMd5 || job.sentSize !== driveSize) ||
+      upload.status === 'uploaded' && !job.sentMd5)) {
+    upload = null;
+    if (!w20WriteClaimedAttachmentJob_(claimed, { notionUploadId: '', sentMd5: '', sentSize: 0 })) {
+      throw new W19Error_('BUSY', 'Очередь вложений изменилась.', true);
+    }
+    job = claimed.job;
+  }
+  if (upload && ['expired', 'failed'].indexOf(upload.status) !== -1) {
+    upload = null;
+    if (!w20WriteClaimedAttachmentJob_(claimed, { notionUploadId: '', sentMd5: '', sentSize: 0 })) {
+      throw new W19Error_('BUSY', 'Очередь вложений изменилась.', true);
+    }
+    job = claimed.job;
+  }
+  if (!upload) {
+    upload = w20CreateNotionUpload_(drive.mimeType, drive.name, cfg);
+    if (!w20WriteClaimedAttachmentJob_(claimed, { notionUploadId: upload.id })) {
+      throw new W19Error_('BUSY', 'Не удалось сохранить продолжение загрузки.', true);
+    }
+    job = claimed.job;
+  }
+  if (upload.status === 'pending') {
+    var effectiveUploadLimit = w19EffectiveUploadLimit_(cfg);
+    if (driveSize > effectiveUploadLimit) {
+      throw new W19Error_('FILE_TOO_LARGE', 'Фоновая копия превышает лимит файлов Notion.', false);
+    }
+    var blob = w19DriveRetry_(function () { return DriveApp.getFileById(drive.id).getBlob(); });
+    var bytes = blob.getBytes();
+    if (bytes.length !== driveSize || bytes.length > effectiveUploadLimit || w20Md5Hex_(bytes) !== driveMd5) {
+      throw new W19Error_('ATTACHMENT_BYTES_MISMATCH', 'Содержимое файла изменилось во время фоновой загрузки.', true);
+    }
+    if (!job.sentMd5) {
+      if (!w20WriteClaimedAttachmentJob_(claimed, { sentMd5: driveMd5, sentSize: driveSize })) {
+        throw new W19Error_('BUSY', 'Не удалось сохранить отпечаток вложения.', true);
+      }
+      job = claimed.job;
+    } else if (job.sentMd5 !== driveMd5 || job.sentSize !== driveSize) {
+      throw new W19Error_('ATTACHMENT_BYTES_MISMATCH', 'Содержимое файла изменилось во время фоновой загрузки.', true);
+    }
+    var uploadBlob = Utilities.newBlob(bytes, WidgetV19Core.cleanMime(drive.mimeType), WidgetV19Core.cleanName(drive.name, 'Файл'));
+    upload = w20SendNotionUploadBlob_(upload.id, uploadBlob, cfg);
+  }
+  if (!upload || upload.status !== 'uploaded') {
+    throw new W19Error_('NOTION_UPLOAD_INCOMPLETE', 'Notion ещё не завершил загрузку вложения.', true);
+  }
+  if (!w20WriteClaimedAttachmentJob_(claimed, { leaseUntil: Date.now() + W20_ATTACHMENT_JOB_LEASE_MS })) {
+    throw new W19Error_('BUSY', 'Задание вложения было отменено.', true);
+  }
+  w19WithMutationLock_(function () {
+    var current = w20AssertAttachmentJobPage_(claimed.job, cfg, true);
+    var currentDrive = w19AssertOwnedBinary_(current.material, { id: claimed.job.taskId, name: 'Задача' }, cfg);
+    var currentMarkers = currentDrive && currentDrive.appProperties || {};
+    if (w20SafeDriveId_(currentDrive && currentDrive.id) !== claimed.job.fileId ||
+        String(currentDrive && currentDrive.md5Checksum || '').toLowerCase() !== claimed.job.sentMd5 ||
+        Number(currentDrive && currentDrive.size || 0) !== claimed.job.sentSize ||
+        currentMarkers.widgetIdem !== claimed.job.idemHash ||
+        WidgetV19Core.compactUuid(currentMarkers.notionPageId) !== WidgetV19Core.compactUuid(claimed.job.pageId)) {
+      throw new W19Error_('ATTACHMENT_DRIVE_CHANGED', 'Файл изменился во время фоновой загрузки; копия будет подготовлена заново.', true);
+    }
+    if (w20AttachmentPropertyFiles_(current.page).length) {
+      var currentUpload = w20GetNotionUpload_(claimed.job.notionUploadId, cfg, true);
+      if (current.material.hostedAttachment && currentUpload && currentUpload.status === 'uploaded' &&
+          currentUpload.expiry_time === null) return;
+      throw new W19Error_('ATTACHMENT_CONFLICT', 'Вложения знания были изменены вручную; автоматическая копия не перезаписана.', false);
+    }
+    if (!w20AttachmentClaimIsCurrent_(claimed)) throw new W19Error_('BUSY', 'Задание вложения было отменено.', true);
+    var props = {};
+    props[W19_P.ATTACHMENTS] = { files: [{
+      name: WidgetV19Core.cleanName(drive.name, 'Файл'),
+      type: 'file_upload',
+      file_upload: { id: claimed.job.notionUploadId }
+    }] };
+    w19UpdateNotionPage_(claimed.job.pageId, props, cfg);
+  });
+  if (!w20CompleteAttachmentJob_(claimed)) throw new W19Error_('BUSY', 'Завершение вложения ещё фиксируется.', true);
+  return { status: 'attached' };
+}
+
+function w20FinalizeAttachmentJob_(taskId, pageId, cfg) {
+  var claimed = w20ClaimAttachmentJob_(taskId, pageId);
+  if (!claimed) return { status: 'pending' };
+  try {
+    return w20FinalizeClaimedAttachmentJob_(claimed, cfg);
+  } catch (error) {
+    w20FailAttachmentJob_(claimed, error);
+    throw error;
+  }
+}
+
+function w20DueAttachmentJobs_(taskId, limit) {
+  var task = WidgetV19Core.normalizeUuid(taskId);
+  var now = Date.now();
+  var out = [];
+  var all = PropertiesService.getScriptProperties().getProperties();
+  Object.keys(all).filter(function (key) { return key.indexOf(W20_ATTACHMENT_JOB_PREFIX) === 0; }).sort().some(function (key) {
+    var job = w20ParseAttachmentJob_(all[key]);
+    if (job && job.taskId === task && job.state === 'pending' && job.nextAt <= now && job.leaseUntil <= now &&
+        now - job.createdAt <= W20_ATTACHMENT_JOB_TTL_MS) out.push(job);
+    return out.length >= Math.max(1, Math.min(Number(limit) || 1, W20_ATTACHMENT_JOB_DRAIN_LIMIT));
+  });
+  return out;
+}
+
+function w20DrainAttachmentJobs_(cfg, limit) {
+  w20PruneAttachmentJobs_();
+  var jobs = w20DueAttachmentJobs_(cfg.authorizedTaskPageId, limit);
+  var attached = 0;
+  var errors = 0;
+  jobs.forEach(function (job) {
+    try {
+      var result = w20FinalizeAttachmentJob_(job.taskId, job.pageId, cfg);
+      if (result && result.status === 'attached') attached += 1;
+    } catch (_error) { errors += 1; }
+  });
+  return { checked: jobs.length, attached: attached, errors: errors };
+}
+
+function w20EnsureAttachmentJobForPage_(taskId, pageId, cfg) {
+  var existing = w20ReadAttachmentJob_(taskId, pageId);
+  if (existing) return existing;
+  var page = w19AssertMaterialForTask_(pageId, taskId, cfg, true);
+  var material = w19MaterialFromPage_(page);
+  if (material.archived || material.syncStatus === 'deleting' || material.syncStatus === 'deleted' ||
+      !material.widgetOwnedBinary || material.provider !== 'Google Drive' || material.hostedAttachment) return null;
+  return w20EnqueueAttachmentJob_(taskId, material, null);
+}
+
+function w20SweepMissingAttachmentJobs_(pages, cfg, limit) {
+  var maximum = Math.max(1, Math.min(Number(limit) || 1, W20_ATTACHMENT_JOB_DRAIN_LIMIT));
+  var values = PropertiesService.getScriptProperties().getProperties();
+  var queued = 0;
+  (pages || []).some(function (page) {
+    var material = w19MaterialFromPage_(page);
+    if (!material || !material.id || material.archived || material.syncStatus === 'deleting' ||
+        material.syncStatus === 'deleted' || !material.widgetOwnedBinary || material.hostedAttachment) return false;
+    var key = w20AttachmentJobKey_(cfg.authorizedTaskPageId, material.id);
+    if (key && w20ParseAttachmentJob_(values[key])) return false;
+    if (w20TryEnqueueAttachmentJob_(cfg.authorizedTaskPageId, material, null)) queued += 1;
+    return queued >= maximum;
+  });
+  return { queued: queued };
+}
+
+function apiFinalizeUploadAttachment(input) {
+  return w19ApiResult_(function () {
+    var cfg = w19AuthorizedConfig_(input);
+    w19AssertSchema_(cfg);
+    var taskId = w20AssertAuthorizedTaskId_(input && input.taskPageId, cfg);
+    var pageId = WidgetV19Core.normalizeUuid(input && input.pageId);
+    if (!pageId || (cfg.deniedPageIds || {})[pageId]) throw new W19Error_('MATERIAL_ID_REQUIRED', 'Не указано точное знание.', false);
+    var job = w20EnsureAttachmentJobForPage_(taskId, pageId, cfg);
+    if (!job) return { status: 'complete' };
+    if (job.taskId !== taskId || job.pageId !== pageId) throw new W19Error_('ATTACHMENT_JOB_CONFLICT', 'Очередь не совпала со знанием.', false);
+    return w20FinalizeAttachmentJob_(taskId, pageId, cfg);
   });
 }
 
@@ -2439,6 +2958,7 @@ function apiDeletePhysical(input) {
       var material = w19MaterialFromPage_(page);
       w20InvalidateDownloadMaterialCache_(task.id, materialId);
       if (material.archived && material.syncStatus === 'deleted') {
+        if (!w20CancelAttachmentJob_(task.id, materialId)) throw new W19Error_('BUSY', 'Отмена фоновой копии ещё фиксируется.', true);
         w20SetDriveMaterialState_(material, task.id, 'deleted');
         w20RegistryRemove_(task.id, materialId);
         return { material: w20MaterialForClient_(material, task.id, cfg), deleted: true, duplicate: true };
@@ -2456,6 +2976,7 @@ function apiDeletePhysical(input) {
       if (!driveFile && !prepared) {
         throw new W19Error_('DELETE_NOT_OWNED_BY_WIDGET', 'Файл уже отсутствует, а подтверждённой операции удаления для него нет.', false);
       }
+      if (!w20CancelAttachmentJob_(task.id, materialId)) throw new W19Error_('BUSY', 'Отмена фоновой копии ещё фиксируется.', true);
       w20SetDriveMaterialState_(material, task.id, 'deleting');
       if (!prepared) {
         var preparing = {};
@@ -2744,10 +3265,24 @@ function adminPreflight() {
 function adminInstallSyncTrigger() {
   w19AdminConfig_();
   ScriptApp.getProjectTriggers().forEach(function (trigger) {
-    if (trigger.getHandlerFunction() === 'scheduledSync') ScriptApp.deleteTrigger(trigger);
+    if (['scheduledSync', 'scheduledFinalizeUploads'].indexOf(trigger.getHandlerFunction()) !== -1) ScriptApp.deleteTrigger(trigger);
   });
   ScriptApp.newTrigger('scheduledSync').timeBased().everyMinutes(5).create();
-  return { ok: true, handler: 'scheduledSync', cadence: 'approximately every five minutes' };
+  ScriptApp.newTrigger('scheduledFinalizeUploads').timeBased().everyMinutes(1).create();
+  return { ok: true, handlers: ['scheduledSync', 'scheduledFinalizeUploads'], cadence: 'approximately every one to five minutes' };
+}
+
+function scheduledFinalizeUploads(event) {
+  var cfg = w19Config_();
+  w19AssertScheduledInvocation_(cfg, event, 'scheduledFinalizeUploads');
+  w20PruneAttachmentJobs_();
+  if (!w20DueAttachmentJobs_(cfg.authorizedTaskPageId, 1).length) {
+    return { ok: true, checked: 0, attached: 0, errors: 0 };
+  }
+  w19AssertSchema_(cfg);
+  var result = w20DrainAttachmentJobs_(cfg, W20_ATTACHMENT_JOB_DRAIN_LIMIT);
+  w19Audit_('scheduled_attachment_finalize', result);
+  return { ok: true, checked: result.checked, attached: result.attached, errors: result.errors };
 }
 
 function scheduledSync(event) {
@@ -2759,6 +3294,7 @@ function scheduledSync(event) {
   var nextCursor = lease.cursor;
   try {
     w19AssertSchema_(cfg);
+    var registrySnapshotStartedAt = Date.now();
     var body = {
       page_size: 50,
       filter: {
@@ -2774,21 +3310,87 @@ function scheduledSync(event) {
     var result = w19NotionRequest_('post', '/v1/data_sources/' + cfg.dataSourceId + '/query', body, cfg);
     var ok = 0;
     var errors = 0;
+    var syncedPages = [];
     (result.results || []).forEach(function (page) {
       try {
         var syncedPage = w19SyncOnePage_(page, cfg);
-        w20RegistryUpsert_(cfg.authorizedTaskPageId, w19MaterialFromPage_(syncedPage));
+        syncedPages.push(syncedPage);
         ok += 1;
       }
       catch (err) { errors += 1; w19MarkSyncError_(page, err, cfg); }
     });
+    var fullSinglePageCycle = !lease.cursor && !result.has_more && errors === 0;
+    if (fullSinglePageCycle) {
+      var task = w19AssertTaskPage_(cfg.authorizedTaskPageId, cfg);
+      if (!task || task.id !== cfg.authorizedTaskPageId) {
+        throw new W19Error_('WRITE_BARRIER', 'Фоновая сверка вернула другую задачу.', false);
+      }
+      var folder = w19WithMutationLock_(function () { return w19EnsureTaskFolder_(task, cfg); });
+      var folderId = w20SafeDriveId_(folder && folder.id);
+      var folderProps = folder && folder.appProperties || {};
+      var folderMarkerOk = folderProps.widgetVersion === W20_DRIVE_MARKER || folderProps.widgetVersion === 'v19';
+      if (!folderId || folder.trashed || folder.mimeType !== 'application/vnd.google-apps.folder' || !folderMarkerOk ||
+          folderProps.taskPageId !== WidgetV19Core.compactUuid(task.id)) {
+        throw new W19Error_('TASK_FOLDER_INVALID', 'Папка фоновой сверки не прошла точную проверку.', false);
+      }
+      var snapshotCfg = { notionToken: cfg.notionToken, suppressDrivePollClaim: true };
+      var materials = syncedPages.map(function (page) {
+        return w20MaterialForClient_(w19MaterialFromPage_(page), task.id, snapshotCfg);
+      });
+      materials = w20PreserveRegistryRuntimeMetadata_(task.id, materials);
+      var folderEvidence = w20RegistryFolderEvidence_(materials);
+      if (!folderEvidence.consistent || (folderEvidence.folderId && folderEvidence.folderId !== folderId)) {
+        throw new W19Error_('TASK_FOLDER_MISMATCH', 'Карточки фоновой сверки ссылаются на другую папку.', false);
+      }
+      var replacement = w20RegistryReplaceTaskResult_(task.id, materials, registrySnapshotStartedAt);
+      if (!replacement.ok || !replacement.integrityOk) {
+        throw new W19Error_('BUSY', 'Не удалось сохранить фоновый снимок карточек.', true);
+      }
+      var validatedAt = new Date().toISOString();
+      var metaWrite = w20RegistryWriteTaskMetaResult_(task.id, {
+        taskName: task.name,
+        folderId: folderId,
+        rootFolderId: cfg.rootFolderId,
+        folderVerified: true,
+        folderValidatedAt: validatedAt,
+        taskValidatedAt: validatedAt,
+        snapshotValidatedAt: validatedAt,
+        snapshotActiveCount: replacement.activeCount,
+        context: w20TaskContextSnapshot_(task)
+      });
+      var proof = metaWrite.ok ? w20RegistryActionProof_(metaWrite.meta, metaWrite.registry, cfg.rootFolderId) : { ready: false };
+      if (!metaWrite.ok || !metaWrite.registry || !metaWrite.registry.ok || !metaWrite.registry.integrityOk ||
+          metaWrite.registry.activeCount !== replacement.activeCount || !proof.ready) {
+        throw new W19Error_('BUSY', 'Фоновый снимок не прошёл целостную проверку.', true);
+      }
+    } else {
+      syncedPages.forEach(function (page) {
+        w20RegistryUpsert_(cfg.authorizedTaskPageId, w19MaterialFromPage_(page));
+      });
+    }
     nextCursor = result.has_more && result.next_cursor ? result.next_cursor : null;
     commitCursor = true;
     w19PruneLedger_();
     try { w20CleanupExpiredCreateReservationsV2_(cfg.authorizedTaskPageId, cfg, W20_CREATE_RESERVATION_V2_CLEANUP_LIMIT); }
     catch (cleanupError) { w19Audit_('create_reservation_v2_cleanup_deferred', { code: String(cleanupError && cleanupError.code || 'DRIVE_ERROR') }); }
+    try {
+      var attachmentSweep = w20SweepMissingAttachmentJobs_(syncedPages, cfg, W20_ATTACHMENT_JOB_DRAIN_LIMIT);
+      w19Audit_('scheduled_attachment_sweep', attachmentSweep);
+    } catch (sweepError) {
+      w19Audit_('scheduled_attachment_sweep_deferred', {
+        code: String(sweepError && sweepError.code || 'QUEUE_UNAVAILABLE').replace(/[^A-Z0-9_]/gi, '').slice(0, 80)
+      });
+    }
+    try {
+      var attachmentDrain = w20DrainAttachmentJobs_(cfg, 1);
+      w19Audit_('scheduled_attachment_fallback', attachmentDrain);
+    } catch (attachmentError) {
+      w19Audit_('scheduled_attachment_fallback_deferred', {
+        code: String(attachmentError && attachmentError.code || 'QUEUE_UNAVAILABLE').replace(/[^A-Z0-9_]/gi, '').slice(0, 80)
+      });
+    }
     w19Audit_('scheduled_sync', { checked: (result.results || []).length, ok: ok, errors: errors });
-    return { ok: true, checked: (result.results || []).length, synced: ok, errors: errors };
+    return { ok: true, checked: (result.results || []).length, synced: ok, errors: errors, proofRefreshed: fullSinglePageCycle };
   } finally {
     w19FinishScheduledSync_(lease.token, commitCursor, nextCursor);
   }
@@ -2827,12 +3429,16 @@ function w19FinishScheduledSync_(token, commitCursor, nextCursor) {
   }
 }
 
-function w19AssertScheduledInvocation_(cfg, event) {
+function w19AssertScheduledInvocation_(cfg, event, handlerName) {
   var activeEmail = String(Session.getActiveUser().getEmail() || '').trim().toLowerCase();
   if (activeEmail && activeEmail === cfg.allowedEmail) return;
+  var expectedHandler = String(handlerName || 'scheduledSync');
+  if (['scheduledSync', 'scheduledFinalizeUploads'].indexOf(expectedHandler) === -1) {
+    throw new W19Error_('FORBIDDEN', 'Неизвестный системный обработчик.', false);
+  }
   var triggerUid = String(event && event.triggerUid || '');
   var validTrigger = Boolean(triggerUid && ScriptApp.getProjectTriggers().some(function (trigger) {
-    return trigger.getHandlerFunction() === 'scheduledSync' && String(trigger.getUniqueId()) === triggerUid;
+    return trigger.getHandlerFunction() === expectedHandler && String(trigger.getUniqueId()) === triggerUid;
   }));
   if (!validTrigger) throw new W19Error_('FORBIDDEN', 'Синхронизацию может запускать только системный триггер или владелец.', false);
 }
@@ -3113,14 +3719,19 @@ function w19SetArchiveState_(input, archived) {
         if (material.syncStatus === 'deleting') throw new W19Error_('BUSY', 'Материал сейчас удаляется. Повторите через несколько секунд.', true);
         if (material.syncStatus === 'deleted') {
           if (!archived) throw new W19Error_('MATERIAL_DELETED', 'Физически удалённый материал нельзя восстановить.', false);
+          if (!w20CancelAttachmentJob_(task.id, materialId)) throw new W19Error_('BUSY', 'Отмена фоновой копии ещё фиксируется.', true);
           w20SetDriveMaterialState_(material, task.id, 'deleted');
           w20RegistryRemove_(task.id, materialId);
           return { material: w20MaterialForClient_(material, task.id, cfg), archived: true, deleted: true, duplicate: true };
         }
         if (material.archived === archived) {
+          if (archived && !w20CancelAttachmentJob_(task.id, materialId)) {
+            throw new W19Error_('BUSY', 'Отмена фоновой копии ещё фиксируется.', true);
+          }
           w20SetDriveMaterialState_(material, task.id, archived ? 'archived' : 'active');
           if (archived) w20RegistryRemove_(task.id, materialId);
           else {
+            if (material.widgetOwnedBinary && !material.hostedAttachment) w20TryEnqueueAttachmentJob_(task.id, material, null);
             material = w20MaterialForClient_(material, task.id, cfg);
             if (!w20RegistryRestore_(task.id, material)) {
               throw new W19Error_('BUSY', 'Восстановление ещё фиксируется. Повторите через несколько секунд.', true);
@@ -3132,10 +3743,19 @@ function w19SetArchiveState_(input, archived) {
         props[W19_P.ARCHIVE] = { checkbox: archived };
         props[W19_P.SYNC_STATUS] = w19Select_(archived ? 'archived' : 'synced');
         if (!archived) props[W19_P.POSITION] = { number: w19NextPosition_(task.id, material.section, cfg) };
-        if (archived) w20SetDriveMaterialState_(material, task.id, 'archived');
+        if (archived) {
+          if (!w20CancelAttachmentJob_(task.id, materialId)) throw new W19Error_('BUSY', 'Отмена фоновой копии ещё фиксируется.', true);
+          w20SetDriveMaterialState_(material, task.id, 'archived');
+        }
         var updated = w19UpdateNotionPage_(page.id, props, cfg);
-        var updatedMaterial = w20MaterialForClient_(w19MaterialFromPage_(updated), task.id, cfg);
-        if (!archived) w20SetDriveMaterialState_(updatedMaterial, task.id, 'active');
+        var updatedRawMaterial = w19MaterialFromPage_(updated);
+        if (!archived) {
+          w20SetDriveMaterialState_(updatedRawMaterial, task.id, 'active');
+          if (updatedRawMaterial.widgetOwnedBinary && !updatedRawMaterial.hostedAttachment) {
+            w20TryEnqueueAttachmentJob_(task.id, updatedRawMaterial, null);
+          }
+        }
+        var updatedMaterial = w20MaterialForClient_(updatedRawMaterial, task.id, cfg);
         if (archived) w20RegistryRemove_(task.id, materialId);
         else if (!w20RegistryRestore_(task.id, updatedMaterial)) {
           throw new W19Error_('BUSY', 'Восстановление ещё фиксируется. Повторите через несколько секунд.', true);
@@ -3284,7 +3904,22 @@ function w19NotionRequest_(method, path, body, cfg, requestOptions) {
   throw new W19Error_('NOTION_UNAVAILABLE', 'Notion API временно недоступен.', true, { reason: String(lastError || '') });
 }
 
-function w19CreateAndSendNotionUpload_(bytes, mimeType, filename, cfg) {
+function w20NormalizeNotionUpload_(upload, expectedId) {
+  var uploadId = WidgetV19Core.normalizeUuid(upload && upload.id);
+  var expected = expectedId ? WidgetV19Core.normalizeUuid(expectedId) : uploadId;
+  var status = String(upload && upload.status || '');
+  if (!uploadId || uploadId !== expected || upload.object !== 'file_upload' ||
+      ['pending', 'uploaded', 'expired', 'failed'].indexOf(status) === -1) {
+    throw new W19Error_('NOTION_UPLOAD_INVALID', 'Notion вернул некорректное состояние загрузки.', true);
+  }
+  return {
+    id: uploadId,
+    status: status,
+    expiry_time: upload.expiry_time === null ? null : String(upload.expiry_time || '')
+  };
+}
+
+function w20CreateNotionUpload_(mimeType, filename, cfg) {
   var name = WidgetV19Core.cleanName(filename, 'Файл');
   var mime = WidgetV19Core.cleanMime(mimeType);
   var upload = w19NotionRequest_('post', '/v1/file_uploads', {
@@ -3292,18 +3927,35 @@ function w19CreateAndSendNotionUpload_(bytes, mimeType, filename, cfg) {
     filename: name,
     content_type: mime
   }, cfg);
-  var uploadId = WidgetV19Core.normalizeUuid(upload && upload.id);
-  if (!uploadId || upload.object !== 'file_upload' || upload.status !== 'pending') {
+  var normalized = w20NormalizeNotionUpload_(upload);
+  if (normalized.status !== 'pending') {
     throw new W19Error_('NOTION_UPLOAD_INVALID', 'Notion не подготовил загрузку файла.', true);
   }
-
-  var canonicalUrl = 'https://api.notion.com/v1/file_uploads/' + encodeURIComponent(uploadId) + '/send';
+  var canonicalUrl = 'https://api.notion.com/v1/file_uploads/' + encodeURIComponent(normalized.id) + '/send';
   var uploadUrl = String(upload.upload_url || canonicalUrl).trim();
   if (uploadUrl !== canonicalUrl && uploadUrl.indexOf(canonicalUrl + '?') !== 0) {
     throw new W19Error_('NOTION_UPLOAD_INVALID', 'Notion вернул небезопасный адрес загрузки.', false);
   }
+  return normalized;
+}
 
-  var blob = Utilities.newBlob(bytes, mime, name);
+function w20GetNotionUpload_(uploadId, cfg, allowMissing) {
+  var normalizedId = WidgetV19Core.normalizeUuid(uploadId);
+  if (!normalizedId) throw new W19Error_('NOTION_UPLOAD_INVALID', 'Не указан идентификатор загрузки Notion.', false);
+  try {
+    return w20NormalizeNotionUpload_(
+      w19NotionRequest_('get', '/v1/file_uploads/' + encodeURIComponent(normalizedId), null, cfg), normalizedId);
+  } catch (error) {
+    if (allowMissing === true && error && error.code === 'NOTION_NOT_FOUND') return null;
+    throw error;
+  }
+}
+
+function w20SendNotionUploadBlob_(uploadId, blob, cfg) {
+  var normalizedId = WidgetV19Core.normalizeUuid(uploadId);
+  if (!normalizedId || !blob) throw new W19Error_('NOTION_UPLOAD_INVALID', 'Не подготовлен файл для загрузки Notion.', false);
+  var uploadUrl = 'https://api.notion.com/v1/file_uploads/' + encodeURIComponent(normalizedId) + '/send';
+
   for (var attempt = 0; attempt < 3; attempt += 1) {
     var response;
     try {
@@ -3322,7 +3974,8 @@ function w19CreateAndSendNotionUpload_(bytes, mimeType, filename, cfg) {
       if (/service invoked too many times.*urlfetch|urlfetch.*too many times/i.test(uploadNetworkMessage)) {
         throw new W19Error_('GOOGLE_URLFETCH_QUOTA', 'Google временно исчерпал дневной лимит соединения с Notion. Загрузка автоматически станет доступна после обновления лимита.', true);
       }
-      if (w19NotionUploadIsComplete_(uploadId, cfg)) return { id: uploadId, name: name, mimeType: mime };
+      var uncertain = w20GetNotionUpload_(normalizedId, cfg, true);
+      if (uncertain && uncertain.status === 'uploaded') return uncertain;
       if (attempt < 2) {
         Utilities.sleep(500 * Math.pow(2, attempt) + Math.floor(Math.random() * 200));
         continue;
@@ -3336,14 +3989,13 @@ function w19CreateAndSendNotionUpload_(bytes, mimeType, filename, cfg) {
     try { parsed = JSON.parse(text); }
     catch (_parseErr) { parsed = {}; }
     if (status >= 200 && status < 300) {
-      var sentId = WidgetV19Core.normalizeUuid(parsed && parsed.id);
-      if (parsed.object === 'file_upload' && parsed.status === 'uploaded' && sentId === uploadId) {
-        return { id: uploadId, name: name, mimeType: mime };
-      }
+      var sent = w20NormalizeNotionUpload_(parsed, normalizedId);
+      if (sent.status === 'uploaded') return sent;
       throw new W19Error_('NOTION_UPLOAD_INCOMPLETE', 'Notion не завершил загрузку файла.', true);
     }
-    if (status !== 401 && status !== 403 && w19NotionUploadIsComplete_(uploadId, cfg)) {
-      return { id: uploadId, name: name, mimeType: mime };
+    var observed = status !== 401 && status !== 403 ? w20GetNotionUpload_(normalizedId, cfg, true) : null;
+    if (observed && observed.status === 'uploaded') {
+      return observed;
     }
     if ((status === 429 || status >= 500) && attempt < 2) {
       var retryHeader = Number(response.getHeaders()['Retry-After'] || 0);
@@ -3352,16 +4004,24 @@ function w19CreateAndSendNotionUpload_(bytes, mimeType, filename, cfg) {
       continue;
     }
     if (status === 401 || status === 403) throw new W19Error_('NOTION_FORBIDDEN', 'Notion connection не имеет права загружать файлы.', false);
+    if (status === 404) throw new W19Error_('NOTION_UPLOAD_EXPIRED', 'Срок подготовленной загрузки Notion истёк.', true);
     throw new W19Error_('NOTION_UPLOAD_FAILED', 'Notion отклонил загрузку файла (' + status + ').', status >= 500, { code: parsed.code || null });
   }
   throw new W19Error_('NOTION_UPLOAD_UNAVAILABLE', 'Notion временно не принял файл.', true);
 }
 
+function w19CreateAndSendNotionUpload_(bytes, mimeType, filename, cfg) {
+  var name = WidgetV19Core.cleanName(filename, 'Файл');
+  var mime = WidgetV19Core.cleanMime(mimeType);
+  var created = w20CreateNotionUpload_(mime, name, cfg);
+  var sent = w20SendNotionUploadBlob_(created.id, Utilities.newBlob(bytes, mime, name), cfg);
+  return { id: sent.id, name: name, mimeType: mime };
+}
+
 function w19NotionUploadIsComplete_(uploadId, cfg) {
   try {
-    var upload = w19NotionRequest_('get', '/v1/file_uploads/' + encodeURIComponent(uploadId), null, cfg);
-    return Boolean(upload && upload.object === 'file_upload' && upload.status === 'uploaded' &&
-      WidgetV19Core.normalizeUuid(upload.id) === WidgetV19Core.normalizeUuid(uploadId));
+    var upload = w20GetNotionUpload_(uploadId, cfg, false);
+    return Boolean(upload && upload.status === 'uploaded');
   } catch (_err) {
     return false;
   }
