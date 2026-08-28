@@ -150,6 +150,7 @@
 
   function renderSnapshotView(fingerprint) {
     if (!snapshotGrid) return false;
+    window.__notionWidgetSnapshotRuntimeOwned = true;
     const pendingRows = Array.from(optimisticCreateCards.values()).map((entry) => ({
       name: entry.preparedName,
       section: entry.section,
@@ -1726,11 +1727,13 @@
     if (!data || data.embedNonce !== embedNonce || !isGoogleScriptOrigin(event.origin)) return;
     if (data.type === 'notion-widget-v20-snapshot-ready') {
       if (!isWidgetDescendant(event.source)) return;
+      window.__notionWidgetLiveSnapshotSeen = true;
       acceptSnapshotMaterials(data.materials, !document.body.classList.contains('widget-action-ready'));
       return;
     }
     if (data.type === 'notion-widget-v20-bridge-ready') {
       if (!isWidgetDescendant(event.source) || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(data.instanceId || ''))) return;
+      window.__notionWidgetLiveSnapshotSeen = true;
       bridge = { source: event.source, origin: event.origin, instanceId: data.instanceId, authoritative: data.authoritative === true, actionReady: data.actionReady === true, folderUrl: allowedDriveFolderUrl(data.folderUrl), preparedCreates: data.authoritative === true && data.actionReady === true ? preparedCreateMap(data.preparedCreates) : {}, trustedUntil: String(data.trustedUntil || '') };
       geometryRequestId = 0;
       latestGeometryResponseId = 0;

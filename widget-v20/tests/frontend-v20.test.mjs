@@ -72,17 +72,18 @@ test('rename is optimistic before the RPC, waits for reorder, and reconciles or 
   function harness(orderSaveRunning=false,queuedOrder=null) {
     const createRequestId='dddddddd-dddd-4ddd-8ddd-dddddddddddd';
     const item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',name:'Старое имя',section:'Docs',provider:'Google Drive',openUrl:'https://docs.google.com/document/d/ExampleDocument123/edit',createRequestId};
-    const state={materials:[item],busy:new Set(),authoritative:true},optimisticMaterialMutations=new Map(),downloadGrants=new Map([[item.id,{}]]),downloadGrantRetryNotBefore=new Map([[item.id,1]]);
+    const state={materials:[item],busy:new Set(),bootstrapped:true,authoritative:true,snapshotTrusted:false,actionReady:true},optimisticMaterialMutations=new Map(),downloadGrants=new Map([[item.id,{}]]),downloadGrantRetryNotBefore=new Map([[item.id,1]]);
     const recentCompletedCreates=new Map([[createRequestId,item]]);
     const modalState={open:false};
     const fields={editModal:{classList:{contains:(name)=>name==='open'&&modalState.open}},editId:{value:item.id},editName:{value:'Новое имя',focus(){}},editSection:{value:'Slides'},editUrl:{value:item.openUrl},editSubmit:{disabled:false}};
     const events={closed:[],renders:0,restored:[],toasts:[],cleared:0,primed:[],opened:[],rpc:null};
     let resolveRpc,rejectRpc;
     const call=(method,payload)=>{events.rpc={method,payload};return new Promise((resolve,reject)=>{resolveRpc=resolve;rejectRpc=reject;});};
-    const handlers=new Function('state','optimisticMaterialMutations','recentCompletedCreates','$','stableIdempotency','modalReturnFocus','downloadGrants','downloadGrantRetryNotBefore','closeModal','render','restoreFocusTarget','toast','call','clearIdempotency','primeDownloadGrant','downloadPrimeGeneration','openEdit','taskPageId','SECTIONS','sectionFor','orderSaveRunning','queuedOrder','resumeDeferredDownloadPrime',`${source};return {saveEdit,archiveMaterial};`)(
+    const handlers=new Function('state','optimisticMaterialMutations','recentCompletedCreates','$','stableIdempotency','modalReturnFocus','downloadGrants','downloadGrantRetryNotBefore','closeModal','render','restoreFocusTarget','toast','call','clearIdempotency','primeDownloadGrant','downloadPrimeGeneration','openEdit','taskPageId','SECTIONS','sectionFor','orderSaveRunning','queuedOrder','resumeDeferredDownloadPrime','cachedMutationReady',`${source};return {saveEdit,archiveMaterial};`)(
       state,optimisticMaterialMutations,recentCompletedCreates,(id)=>fields[id],()=>({slot:'slot',value:'idem-key'}),new Map([['editModal',{materialMenuId:item.id}]]),downloadGrants,downloadGrantRetryNotBefore,
       (...args)=>events.closed.push(args),()=>{events.renders+=1;},(value)=>events.restored.push(value),(message)=>events.toasts.push(message),call,()=>{events.cleared+=1;},(id)=>events.primed.push(id),3,
-      (id,returnFocus)=>events.opened.push({id,returnFocus}),'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',['Drive','Docs','Sheets','Slides'],(value)=>value.section,orderSaveRunning,queuedOrder,()=>{}
+      (id,returnFocus)=>events.opened.push({id,returnFocus}),'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',['Drive','Docs','Sheets','Slides'],(value)=>value.section,orderSaveRunning,queuedOrder,()=>{},
+      ()=>Boolean(state.bootstrapped&&state.actionReady&&(state.authoritative||state.snapshotTrusted))
     );
     return {item,state,fields,events,handlers,optimisticMaterialMutations,recentCompletedCreates,modalState,resolveRpc,rejectRpc,getResolve:()=>resolveRpc,getReject:()=>rejectRpc};
   }
@@ -148,6 +149,11 @@ test('rename is optimistic before the RPC, waits for reorder, and reconciles or 
   assert.equal(stale.events.rpc,null,'a form opened before authority expires cannot submit a stale rename');
   assert.equal(stale.state.materials[0].name,'Старое имя');
   assert.equal(stale.events.toasts.at(-1),'Завершаю синхронизацию…');
+
+  const cached=harness();cached.state.authoritative=false;cached.state.snapshotTrusted=true;
+  const cachedSave=cached.handlers.saveEdit({preventDefault(){}});
+  assert.equal(cached.events.rpc.method,'apiUpdateMaterial','a fresh signed snapshot proof may use the backend-validated rename path immediately');
+  cached.getResolve()({material:{...cached.item,name:'Серверное имя',section:'Slides'}});await cachedSave;
 });
 
 test('hide removes immediately, waits for queued reorder, and restores its exact position on failure', async () => {
@@ -155,14 +161,15 @@ test('hide removes immediately, waits for queued reorder, and restores its exact
   function harness(orderSaveRunning=false,queuedOrder=null) {
     const createRequestId='dddddddd-dddd-4ddd-8ddd-dddddddddddd';
     const before={id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1',name:'До'},item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',name:'Скрыть',section:'Docs',createRequestId},after={id:'cccccccc-cccc-4ccc-8ccc-ccccccccccc3',name:'После'};
-    const state={materials:[before,item,after],busy:new Set(),authoritative:true},optimisticMaterialMutations=new Map(),events={closed:0,renders:0,toasts:[],cleared:0,restored:[],primed:[],rpc:null};
+    const state={materials:[before,item,after],busy:new Set(),bootstrapped:true,authoritative:true,snapshotTrusted:false,actionReady:true},optimisticMaterialMutations=new Map(),events={closed:0,renders:0,toasts:[],cleared:0,restored:[],primed:[],rpc:null};
     const recentCompletedCreates=new Map([[createRequestId,item]]);
     let resolveRpc,rejectRpc;
     const fields={editId:{value:item.id},editName:{value:item.name,focus(){}},editSection:{value:'Docs'},editUrl:{value:''},editSubmit:{disabled:false}};
-    const handlers=new Function('state','optimisticMaterialMutations','recentCompletedCreates','$','stableIdempotency','modalReturnFocus','downloadGrants','downloadGrantRetryNotBefore','closeModal','render','restoreFocusTarget','toast','call','clearIdempotency','primeDownloadGrant','downloadPrimeGeneration','openEdit','taskPageId','SECTIONS','sectionFor','orderSaveRunning','queuedOrder','resumeDeferredDownloadPrime',`${source};return {archiveMaterial};`)(
+    const handlers=new Function('state','optimisticMaterialMutations','recentCompletedCreates','$','stableIdempotency','modalReturnFocus','downloadGrants','downloadGrantRetryNotBefore','closeModal','render','restoreFocusTarget','toast','call','clearIdempotency','primeDownloadGrant','downloadPrimeGeneration','openEdit','taskPageId','SECTIONS','sectionFor','orderSaveRunning','queuedOrder','resumeDeferredDownloadPrime','cachedMutationReady',`${source};return {archiveMaterial};`)(
       state,optimisticMaterialMutations,recentCompletedCreates,(id)=>fields[id],()=>({slot:'slot',value:'idem-key'}),new Map(),new Map(),new Map(),()=>{events.closed+=1;},()=>{events.renders+=1;},(value)=>events.restored.push(value),(message)=>events.toasts.push(message),
       (method,payload)=>{events.rpc={method,payload};return new Promise((resolve,reject)=>{resolveRpc=resolve;rejectRpc=reject;});},()=>{events.cleared+=1;},(id)=>events.primed.push(id),4,()=>{},
-      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',['Drive','Docs','Sheets','Slides'],(value)=>value.section,orderSaveRunning,queuedOrder,()=>{}
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',['Drive','Docs','Sheets','Slides'],(value)=>value.section,orderSaveRunning,queuedOrder,()=>{},
+      ()=>Boolean(state.bootstrapped&&state.actionReady&&(state.authoritative||state.snapshotTrusted))
     );
     return {before,item,after,state,events,handlers,optimisticMaterialMutations,recentCompletedCreates,getResolve:()=>resolveRpc,getReject:()=>rejectRpc};
   }
@@ -302,8 +309,8 @@ test('menu open revalidates every native navigation gesture and fails closed on 
   const item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',provider:'Google Drive'};
   const state={authoritative:true,materials:[item]};
   let currentHref='',prevented=0,removed=0,primed=0,closed=0,lastToast='';
-  const handlers=new Function('state','openMaterialMenuId','materialMenuHref','canPrepareDownload','closeMaterialMenu','primeDownloadGrant','downloadPrimeGeneration','toast','recentDrivePageIds',`${source};return {open:handleMaterialMenuOpen,intent:handleMaterialMenuOpenIntent};`)(
-    state,item.id,()=>currentHref,()=>true,()=>{closed+=1;},()=>{primed+=1;},7,(message)=>{lastToast=message;},new Set()
+  const handlers=new Function('state','openMaterialMenuId','materialMenuHref','canPrepareDownload','closeMaterialMenu','primeDownloadGrant','downloadPrimeGeneration','toast','recentDrivePageIds','cachedMutationReady',`${source};return {open:handleMaterialMenuOpen,intent:handleMaterialMenuOpenIntent};`)(
+    state,item.id,()=>currentHref,()=>true,()=>{closed+=1;},()=>{primed+=1;},7,(message)=>{lastToast=message;},new Set(),()=>true
   );
   const staleTarget={removeAttribute(name){if(name==='href'){removed+=1;delete this.href;}}};
   handlers.intent({cancelable:true,preventDefault(){prevented+=1;},currentTarget:staleTarget});
@@ -350,7 +357,7 @@ test('primary cards create Google files and their pencils upload into the matchi
   assert.doesNotMatch(primaryMarkup, /chevronSvg|material-menu-trigger/);
   assert.match(render, /primary\.classList\.toggle\('busy',state\.busy\.has\(`create:\$\{section\}`\)\)/);
   assert.match(render, /primary\.setAttribute\('aria-disabled',String\(!actionReady\)\)/);
-  assert.match(render, /const actionReady=state\.actionReady,mutationReady=state\.authoritative&&actionReady/);
+  assert.match(render, /const actionReady=state\.actionReady,mutationReady=cachedMutationReady\(\)/);
   assert.match(render, /uploadButton\.disabled=!mutationReady/);
   assert.match(render, /add\.disabled=!mutationReady\|\|state\.busy\.has/);
   assert.doesNotMatch(render, /classList\.toggle\('busy'[^\n]*!actionReady/);
@@ -966,7 +973,7 @@ test('Apps Script courier uses a canonical prepared Drive URL without a second R
   const accessToken='t'.repeat(64),downloadTicket='d'.repeat(64);
   const driveUrl='https://drive.google.com/uc?export=download&authuser=owner%40example.com&id=DriveBinaryFile123';
 
-  async function run(preparedData,downloadData=null){
+  async function run(preparedData,downloadData=null,precomputed=null){
     const calls=[];
     let settle;
     const completed=new Promise((resolve)=>{settle=resolve;});
@@ -980,7 +987,7 @@ test('Apps Script courier uses a canonical prepared Drive URL without a second R
     const nodes={
       status:{textContent:''},
       runtimeParams:{dataset:{params:JSON.stringify({task,pageId,accessToken,downloadTicket})}},
-      precomputedResult:{dataset:{result:'null'}}
+      precomputedResult:{dataset:{result:JSON.stringify(precomputed)}}
     };
     const top={postMessage(payload){settle(payload);},close(){}};
     const context={
@@ -999,6 +1006,17 @@ test('Apps Script courier uses a canonical prepared Drive URL without a second R
     const payload=await Promise.race([completed,new Promise((_,reject)=>setTimeout(()=>reject(new Error('download runner timed out')),500))]);
     return {calls,payload,status:nodes.status.textContent};
   }
+
+  const serverExpiresAt=new Date(Date.now()+120_000).toISOString();
+  const serverPrecomputed=await run(null,null,{
+    mode:'direct',url:driveUrl,name:'report.xlsx',mimeType:'application/pdf',size:123,
+    expiresAt:serverExpiresAt,downloadTicket
+  });
+  assert.deepEqual(serverPrecomputed.calls,[],'a cold POST server result starts without google.script.run');
+  assert.equal(serverPrecomputed.payload.status,'direct');
+  assert.equal(serverPrecomputed.payload.downloadTicket,downloadTicket);
+  assert.equal(serverPrecomputed.payload.url,driveUrl);
+  assert.equal(serverPrecomputed.payload.name,'report.xlsx');
 
   const expiresAt=new Date(Date.now()+50_000).toISOString();
   const valid=await run({
@@ -1220,17 +1238,24 @@ test('live authority and a fresh signed snapshot proof unlock only their intende
   assert.match(frontend,/state\.actionReady=Boolean\(runtimeLocationResolved&&state\.snapshotTrusted\)/);
   assert.doesNotMatch(frontend,/state\.actionReady=state\.authoritative\|\|/);
   assert.doesNotMatch(frontend,/const actionReady=state\.actionReady\|\|state\.authoritative/);
+  const mutationSource=frontend.slice(frontend.indexOf('function cachedMutationReady'),frontend.indexOf('function render()'));
+  const mutationFactory=new Function('state','runtimeLocationResolved',`${mutationSource};return cachedMutationReady;`);
+  assert.equal(mutationFactory({bootstrapped:true,actionReady:true,authoritative:false,snapshotTrusted:true},true)(),true,'fresh signed registry proof unlocks backend-validated mutations');
+  assert.equal(mutationFactory({bootstrapped:true,actionReady:true,authoritative:false,snapshotTrusted:false},true)(),false,'cached data without a fresh proof remains read-only');
+  assert.equal(mutationFactory({bootstrapped:true,actionReady:false,authoritative:true,snapshotTrusted:false},true)(),false,'live authority without an action proof remains fail-closed');
+  assert.equal(mutationFactory({bootstrapped:true,actionReady:true,authoritative:true,snapshotTrusted:true},false)(),false,'unresolved runtime credentials cannot mutate');
   for (const gate of [
-    /function openLinkModal[\s\S]*if\(!state\.authoritative\|\|!state\.actionReady\)/,
-    /async function addLink[\s\S]*if\(!state\.authoritative\|\|!state\.actionReady\)/,
-    /function chooseFiles[\s\S]*if\(!state\.authoritative\|\|!state\.actionReady\)/,
-    /async function uploadFiles[\s\S]*if\(!state\.authoritative\|\|!state\.actionReady\)/,
-    /function openEdit[\s\S]*if\(!state\.authoritative\)/
+    /function openLinkModal[\s\S]*if\(!cachedMutationReady\(\)\)/,
+    /async function addLink[\s\S]*if\(!cachedMutationReady\(\)\)/,
+    /function chooseFiles[\s\S]*if\(!cachedMutationReady\(\)\)/,
+    /async function uploadFiles[\s\S]*if\(!cachedMutationReady\(\)\)/,
+    /function openEdit[\s\S]*if\(!cachedMutationReady\(\)\)/
   ]) assert.match(frontend,gate);
   const saveEditSource=frontend.slice(frontend.indexOf('async function saveEdit'),frontend.indexOf('function currentItem'));
   const archiveSource=frontend.slice(frontend.indexOf('async function archiveMaterial'),frontend.indexOf('function upsert'));
-  assert.match(saveEditSource,/if\(!state\.authoritative\)\{toast\('Завершаю синхронизацию…'\);return;\}/);
-  assert.match(archiveSource,/if\(!state\.authoritative\)\{toast\('Завершаю синхронизацию…'\);return;\}/);
+  assert.match(saveEditSource,/if\(!cachedMutationReady\(\)\)\{toast\('Завершаю синхронизацию…'\);return;\}/);
+  assert.match(archiveSource,/if\(!cachedMutationReady\(\)\)\{toast\('Завершаю синхронизацию…'\);return;\}/);
+  assert.match(frontend,/function handleDragStart\(event\)\{if\(!state\.authoritative\|\|optimisticMaterialMutations\.size\)/,'cached proof never unlocks reorder');
 
   const proofSource=frontend.slice(frontend.indexOf('function actionProofIsFresh'),frontend.indexOf('function scheduleActionProofRetry'));
   const proofs=new Function(`${proofSource};return {live:actionProofIsFresh,snapshot:bootstrapSnapshotIsTrusted};`)();
