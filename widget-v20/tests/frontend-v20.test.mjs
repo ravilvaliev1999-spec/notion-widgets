@@ -578,8 +578,11 @@ test('the live bridge exposes only exact encrypted-navigation material for real 
     {name:'Отчёт за август',section:'Docs',format:'Google Docs',position:1,openUrl:native.openUrl},
     {name:'Архив.zip',section:'Drive',format:'ZIP',position:2,directDownloadUrl:direct,directDownloadExpiresAt:expiresAt}
   ]);
+  const canonicalNativeUrl=native.openUrl;
   native.openUrl+='?usp=sharing';
-  assert.equal(helpers.nativeGoogleNavigationUrl(native),'','non-canonical Google URLs fail closed');
+  assert.equal(helpers.nativeGoogleNavigationUrl(native),canonicalNativeUrl,'a single benign Drive usp marker is stripped before persistence');
+  native.openUrl+='&unexpected=1';
+  assert.equal(helpers.nativeGoogleNavigationUrl(native),'','other Google URL parameters fail closed');
   optimisticMaterialMutations.set(native.id,{kind:'edit'});
   assert.deepEqual(helpers.navigationSnapshotMaterials(),[],'optimistic mutations are never persisted as confirmed navigation');
   assert.match(frontend,/navigationMaterials:navigationSnapshotMaterials\(\)/);

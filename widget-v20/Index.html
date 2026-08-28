@@ -1442,9 +1442,11 @@
     if(!segment||format!==expectedFormat||!raw||canPrepareDownload(item))return '';
     try {
       const url=new URL(raw);
-      if(url.protocol!=='https:'||url.hostname!=='docs.google.com'||url.port||url.username||url.password||url.search||url.hash||url.href!==raw||
+      const searchKeys=Array.from(url.searchParams.keys()),usp=String(url.searchParams.get('usp')||'');
+      if(url.protocol!=='https:'||url.hostname!=='docs.google.com'||url.port||url.username||url.password||url.hash||url.href!==raw||
+        (searchKeys.length&&(searchKeys.length!==1||searchKeys[0]!=='usp'||!/^[A-Za-z0-9_-]{1,32}$/.test(usp)))||
         !new RegExp(`^/${segment}/d/[A-Za-z0-9_-]{10,200}/edit$`).test(url.pathname))return '';
-      return raw;
+      return `${url.origin}${url.pathname}`;
     } catch (_error) { return ''; }
   }
 
