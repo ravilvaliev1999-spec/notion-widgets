@@ -28,8 +28,9 @@ var W20_CREATE_RESERVATION_V2_SCHEMA = 2;
 var W20_CREATE_RESERVATION_V2_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 var W20_CREATE_RESERVATION_V2_CLEANUP_LIMIT = 6;
 var W20_CREATE_RESERVATION_V2_CLEANUP_LEASE_MS = 2 * 60 * 1000;
-var W20_CREATE_RESERVATION_V2_MAX_CLIENTS = 3;
+var W20_CREATE_RESERVATION_V2_MAX_CLIENTS = 4;
 var W20_CREATE_RESERVATION_V2_PROOF_DOMAIN = 'notion-widget-create-reservation-v2';
+var W20_NAVIGATION_BINDING_DOMAIN = 'notion-widget-navigation-binding-v1';
 var W19_IDEMPOTENCY_PENDING_TTL_MS = 7 * 60 * 1000;
 var W19_NOTION_RATE_CACHE_KEY = 'w20:notion:last-request-at';
 var W19_NOTION_RATE_INTERVAL_MS = 350;
@@ -1026,7 +1027,7 @@ function w20EnsureCreateClientV2_(taskId, clientId, cfg) {
       return entry.key !== key && Number(entry.value.expiresAt || 0) > now;
     });
     if (active.length >= W20_CREATE_RESERVATION_V2_MAX_CLIENTS) {
-      throw new W19Error_('CREATE_CLIENT_LIMIT', 'В этой задаче уже подготовлены файлы для трёх браузеров.', false);
+      throw new W19Error_('CREATE_CLIENT_LIMIT', 'В этой задаче достигнут безопасный лимит подготовленных браузеров.', false);
     }
     if (props.getProperty(key) && !existing) throw new W19Error_('CREATE_CLIENT_STATE_INVALID', 'Состояние браузера повреждено.', false);
     record = {
@@ -2786,8 +2787,6 @@ function scheduledSync(event) {
     w19PruneLedger_();
     try { w20CleanupExpiredCreateReservationsV2_(cfg.authorizedTaskPageId, cfg, W20_CREATE_RESERVATION_V2_CLEANUP_LIMIT); }
     catch (cleanupError) { w19Audit_('create_reservation_v2_cleanup_deferred', { code: String(cleanupError && cleanupError.code || 'DRIVE_ERROR') }); }
-    try { w20WarmCreatePool_(cfg.authorizedTaskPageId, cfg); }
-    catch (warmError) { w19Audit_('create_reservation_background_deferred', { code: String(warmError && warmError.code || 'DRIVE_ERROR') }); }
     w19Audit_('scheduled_sync', { checked: (result.results || []).length, ok: ok, errors: errors });
     return { ok: true, checked: (result.results || []).length, synced: ok, errors: errors };
   } finally {
@@ -3014,10 +3013,38 @@ function w20PreserveRegistryRuntimeMetadata_(taskId, materials) {
   });
 }
 
+function w20NavigationBinding_(material, taskId, cfg) {
+  var task = WidgetV19Core.normalizeUuid(taskId);
+  var page = WidgetV19Core.normalizeUuid(material && material.id);
+  var secret = String(cfg && cfg.notionToken || '');
+  if (!task || !page || !secret) return '';
+  var fileId = w20SafeDriveId_(material && material.googleFileId) || '';
+  var openUrl = WidgetV19Core.normalizeExternalUrl(material && material.openUrl || '') || '';
+  var normalizedUrl = WidgetV19Core.normalizeExternalUrl(material && material.normalizedUrl || '') || '';
+  var updatedAt = String(material && material.updatedAt || '').trim().slice(0, 100);
+  var payload = [
+    W20_NAVIGATION_BINDING_DOMAIN,
+    WidgetV19Core.compactUuid(task),
+    WidgetV19Core.compactUuid(page),
+    fileId,
+    openUrl,
+    normalizedUrl,
+    updatedAt,
+    String(material && material.section || ''),
+    String(material && material.format || '')
+  ].join('\u0000');
+  try {
+    return Utilities.computeHmacSha256Signature(payload, secret).map(function (byte) {
+      return (byte & 255).toString(16).padStart(2, '0');
+    }).join('');
+  } catch (_error) { return ''; }
+}
+
 function w20MaterialForClient_(material, taskId, cfg) {
   var out = {};
   Object.keys(material || {}).forEach(function (key) { out[key] = material[key]; });
   delete out.registryStoredAt;
+  delete out.navigationBinding;
   var canonicalIdempotency = String(out.idempotency || '');
   delete out.idempotency;
   var eligible = out.provider === 'Google Drive' && w20SafeDriveId_(out.googleFileId) &&
@@ -3031,7 +3058,9 @@ function w20MaterialForClient_(material, taskId, cfg) {
       out.createRequestId = parts[2].toLowerCase();
     }
   }
-  if (eligible) out.drivePollClaim = w20IssueDrivePollClaim_(taskId, out.id, out.googleFileId, out, cfg);
+  if (eligible && !(cfg && cfg.suppressDrivePollClaim === true)) out.drivePollClaim = w20IssueDrivePollClaim_(taskId, out.id, out.googleFileId, out, cfg);
+  var navigationBinding = w20NavigationBinding_(out, taskId, cfg);
+  if (navigationBinding) out.navigationBinding = navigationBinding;
   return out;
 }
 

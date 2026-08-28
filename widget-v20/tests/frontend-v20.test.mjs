@@ -79,10 +79,10 @@ test('rename is optimistic before the RPC, waits for reorder, and reconciles or 
     const events={closed:[],renders:0,restored:[],toasts:[],cleared:0,primed:[],opened:[],rpc:null};
     let resolveRpc,rejectRpc;
     const call=(method,payload)=>{events.rpc={method,payload};return new Promise((resolve,reject)=>{resolveRpc=resolve;rejectRpc=reject;});};
-    const handlers=new Function('state','optimisticMaterialMutations','recentCompletedCreates','$','stableIdempotency','modalReturnFocus','downloadGrants','downloadGrantRetryNotBefore','closeModal','render','restoreFocusTarget','toast','call','clearIdempotency','primeDownloadGrant','downloadPrimeGeneration','openEdit','taskPageId','SECTIONS','sectionFor','orderSaveRunning','queuedOrder',`${source};return {saveEdit,archiveMaterial};`)(
+    const handlers=new Function('state','optimisticMaterialMutations','recentCompletedCreates','$','stableIdempotency','modalReturnFocus','downloadGrants','downloadGrantRetryNotBefore','closeModal','render','restoreFocusTarget','toast','call','clearIdempotency','primeDownloadGrant','downloadPrimeGeneration','openEdit','taskPageId','SECTIONS','sectionFor','orderSaveRunning','queuedOrder','resumeDeferredDownloadPrime',`${source};return {saveEdit,archiveMaterial};`)(
       state,optimisticMaterialMutations,recentCompletedCreates,(id)=>fields[id],()=>({slot:'slot',value:'idem-key'}),new Map([['editModal',{materialMenuId:item.id}]]),downloadGrants,downloadGrantRetryNotBefore,
       (...args)=>events.closed.push(args),()=>{events.renders+=1;},(value)=>events.restored.push(value),(message)=>events.toasts.push(message),call,()=>{events.cleared+=1;},(id)=>events.primed.push(id),3,
-      (id,returnFocus)=>events.opened.push({id,returnFocus}),'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',['Drive','Docs','Sheets','Slides'],(value)=>value.section,orderSaveRunning,queuedOrder
+      (id,returnFocus)=>events.opened.push({id,returnFocus}),'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',['Drive','Docs','Sheets','Slides'],(value)=>value.section,orderSaveRunning,queuedOrder,()=>{}
     );
     return {item,state,fields,events,handlers,optimisticMaterialMutations,recentCompletedCreates,modalState,resolveRpc,rejectRpc,getResolve:()=>resolveRpc,getReject:()=>rejectRpc};
   }
@@ -159,10 +159,10 @@ test('hide removes immediately, waits for queued reorder, and restores its exact
     const recentCompletedCreates=new Map([[createRequestId,item]]);
     let resolveRpc,rejectRpc;
     const fields={editId:{value:item.id},editName:{value:item.name,focus(){}},editSection:{value:'Docs'},editUrl:{value:''},editSubmit:{disabled:false}};
-    const handlers=new Function('state','optimisticMaterialMutations','recentCompletedCreates','$','stableIdempotency','modalReturnFocus','downloadGrants','downloadGrantRetryNotBefore','closeModal','render','restoreFocusTarget','toast','call','clearIdempotency','primeDownloadGrant','downloadPrimeGeneration','openEdit','taskPageId','SECTIONS','sectionFor','orderSaveRunning','queuedOrder',`${source};return {archiveMaterial};`)(
+    const handlers=new Function('state','optimisticMaterialMutations','recentCompletedCreates','$','stableIdempotency','modalReturnFocus','downloadGrants','downloadGrantRetryNotBefore','closeModal','render','restoreFocusTarget','toast','call','clearIdempotency','primeDownloadGrant','downloadPrimeGeneration','openEdit','taskPageId','SECTIONS','sectionFor','orderSaveRunning','queuedOrder','resumeDeferredDownloadPrime',`${source};return {archiveMaterial};`)(
       state,optimisticMaterialMutations,recentCompletedCreates,(id)=>fields[id],()=>({slot:'slot',value:'idem-key'}),new Map(),new Map(),new Map(),()=>{events.closed+=1;},()=>{events.renders+=1;},(value)=>events.restored.push(value),(message)=>events.toasts.push(message),
       (method,payload)=>{events.rpc={method,payload};return new Promise((resolve,reject)=>{resolveRpc=resolve;rejectRpc=reject;});},()=>{events.cleared+=1;},(id)=>events.primed.push(id),4,()=>{},
-      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',['Drive','Docs','Sheets','Slides'],(value)=>value.section,orderSaveRunning,queuedOrder
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',['Drive','Docs','Sheets','Slides'],(value)=>value.section,orderSaveRunning,queuedOrder,()=>{}
     );
     return {before,item,after,state,events,handlers,optimisticMaterialMutations,recentCompletedCreates,getResolve:()=>resolveRpc,getReject:()=>rejectRpc};
   }
@@ -221,7 +221,7 @@ test('upsert keeps active optimistic overlays while refreshing the rollback base
   const source=frontend.slice(frontend.indexOf('function materialMutationBusyKey'),frontend.indexOf('function captureOrder'));
   const original={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',name:'Исходное имя',section:'Docs',updatedAt:'old'};
   const state={materials:[original],busy:new Set()},optimisticMaterialMutations=new Map();
-  const handlers=new Function('state','optimisticMaterialMutations','orderSaveRunning','queuedOrder','toast',`${source};return {beginOptimisticMaterialMutation,finishOptimisticMaterialMutation,rollbackOptimisticMaterialMutation,upsert};`)(state,optimisticMaterialMutations,false,null,()=>{});
+  const handlers=new Function('state','optimisticMaterialMutations','orderSaveRunning','queuedOrder','toast','resumeDeferredDownloadPrime',`${source};return {beginOptimisticMaterialMutation,finishOptimisticMaterialMutation,rollbackOptimisticMaterialMutation,upsert};`)(state,optimisticMaterialMutations,false,null,()=>{},()=>{});
 
   const edit=handlers.beginOptimisticMaterialMutation(original,'edit',{name:'Локальное имя',section:'Slides'});
   const fresh={...original,name:'Серверное имя',updatedAt:'fresh',openUrl:'https://docs.google.com/document/d/Fresh/edit'};
@@ -565,19 +565,22 @@ test('a short-lived server-prepared Drive URL bypasses the courier only for the 
 
 test('the live bridge exposes only exact encrypted-navigation material for real saved cards', () => {
   const source=frontend.slice(frontend.indexOf('function presentationSnapshotSourceMaterials'),frontend.indexOf('function announceEmbedSnapshot'));
-  const native={id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',name:'  Отчёт   за август  ',section:'Docs',format:'Google Docs',position:1,openUrl:'https://docs.google.com/document/d/ExampleDocument123/edit',syncStatus:'synced'};
-  const binary={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',name:'Архив.zip',section:'Drive',format:'ZIP',position:2,canDownload:true,widgetOwned:true,syncStatus:'synced'};
+  const nativeBinding='a'.repeat(64),binaryBinding='b'.repeat(64);
+  const native={id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',name:'  Отчёт   за август  ',section:'Docs',format:'Google Docs',position:1,openUrl:'https://docs.google.com/document/d/ExampleDocument123/edit',syncStatus:'synced',navigationBinding:nativeBinding};
+  const binary={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',name:'Архив.zip',section:'Drive',format:'ZIP',position:2,canDownload:true,widgetOwned:true,syncStatus:'synced',navigationBinding:binaryBinding};
   const disguised={id:'cccccccc-cccc-4ccc-8ccc-cccccccccccc',name:'Не Google',section:'Docs',format:'Word',position:3,openUrl:'https://docs.google.com/document/d/AnotherDocument123/edit',syncStatus:'synced'};
   const state={materials:[native,binary,disguised]},optimisticMaterialMutations=new Map();
   const direct='https://drive.google.com/uc?export=download&authuser=owner%40example.com&id=DRIVEFILE123';
   const expiresAt=new Date(Date.now()+30000).toISOString(),downloadGrants=new Map([[binary.id,{directDownloadExpiresAt:expiresAt}]]);
   const build=new Function('state','SECTIONS','canPrepareDownload','URL','optimisticMaterialMutations','freshDirectDownloadUrl','downloadGrants','normalizeUuid',`${source};return {presentationSnapshotMaterials,navigationSnapshotMaterials,nativeGoogleNavigationUrl};`);
   const helpers=build(state,['Drive','Docs','Sheets','Slides'],(item)=>Boolean(item&&item.canDownload&&item.widgetOwned),URL,optimisticMaterialMutations,(item)=>item===binary?direct:'',downloadGrants,(value)=>String(value||'').toLowerCase());
-  assert.deepEqual(helpers.presentationSnapshotMaterials()[0],{name:'Отчёт за август',section:'Docs',format:'Google Docs',position:1});
+  assert.deepEqual(helpers.presentationSnapshotMaterials()[0],{name:'Отчёт за август',section:'Docs',format:'Google Docs',position:1,navigationBinding:nativeBinding});
   assert.deepEqual(helpers.navigationSnapshotMaterials(),[
-    {name:'Отчёт за август',section:'Docs',format:'Google Docs',position:1,openUrl:native.openUrl},
-    {name:'Архив.zip',section:'Drive',format:'ZIP',position:2,directDownloadUrl:direct,directDownloadExpiresAt:expiresAt}
+    {name:'Отчёт за август',section:'Docs',format:'Google Docs',position:1,navigationBinding:nativeBinding,openUrl:native.openUrl},
+    {name:'Архив.zip',section:'Drive',format:'ZIP',position:2,navigationBinding:binaryBinding,directDownloadUrl:direct,directDownloadExpiresAt:expiresAt}
   ]);
+  native.navigationBinding='c'.repeat(64);
+  assert.equal(helpers.navigationSnapshotMaterials()[0].navigationBinding,native.navigationBinding,'an otherwise identical replacement publishes a different opaque identity/revision binding');
   const canonicalNativeUrl=native.openUrl;
   native.openUrl+='?usp=sharing';
   assert.equal(helpers.nativeGoogleNavigationUrl(native),canonicalNativeUrl,'a single benign Drive usp marker is stripped before persistence');
@@ -633,9 +636,10 @@ test('optimistic edits and hides never become durable bridge snapshots, while co
   assert.equal(bridgeMessages.length,1,'confirmed state resumes complete bridge publication');
 });
 
-test('bootstrap primes downloads while preserving unchanged unexpired packages in memory', () => {
+test('authoritative bootstrap primes only visible downloads after create warming while preserving unchanged packages', () => {
   const bootstrap=frontend.slice(frontend.indexOf('function applyBootstrapData'),frontend.indexOf('function refresh('));
   const prime=frontend.slice(frontend.indexOf('function freshDownloadGrant'),frontend.indexOf('function downloadCourierHref'));
+  const automaticPrime=frontend.slice(frontend.indexOf('function deferDownloadPrimeForBusy'),frontend.indexOf('function downloadCourierHref'));
   assert.match(frontend,/const downloadGrants = new Map\(\)/);
   assert.match(frontend,/const downloadGrantPrimeInFlight = new Map\(\)/);
   assert.match(frontend,/const downloadGrantRetryNotBefore = new Map\(\)/);
@@ -646,12 +650,18 @@ test('bootstrap primes downloads while preserving unchanged unexpired packages i
   assert.match(bootstrap,/downloadGrants\.delete\(pageId\)/);
   assert.doesNotMatch(bootstrap,/downloadGrants\.clear\(\)/);
   assert.match(bootstrap,/downloadGrantRetryNotBefore\.clear\(\)/);
+  assert.match(bootstrap,/if\(state\.authoritative\)deferInitialDownloadPrimeUntilAuthoritative=false/);
+  assert.doesNotMatch(bootstrap,/state\.authoritative\|\|state\.snapshotTrusted\)deferInitialDownloadPrimeUntilAuthoritative=false/);
   assert.match(bootstrap,/scheduleDownloadGrantPrime\(downloadPrimeGeneration\)/);
-  assert.match(prime,/window\.setTimeout\(async\(\)=>/);
-  assert.match(prime,/state\.materials\.filter\(\(item\)=>canPrepareDownload\(item\)&&downloadGrantNeedsRefresh\(item,true\)\)/);
-  assert.match(prime,/Promise\.all\(Array\.from\(\{length:Math\.min\(DOWNLOAD_GRANT_PRIME_WORKERS,candidates\.length\)\},\(\)=>worker\(\)\)\)/);
-  assert.match(prime,/visible:downloadCardIsVisible\(item\.id\)/);
-  assert.match(prime,/Number\(right\.visible\)-Number\(left\.visible\)/);
+  assert.match(frontend,/let deferredDownloadPrimeGeneration = -1/);
+  assert.match(automaticPrime,/function deferDownloadPrimeForBusy\(generation\)/);
+  assert.match(automaticPrime,/function resumeDeferredDownloadPrime\(\)/);
+  assert.match(automaticPrime,/if\(state\.busy\.size\)\{deferDownloadPrimeForBusy\(generation\);return;\}/);
+  assert.match(automaticPrime,/canPrepareDownload\(item\)&&downloadCardIsVisible\(item\.id\)&&downloadGrantNeedsRefresh\(item,true\)/);
+  assert.match(automaticPrime,/if\(createPoolWarmPromise\)await createPoolWarmPromise/);
+  assert.match(automaticPrime,/if\(state\.actionReady&&missingPreparedCreateSections\(\)\.length\)await warmPreparedCreates\(\)/);
+  assert.match(automaticPrime,/for\(const pageId of candidates\)/);
+  assert.doesNotMatch(automaticPrime,/DOWNLOAD_GRANT_PRIME_WORKERS|Promise\.all/);
   assert.match(prime,/call\('apiPrepareDownload',\{taskPageId,pageId:materialId\}\)/);
   assert.match(prime,/const requestedFingerprint=downloadMaterialFingerprint\(item\)/);
   assert.match(prime,/const current=currentDownloadMaterialForPrime\(materialId,requestedFingerprint\)/);
@@ -663,6 +673,98 @@ test('bootstrap primes downloads while preserving unchanged unexpired packages i
   assert.match(prime,/refreshDownloadGrantLink\(materialId\)/);
   assert.match(frontend,/upsert\(data\.material\);render\(\);primeDownloadGrant\(data\.material&&data\.material\.id,downloadPrimeGeneration\)/);
   assert.doesNotMatch(prime,/localStorage|sessionStorage|indexedDB|downloadUrl|attachmentUrl/);
+});
+
+test('cached snapshots cannot auto-prime downloads and authoritative auto-prime stays visible, serial and create-first', async () => {
+  const source=frontend.slice(frontend.indexOf('function deferDownloadPrimeForBusy'),frontend.indexOf('function downloadCourierHref'));
+  const visible={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'};
+  const hidden={id:'cccccccc-cccc-4ccc-8ccc-cccccccccccc'};
+  const makeHarness=({authoritative,deferred=false,busy=false,warm=null,actionReady=true,missing=()=>[],headWarm=async()=>{},visibleAll=false,needsRefresh=()=>true,onPrime=async()=>{}}={})=>{
+    const timers=[],calls=[],state={authoritative,snapshotTrusted:true,actionReady,busy:new Set(busy?['create:Docs']:[]),materials:[visible,hidden]};let renewals=0;
+    const api=new Function('state','deferInitialDownloadPrimeUntilAuthoritative','downloadPrimeGeneration','canPrepareDownload','downloadCardIsVisible','downloadGrantNeedsRefresh','normalizeUuid','window','createPoolWarmPromise','missingPreparedCreateSections','warmPreparedCreates','primeDownloadGrant','scheduleDownloadGrantRenewal','deferredDownloadPrimeGeneration',`${source};return {schedule:scheduleDownloadGrantPrime,resume:resumeDeferredDownloadPrime,deferred:()=>deferredDownloadPrimeGeneration,setGeneration:(value)=>downloadPrimeGeneration=value};`)(
+      state,deferred,7,()=>true,(id)=>visibleAll||id===visible.id,needsRefresh,(id)=>id,{setTimeout(callback){timers.push(callback);}},warm,missing,headWarm,async(id)=>{calls.push(id);await onPrime(id,state);},()=>{renewals+=1;},-1
+    );
+    return {state,timers,calls,...api,renewals:()=>renewals};
+  };
+
+  const cached=makeHarness({authoritative:false});
+  cached.schedule(7);
+  assert.equal(cached.timers.length,0,'a trusted cached snapshot cannot initiate binary RPCs');
+
+  const inconsistent=makeHarness({authoritative:true,deferred:true});
+  inconsistent.schedule(7);
+  assert.equal(inconsistent.timers.length,0,'the explicit startup deferral fails closed even if authority flags race');
+
+  const busy=makeHarness({authoritative:true,busy:true});
+  busy.schedule(7);
+  assert.equal(busy.timers.length,0,'active creation takes priority over automatic download preparation');
+  assert.equal(busy.deferred(),7);
+  busy.state.busy.clear();busy.resume();busy.resume();
+  assert.equal(busy.timers.length,1,'one busy period queues exactly one bounded retry');
+  await busy.timers[0]();
+  assert.deepEqual(busy.calls,[visible.id]);
+
+  let releaseWarm;
+  const warm=new Promise((resolve)=>{releaseWarm=resolve;});
+  const live=makeHarness({authoritative:true,warm});
+  live.schedule(7);
+  assert.equal(live.timers.length,1);
+  const completion=live.timers[0]();
+  await Promise.resolve();
+  assert.deepEqual(live.calls,[],'download RPC waits for the create pool');
+  releaseWarm();
+  await completion;
+  assert.deepEqual(live.calls,[visible.id],'automatic preparation excludes off-screen cards');
+  assert.equal(live.renewals(),1);
+
+  const prepared=new Set();
+  const interrupted=makeHarness({authoritative:true,visibleAll:true,needsRefresh:(item)=>!prepared.has(item.id),onPrime:async(id,state)=>{prepared.add(id);if(id===visible.id)state.busy.add('create:Docs');}});
+  interrupted.schedule(7);await interrupted.timers[0]();
+  assert.deepEqual(interrupted.calls,[visible.id]);
+  assert.equal(interrupted.deferred(),7,'busy appearing inside the serial loop preserves exactly one continuation');
+  interrupted.state.busy.clear();interrupted.resume();interrupted.resume();
+  assert.equal(interrupted.timers.length,2,'repeated completion signals cannot multiply the deferred retry');
+  await interrupted.timers[1]();
+  assert.deepEqual(interrupted.calls,[visible.id,hidden.id]);
+});
+
+test('cold authoritative download prime completes proof and all three create heads before the first download RPC', async () => {
+  const source=frontend.slice(frontend.indexOf('function deferDownloadPrimeForBusy'),frontend.indexOf('function downloadCourierHref'));
+  const item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'};
+  const events=[],timers=[],state={authoritative:true,snapshotTrusted:false,actionReady:false,busy:new Set(),materials:[item]};
+  let finishProof;
+  const proof=new Promise((resolve)=>{finishProof=()=>{state.actionReady=true;events.push('proof');resolve();};});
+  let headsReady=false;
+  const api=new Function('state','deferInitialDownloadPrimeUntilAuthoritative','downloadPrimeGeneration','canPrepareDownload','downloadCardIsVisible','downloadGrantNeedsRefresh','normalizeUuid','window','createPoolWarmPromise','missingPreparedCreateSections','warmPreparedCreates','primeDownloadGrant','scheduleDownloadGrantRenewal','deferredDownloadPrimeGeneration',`${source};return scheduleDownloadGrantPrime;`)(
+    state,false,11,()=>true,()=>true,()=>true,(id)=>id,{setTimeout(callback){timers.push(callback);}},proof,()=>headsReady?[]:['Docs','Sheets','Slides'],async()=>{events.push('heads:start');await Promise.resolve();headsReady=true;events.push('heads:done');},async()=>{events.push('download');},()=>{},-1
+  );
+  api(11);
+  const completion=timers[0]();
+  await Promise.resolve();
+  assert.deepEqual(events,[]);
+  finishProof();
+  await completion;
+  assert.deepEqual(events,['proof','heads:start','heads:done','download']);
+});
+
+test('applying a trusted cached snapshot preserves the initial download deferral until live authority', () => {
+  const source=frontend.slice(frontend.indexOf('function applyBootstrapData'),frontend.indexOf('function readInitialBootstrap'));
+  const state={task:null,folderUrl:null,serviceUrl:null,materials:[],preparedCreates:{},authoritative:false,snapshotTrusted:false,actionReady:false,fullySynced:false,trustedUntil:0,maxUploadBytes:1,claimRefreshNotBefore:0,bootstrapped:false};
+  const scheduled=[];
+  const harness=new Function('state','canPrepareDownload','downloadMaterialFingerprint','pendingCreatePolls','rememberCompletedCreate','recentDrivePageIds','recentCompletedCreates','optimisticMaterialMutations','preparedCreateMap','rememberIssuedPreparedCreates','bootstrapSnapshotIsTrusted','downloadPrimeGeneration','deferredDownloadPrimeGeneration','downloadGrants','downloadGrantRetryNotBefore','downloadGrantRenewTimer','downloadGrantExpiryTimer','window','scheduleActionReadyExpiry','runtimeLocationResolved','warmPreparedCreates','render','announceEmbedBridgeReady','scheduleDownloadGrantPrime','deferInitialDownloadPrimeUntilAuthoritative',`${source};return {apply:applyBootstrapData,deferred:()=>deferInitialDownloadPrimeUntilAuthoritative};`)(
+    state,()=>false,()=>'',new Map(),()=>{},new Set(),new Map(),new Map(),()=>({}),()=>{},(data,authoritative)=>data.cached===true||authoritative,0,-1,new Map(),new Map(),0,0,{clearTimeout(){},setTimeout(){}},()=>{},false,()=>{},()=>{},()=>{},(generation)=>scheduled.push(generation),true
+  );
+  const trustedUntil=new Date(Date.now()+60000).toISOString();
+  harness.apply({task:{id:'task'},materials:[],cached:true,authoritative:false,actionReady:true,trustedUntil},false);
+  assert.equal(state.snapshotTrusted,true);
+  assert.equal(state.authoritative,false);
+  assert.equal(harness.deferred(),true,'snapshot trust is presentation/action proof, not live download authority');
+  assert.deepEqual(scheduled,[]);
+
+  harness.apply({task:{id:'task'},materials:[],cached:false,authoritative:true,actionReady:true,trustedUntil},true);
+  assert.equal(state.authoritative,true);
+  assert.equal(harness.deferred(),false);
+  assert.deepEqual(scheduled,[2],'only a live authoritative apply releases automatic download preparation');
 });
 
 test('an in-flight download preparation is reusable only for the exact unchanged material', () => {
@@ -700,10 +802,9 @@ test('server-rendered safe registry cards paint before the first client RPC', ()
   assert.match(startupTail,/if\(!state\.bootstrapped\)applyBootstrapData\(initialBootstrap,false,\{skipDownloadPrime:true\}\)/);
   assert.match(startupTail,/if\(runtimeLocationResolved\)continueStartup\(\)/);
   assert.match(startupTail,/scheduleCachedRefresh\(0\)/);
-  assert.match(startupTail,/if\(state\.actionReady\)scheduleDownloadGrantPrime\(downloadPrimeGeneration\)/);
-  assert.ok(startupTail.indexOf('applyBootstrapData(initialBootstrap,false')<startupTail.indexOf('if(state.actionReady)scheduleDownloadGrantPrime'));
-  assert.ok(startupTail.indexOf('if(state.actionReady)scheduleDownloadGrantPrime')<startupTail.indexOf('scheduleCachedRefresh(0)'));
-  assert.match(frontend,/if\(state\.authoritative\|\|state\.snapshotTrusted\)deferInitialDownloadPrimeUntilAuthoritative=false/);
+  assert.doesNotMatch(startupTail,/state\.actionReady\)scheduleDownloadGrantPrime/);
+  assert.match(frontend,/if\(state\.authoritative\)deferInitialDownloadPrimeUntilAuthoritative=false/);
+  assert.doesNotMatch(frontend,/state\.authoritative\|\|state\.snapshotTrusted\)deferInitialDownloadPrimeUntilAuthoritative=false/);
   assert.match(frontend,/!deferInitialDownloadPrimeUntilAuthoritative\)scheduleDownloadGrantPrime\(downloadPrimeGeneration\)/);
 });
 

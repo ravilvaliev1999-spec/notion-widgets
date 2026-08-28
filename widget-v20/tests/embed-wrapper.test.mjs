@@ -19,8 +19,8 @@ test('public wrapper isolates Apps Script from multi-login cookies', () => {
   assert.match(wrapper, /<iframe[^>]+id="widget"[^>]+credentialless|<iframe[^>]+credentialless[^>]+id="widget"/);
   assert.match(wrapper, /<iframe[^>]+loading="eager"[^>]+fetchpriority="high"/);
   assert.match(wrapper, /referrerpolicy="no-referrer"/);
-  assert.match(wrapper, /<link rel="preload" href="apps-script-embed\.js\?v=48" as="script" fetchpriority="high">/);
-  assert.match(wrapper, /j\.src='apps-script-embed\.js\?v=48'/);
+  assert.match(wrapper, /<link rel="preload" href="apps-script-embed\.js\?v=50" as="script" fetchpriority="high">/);
+  assert.match(wrapper, /j\.src='apps-script-embed\.js\?v=50'/);
   assert.doesNotMatch(wrapper, /<script[^>]+src="apps-script-embed\.js/);
   assert.match(wrapper, /class="skeleton"/);
   assert.match(wrapper, /body\.widget-ready iframe\{opacity:1\}/);
@@ -68,7 +68,7 @@ test('wrapper starts its local cache runtime immediately but defers the credenti
   });
   assert.equal(widget.src, '', 'the nested iframe waits for the first two shell paints');
   assert.equal(scripts.length, 1, 'the local decrypt runtime starts immediately in parallel with the outer page load');
-  assert.equal(scripts[0].src, 'apps-script-embed.js?v=48');
+  assert.equal(scripts[0].src, 'apps-script-embed.js?v=50');
   assert.equal(scripts[0].async, true);
   assert.equal(scripts[0].fetchPriority, 'high');
   assert.equal(widget.src, '', 'the heavyweight work must wait until Notion can paint the shell');
@@ -98,6 +98,9 @@ test('wrapper starts its local cache runtime immediately but defers the credenti
   earlyListeners.message({origin:'https://evil.example',data:{embedNonce:windowObject.__notionWidgetEarlyBridge.nonce}});
   earlyListeners.message({origin:'https://script.googleusercontent.com',data:{embedNonce:windowObject.__notionWidgetEarlyBridge.nonce}});
   assert.equal(windowObject.__notionWidgetEarlyBridge.events.length, 1, 'only the authenticated early Google message is buffered');
+  windowObject.__notionWidgetEarlyBridge.events.length=0;
+  for(let sequence=0;sequence<10;sequence+=1)earlyListeners.message({origin:'https://script.googleusercontent.com',data:{embedNonce:windowObject.__notionWidgetEarlyBridge.nonce,sequence}});
+  assert.deepEqual(Array.from(windowObject.__notionWidgetEarlyBridge.events,(event)=>event.data.sequence),[2,3,4,5,6,7,8,9],'the bounded early FIFO evicts oldest bridge events so the latest authority cannot be dropped');
 
   const hiddenWidget={src:''},hiddenTimers=[],hiddenFrames=[],hiddenListeners={};
   vm.runInNewContext(earlyBootstrap,{
@@ -165,7 +168,8 @@ test('wrapper caches only an encrypted passive presentation snapshot', () => {
   assert.match(wrapperJs, /const sourceTop = document\.querySelector\(`\[data-snapshot-section="\$\{section\}"\]`\)/);
   assert.match(wrapperJs, /const top = sourceTop\.cloneNode\(true\)/);
   assert.doesNotMatch(wrapper,/snapshot-spacer/);
-  assert.match(wrapperJs, /rows\.push\(\{ name: rawName, section, format: rawFormat \|\| 'Файл', position: Math\.round\(position\) \}\)/);
+  assert.match(wrapperJs, /const row = \{ name: rawName, section, format: rawFormat \|\| 'Файл', position: Math\.round\(position\) \}/);
+  assert.match(wrapperJs, /if \(navigationBinding\) row\.navigationBinding = navigationBinding/);
   assert.match(wrapperJs, /window\.crypto\.subtle\.encrypt\(\{ name: 'AES-GCM', iv, additionalData: context\.aad \}/);
   assert.match(wrapperJs, /window\.crypto\.subtle\.decrypt\(\{ name: 'AES-GCM', iv, additionalData: context\.aad \}/);
   assert.match(wrapperJs, /store\.setItem\(context\.slot, JSON\.stringify\(\{ schema: SNAPSHOT_CACHE_SCHEMA, savedAt, iv: bytesToBase64Url\(iv\), ciphertext: bytesToBase64Url\(ciphertext\) \}\)\)/);
@@ -248,13 +252,17 @@ test('device-bound prepared create cache v2 is release-independent, exact and lo
 test('saved-card navigation cache is a separate encrypted read-only capability', () => {
   assert.match(wrapperJs,/NAVIGATION_CACHE_MAX_AGE_MS = 24 \* 60 \* 60 \* 1000/);
   assert.match(wrapperJs,/NAVIGATION_DIRECT_MAX_TTL_MS = 60 \* 1000/);
-  assert.match(wrapperJs,/notion-widget-navigation-key-v1\\u0000\$\{domain\}/);
-  assert.match(wrapperJs,/notion-widget-navigation-slot-v1\\u0000\$\{domain\}/);
-  assert.match(wrapperJs,/aad: encoder\.encode\(`notion-widget-navigation-v1\\u0000\$\{domain\}`\)/);
+  assert.match(wrapperJs,/NAVIGATION_CACHE_SCHEMA = 2/);
+  assert.match(wrapperJs,/notion-widget-navigation-key-v2\\u0000\$\{domain\}/);
+  assert.match(wrapperJs,/notion-widget-navigation-slot-v2\\u0000\$\{domain\}/);
+  assert.match(wrapperJs,/aad: encoder\.encode\(`notion-widget-navigation-v2\\u0000\$\{domain\}`\)/);
+  assert.match(wrapperJs,/key\.startsWith\('notion-widget-navigation-v1:'\).*store\.removeItem\(key\)/s,'legacy tuple-only navigation ciphertext is retired');
   assert.match(wrapperJs,/safeSavedGoogleOpenUrl\(source\.openUrl, row\.section\)/);
   assert.match(wrapperJs,/keys\.join\('\|'\) === 'export\|authuser\|id'/);
   assert.match(wrapperJs,/expiresAt - Number\(now\) > NAVIGATION_DIRECT_MAX_TTL_MS/);
   assert.match(wrapperJs,/source\.name !== row\.name \|\| source\.section !== row\.section \|\| source\.format !== row\.format/);
+  assert.match(wrapperJs,/source\.navigationBinding !== row\.navigationBinding \|\| !\/\^\[a-f0-9\]\{64\}\$\/\.test\(row\.navigationBinding\)/);
+  assert.match(wrapperJs,/JSON\.stringify\(\[String\(row && row\.navigationBinding \|\| ''\), String\(row && row\.name/);
   assert.match(wrapperJs,/navigationCacheSnapshotFingerprint !== snapshotFingerprint\(confirmedSnapshotRows\)/);
   assert.match(wrapperJs,/document\.createElement\(navigationHref \? 'a' : 'article'\)/);
   assert.match(wrapperJs,/card\.target = '_blank'/);
@@ -273,11 +281,12 @@ test('saved-card navigation cache is a separate encrypted read-only capability',
 test('server-rendered early snapshot posts only passive card presentation fields', () => {
   assert.ok(earlySnapshot);
   const nonce='0123456789abcdef0123456789abcdef';
+  const navigationBinding='d'.repeat(64);
   const messages=[];
   const parent={postMessage(message,targetOrigin){messages.push({message,targetOrigin});}};
   parent.parent=parent;
   const bootstrap={cached:true,authoritative:false,materials:[
-    {id:'3c72d627-39a1-8120-bd0a-f969e6846945',name:'  Реальный   документ  ',section:'Docs',format:'Google Docs',position:2,openUrl:'https://docs.google.com/document/d/Secret/edit',googleFileId:'Secret',drivePollClaim:'claim',createRequestId:'55555555-5555-4555-8555-555555555555'},
+    {id:'3c72d627-39a1-8120-bd0a-f969e6846945',name:'  Реальный   документ  ',section:'Docs',format:'Google Docs',position:2,navigationBinding,openUrl:'https://docs.google.com/document/d/Secret/edit',googleFileId:'Secret',drivePollClaim:'claim',createRequestId:'55555555-5555-4555-8555-555555555555'},
     {id:'pending:1',name:'Ещё не создан',section:'Docs',format:'Google Docs',position:3,syncStatus:'pending'},
     {id:'3c72d627-39a1-8120-bd0a-f969e6846946',name:'Скрытый',section:'Drive',format:'PDF',position:1,archived:true}
   ]};
@@ -292,7 +301,8 @@ test('server-rendered early snapshot posts only passive card presentation fields
   assert.deepEqual(Object.keys(payload).sort(),['embedNonce','materials','type']);
   assert.equal(payload.embedNonce,nonce);
   assert.equal(payload.type,'notion-widget-v20-snapshot-ready');
-  assert.deepEqual(payload.materials,[{name:'Реальный документ',section:'Docs',format:'Google Docs',position:2}]);
+  assert.deepEqual(payload.materials,[{name:'Реальный документ',section:'Docs',format:'Google Docs',position:2,navigationBinding}]);
+  assert.doesNotMatch(JSON.stringify(payload),/3c72d627|Secret|55555555|drivePollClaim|createRequestId/,'SSR exposes only the opaque binding, never raw identity or claim material');
 });
 
 test('wrapper binds one authenticated child channel without relaying local file contents', () => {
@@ -803,7 +813,8 @@ test('encrypted saved navigation restores native Google, Drive download and fold
   }
   const task='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e',token='f'.repeat(64),release='navigation-release';
   const clientId='cccccccc-cccc-4ccc-8ccc-cccccccccccc',host='ravilvaliev1999-spec.github.io';let now=2_000_000;
-  const rows=[{name:'Существующий документ',section:'Docs',format:'Google Docs',position:0},{name:'Файл отчёта.pdf',section:'Drive',format:'PDF',position:0}];
+  const googleBinding='a'.repeat(64),binaryBinding='b'.repeat(64),replacementBinding='c'.repeat(64);
+  const rows=[{name:'Существующий документ',section:'Docs',format:'Google Docs',position:0,navigationBinding:googleBinding},{name:'Файл отчёта.pdf',section:'Drive',format:'PDF',position:0,navigationBinding:binaryBinding}];
   const googleUrl='https://docs.google.com/document/d/ExistingDocument123/edit';
   const directUrl='https://drive.google.com/uc?export=download&authuser=owner%40example.com&id=DriveBinaryFile123';
   const directExpiresAt=now+30_000,googleExpiresAt=now+24*60*60*1000,folderUrl='https://drive.google.com/drive/folders/TaskFolderNavigation123';
@@ -814,21 +825,21 @@ test('encrypted saved navigation restores native Google, Drive download and fold
   const previewIv=crypto.webcrypto.getRandomValues(new Uint8Array(12));
   const previewCipher=await crypto.webcrypto.subtle.encrypt({name:'AES-GCM',iv:previewIv,additionalData:encoder.encode(`notion-widget-preview-v1\u0000${task}\u0000${release}`)},previewKey,encoder.encode(JSON.stringify({schema:1,savedAt:now,materials:rows})));
   const navDomain=`${host}\u0000${task}\u0000${token}\u0000${clientId}`;
-  const navKeyDigest=await crypto.webcrypto.subtle.digest('SHA-256',encoder.encode(`notion-widget-navigation-key-v1\u0000${navDomain}`));
-  const navSlotDigest=await crypto.webcrypto.subtle.digest('SHA-256',encoder.encode(`notion-widget-navigation-slot-v1\u0000${navDomain}`));
+  const navKeyDigest=await crypto.webcrypto.subtle.digest('SHA-256',encoder.encode(`notion-widget-navigation-key-v2\u0000${navDomain}`));
+  const navSlotDigest=await crypto.webcrypto.subtle.digest('SHA-256',encoder.encode(`notion-widget-navigation-slot-v2\u0000${navDomain}`));
   const navKey=await crypto.webcrypto.subtle.importKey('raw',navKeyDigest,{name:'AES-GCM'},false,['encrypt']);
   const navIv=crypto.webcrypto.getRandomValues(new Uint8Array(12));
-  const cardKey=(row)=>JSON.stringify([row.name,row.section,row.format,row.position]);
+  const cardKey=(row)=>JSON.stringify([row.navigationBinding,row.name,row.section,row.format,row.position]);
   const navEntries=[{cardKey:cardKey(rows[0]),kind:'google',url:googleUrl,expiresAt:googleExpiresAt},{cardKey:cardKey(rows[1]),kind:'direct',url:directUrl,expiresAt:directExpiresAt}];
   const sortedRows=[rows[1],rows[0]];
-  const navPayload={schema:1,host,task,clientId,savedAt:now,expiresAt:googleExpiresAt,snapshotFingerprint:JSON.stringify(sortedRows),folderUrl,folderExpiresAt:googleExpiresAt,entries:navEntries};
-  const navCipher=await crypto.webcrypto.subtle.encrypt({name:'AES-GCM',iv:navIv,additionalData:encoder.encode(`notion-widget-navigation-v1\u0000${navDomain}`)},navKey,encoder.encode(JSON.stringify(navPayload)));
+  const navPayload={schema:2,host,task,clientId,savedAt:now,expiresAt:googleExpiresAt,snapshotFingerprint:JSON.stringify(sortedRows),folderUrl,folderExpiresAt:googleExpiresAt,entries:navEntries};
+  const navCipher=await crypto.webcrypto.subtle.encrypt({name:'AES-GCM',iv:navIv,additionalData:encoder.encode(`notion-widget-navigation-v2\u0000${navDomain}`)},navKey,encoder.encode(JSON.stringify(navPayload)));
   const previewSlot=`notion-widget-preview-v1:${Buffer.from(previewSlotDigest).subarray(0,18).toString('base64url')}`;
-  const navSlot=`notion-widget-navigation-v1:${Buffer.from(navSlotDigest).subarray(0,18).toString('base64url')}`;
+  const navSlot=`notion-widget-navigation-v2:${Buffer.from(navSlotDigest).subarray(0,18).toString('base64url')}`;
   const storage=new Map([
     [`notion-widget-client-v1:${task}`,clientId],
     [previewSlot,JSON.stringify({schema:1,savedAt:now,iv:Buffer.from(previewIv).toString('base64url'),ciphertext:Buffer.from(previewCipher).toString('base64url')})],
-    [navSlot,JSON.stringify({schema:1,savedAt:now,expiresAt:googleExpiresAt,iv:Buffer.from(navIv).toString('base64url'),ciphertext:Buffer.from(navCipher).toString('base64url')})]
+    [navSlot,JSON.stringify({schema:2,savedAt:now,expiresAt:googleExpiresAt,iv:Buffer.from(navIv).toString('base64url'),ciphertext:Buffer.from(navCipher).toString('base64url')})]
   ]);
   assert.doesNotMatch(String(storage.get(navSlot)),/ExistingDocument|DriveBinary|docs\.google\.com|drive\.google\.com|f{32}/,'the navigation envelope contains no plaintext URL, id or token');
   const slots=['Drive','Docs','Sheets','Slides'].map((section)=>{const value=new Element();value.dataset.slot=section;return value;});
@@ -866,7 +877,12 @@ test('encrypted saved navigation restores native Google, Drive download and fold
   now+=31_000;directAnchor.listeners.pointerdown();
   assert.equal(directAnchor.href,undefined,'an expired direct download is synchronously revoked at navigation intent');
   googleAnchor.listeners.pointerdown();assert.equal(googleAnchor.href,googleUrl,'the canonical Google link remains valid within the 24-hour presentation cache');
-  listeners.message({source:bridgeSource,origin:'https://script.googleusercontent.com',data:{type:'notion-widget-v20-bridge-ready',embedNonce,instanceId:'dddddddd-dddd-4ddd-8ddd-dddddddddddd',authoritative:true,actionReady:true,snapshotMaterials:rows,navigationMaterials:[],navigationFolderUrl:'',preparedCreates:[],geometry:[],viewport:{width:868,height:523}}});
+  const replacementRows=[{...rows[0],navigationBinding:replacementBinding},rows[1]];
+  listeners.message({source:bridgeSource,origin:'https://script.googleusercontent.com',data:{type:'notion-widget-v20-snapshot-ready',embedNonce,materials:replacementRows}});
+  googleAnchor.listeners.pointerdown();
+  assert.equal(googleAnchor.href,undefined,'a replacement page/file with the same visible tuple cannot retain the old native URL');
+  assert.equal(descendants(snapshotGrid).some((item)=>item.tagName==='A'&&item.href===googleUrl),false,'opaque identity/revision mismatch fails closed before a live replacement URL exists');
+  listeners.message({source:bridgeSource,origin:'https://script.googleusercontent.com',data:{type:'notion-widget-v20-bridge-ready',embedNonce,instanceId:'dddddddd-dddd-4ddd-8ddd-dddddddddddd',authoritative:true,actionReady:true,snapshotMaterials:replacementRows,navigationMaterials:[],navigationFolderUrl:'',preparedCreates:[],geometry:[],viewport:{width:868,height:523}}});
   for(let attempt=0;attempt<30&&storage.has(navSlot);attempt+=1)await new Promise((resolve)=>setImmediate(resolve));
   const postRevokeAnchors=descendants(snapshotGrid).filter((item)=>item.tagName==='A'&&item.className.includes('snapshot-card'));
   assert.equal(postRevokeAnchors.length,0,'an authoritative exact empty navigation snapshot revokes the restored anchors');
