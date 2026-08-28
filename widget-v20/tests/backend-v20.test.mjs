@@ -3837,6 +3837,7 @@ test('deployment contract supports a capability-authenticated iframe with full D
   assert.ok(manifest.oauthScopes.includes('https://www.googleapis.com/auth/script.scriptapp'));
   assert.ok(!manifest.oauthScopes.includes('https://www.googleapis.com/auth/drive.file'));
   assert.deepEqual(manifest.webapp, { access: 'ANYONE_ANONYMOUS', executeAs: 'USER_DEPLOYING' });
+  assert.deepEqual(manifest.executionApi, { access: 'MYSELF' }, 'Apps Script execution stays owner-only');
   assert.match(backendSource, /AUTHORIZED_TASK_PAGE_ID/);
   assert.match(backendSource, /WIDGET_ACCESS_TOKEN_SHA256/);
   assert.match(backendSource, /Session\.getActiveUser\(\).*Административный запуск/s);
