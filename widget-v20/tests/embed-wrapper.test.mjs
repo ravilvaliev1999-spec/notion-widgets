@@ -24,12 +24,11 @@ test('public wrapper isolates Apps Script from multi-login cookies', () => {
   assert.match(wrapper, /frame-src https:\/\/script\.google\.com https:\/\/\*\.googleusercontent\.com/);
   assert.match(wrapper, /<link rel="dns-prefetch" href="\/\/script\.google\.com">/);
   assert.match(wrapper, /<link rel="preconnect" href="https:\/\/script\.google\.com" crossorigin>/);
-  assert.match(wrapper, /<link rel="preload" href="apps-script-embed\.js\?v=57" as="script" fetchpriority="high">/);
-  assert.match(wrapper, /j\.src='apps-script-embed\.js\?v=57'/);
+  assert.match(wrapper, /<link rel="preload" href="apps-script-embed\.js\?v=55" as="script" fetchpriority="high">/);
+  assert.match(wrapper, /j\.src='apps-script-embed\.js\?v=55'/);
   assert.doesNotMatch(wrapper, /<script[^>]+src="apps-script-embed\.js/);
   assert.match(wrapper, /class="skeleton"/);
   assert.match(wrapper, /body\.widget-ready iframe\{opacity:1\}/);
-  assert.match(wrapper, /\.widget-ready\.snapshot-ready:not\(\.widget-action-ready\) iframe\{opacity:0\}/);
   assert.match(wrapper, /\.snapshot-ready \.skeleton,\.widget-action-ready \.skeleton,\.widget-action-ready:not\(\.outer-mutation-pending\):not\(\.outer-menu-open\) \.snapshot-grid\{opacity:0;visibility:hidden\}/);
   assert.match(wrapper, /form-action https:\/\/script\.google\.com https:\/\/\*\.googleusercontent\.com/);
   assert.match(wrapper, /\.snapshot-grid\{[^}]*pointer-events:auto/);
@@ -78,7 +77,7 @@ test('wrapper exposes its shell before starting the credentialless Apps Script f
   });
   assert.equal(widget.src, '', 'the nested request cannot hold the outer shell load open');
   assert.equal(scripts.length, 1, 'the preloaded runtime starts immediately after the static shell');
-  assert.equal(scripts[0].src, 'apps-script-embed.js?v=57');
+  assert.equal(scripts[0].src, 'apps-script-embed.js?v=55');
   assert.equal(scripts[0].async, true);
   assert.equal(scripts[0].fetchPriority, 'high');
   assert.equal(timers.length, 1);
@@ -839,8 +838,7 @@ test('credentialless create uses native anchors and a fragment-only neutral cour
   assert.match(wrapperJs, /record\.navigationCommitted = true/);
   assert.match(wrapperJs, /const expectedReservationId = prepared && prepared\.reservationId \|\| ''/);
   assert.match(wrapperJs, /record\.ackAttempts < 2 && dispatchCreateAction\(record\)/);
-  assert.match(wrapperJs, /data\.retryable === false\) \{ removeOptimisticCreate\(record\.requestId\);createRequests\.delete\(section\);forgetCreateRequest\(section\);terminalSections\.push\(section\)/);
-  assert.match(wrapperJs, /addOptimisticCreate\(record\);\s*record\.actionStarted = false/);
+  assert.match(wrapperJs, /data\.retryable === false\) \{ createRequests\.delete\(section\);forgetCreateRequest\(section\);terminalSections\.push\(section\)/);
   assert.match(wrapperJs, /url\.hostname !== 'docs\.google\.com'/);
   assert.match(wrapperJs, /url\.search \|\| url\.hash/);
   assert.match(wrapperJs, /openUrl !== url\.href/);

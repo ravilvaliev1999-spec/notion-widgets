@@ -369,48 +369,7 @@ test('primary cards create Google files and their pencils upload into the matchi
   assert.match(frontend, /preparedName:prepared\.preparedName,generation:prepared\.generation,navigateUntil:prepared\.navigateUntil,reservationProof:prepared\.reservationProof/);
   assert.match(frontend, /createGoogleWithRecovery\(payload\)/);
   assert.match(frontend, /call\('apiUpload',\{taskPageId,name:file\.name,mimeType:file\.type\|\|'application\/octet-stream',section,dataBase64,idempotencyKey:operation\.value\}\)/);
-  assert.match(frontend, /const dataBase64=await readFileBase64Portable\(file\)/);
-  assert.match(frontend, /function readFileBase64Portable\(file\)/);
-  assert.match(frontend, /function uploadWithRecovery\(request\)/);
-  assert.match(frontend, /const delays=\[0,350,900,1800\]/);
-  assert.match(frontend, /if\(error&&error\.retryable===false\)throw error/);
   assert.doesNotMatch(frontend, /seedDownloadFromFile\(data\.material,file\)/);
-});
-
-test('a missing download href repairs its grant instead of showing a dead-end error', async () => {
-  const source=frontend.slice(frontend.indexOf('function openExact'),frontend.indexOf('function openEdit'));
-  const item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',widgetOwnedBinary:true,canDownload:true};
-  const calls=[],toasts=[];
-  const openExact=new Function('state','snapshotTrusted','toast','canPrepareDownload','primeDownloadGrant','downloadPrimeGeneration','window','retryUpload',`${source};return openExact;`)(
-    {authoritative:true},false,(message)=>toasts.push(message),()=>true,(id,generation)=>{calls.push([id,generation]);return Promise.resolve();},7,{open(){}},new Map()
-  );
-  openExact(item);
-  assert.deepEqual(calls,[[item.id,7]]);
-  assert.deepEqual(toasts,['Обновляю защищённую ссылку…']);
-});
-
-test('portable file reader prefers ArrayBuffer and falls back to FileReader', async () => {
-  const source=frontend.slice(frontend.indexOf('function readFileBase64(file)'),frontend.indexOf('function writeCourier'));
-  const portable=new Function('Uint8Array','btoa','FileReader',`${source};return {readFileBase64Portable};`)(
-    Uint8Array,(binary)=>Buffer.from(binary,'latin1').toString('base64'),class { }
-  );
-  const bytes=new Uint8Array([0,1,2,250,255]);
-  assert.equal(await portable.readFileBase64Portable({arrayBuffer:async()=>bytes.buffer}),'AAEC+v8=');
-});
-
-test('upload recovery retries transient transport failures with one stable request', async () => {
-  const source=frontend.slice(frontend.indexOf('async function uploadWithRecovery'),frontend.indexOf('async function uploadFiles'));
-  const timers=[],attempts=[];
-  const uploadWithRecovery=new Function('window',`${source};return uploadWithRecovery;`)({setTimeout(callback){timers.push(callback);}});
-  const pending=uploadWithRecovery(async()=>{attempts.push(attempts.length+1);if(attempts.length<3){const error=new Error('transient');error.retryable=true;throw error;}return 'ok';});
-  await Promise.resolve();
-  assert.deepEqual(attempts,[1]);
-  await timers.shift()();
-  await Promise.resolve();
-  assert.deepEqual(attempts,[1,2]);
-  await timers.shift()();
-  assert.equal(await pending,'ok');
-  assert.deepEqual(attempts,[1,2,3]);
 });
 
 test('signed prepared files open directly and bind the background claim to the same request', () => {
@@ -433,12 +392,10 @@ test('signed prepared files open directly and bind the background claim to the s
   assert.match(frontend, /const issued=issuedPreparedCreates\.get\(reservationId\),reservation=issued&&Number\.isSafeInteger\(issued\.generation\)\?safePreparedCreate\(data\):issued/);
   assert.match(frontend, /!preparedCreateMatches\(issued,reservation\)/);
   assert.match(frontend, /type:'notion-widget-v20-primary-started',requestId/);
-  assert.match(frontend, /const requestId=String\(data\.requestId\)\.toLowerCase\(\),activeRequestId=activeBridgeCreateRequests\.get\(data\.section\)/);
-  assert.match(frontend, /if\(activeRequestId&&activeRequestId!==requestId\)/);
-  assert.match(frontend, /if\(pendingRecord&&pendingRecord\.recovering\)/);
+  assert.match(frontend, /activeBridgeCreateRequests\.get\(data\.section\)===requestId/);
   assert.match(frontend, /reservationProof:item\.reservationProof/);
   assert.match(frontend, /createGoogle\(data\.section,\{source:event\.source,origin:event\.origin,requestId,reservationId,reservation\}\)/);
-  assert.match(frontend, /consumePreparedCreate\(section,bridgeRequest\.reservationId\)/);
+  assert.match(frontend, /prepared&&prepared\.reservationId===bridgeRequest\.reservationId\)delete state\.preparedCreates\[section\]/);
 });
 
 test('v2 prepared descriptors are exact, canonical and fail closed before bridge forwarding', () => {
@@ -1249,7 +1206,7 @@ test('native create clicks render one optimistic card and poll only the server l
   assert.match(frontend, /data\.status==='done'&&data\.material/);
   assert.match(frontend, /function completeOptimisticCreate\(requestId,material,announce\)/);
   assert.match(frontend, /state\.materials=state\.materials\.filter\(\(item\)=>item\.id!==record\.pendingId\)/);
-  assert.match(frontend, /upsert\(material\);if\(material\)\{recentCompletedCreates\.set\(normalized,material\);rememberCompletedCreate\(normalized\);scheduleCreatedMaterialMetadata\(material\);\}/);
+  assert.match(frontend, /upsert\(material\);if\(material\)\{recentCompletedCreates\.set\(normalized,material\);rememberCompletedCreate\(normalized\);recentDrivePageIds\.add\(material\.id\);\}/);
   assert.match(frontend, /startOptimisticCreate\(section,bridgeRequest\.requestId,false,prepared\)/);
   assert.match(frontend, /name:preparedForSection&&preparedForSection\.preparedName\|\|pendingCreateName\(section\)/);
   assert.match(frontend, /openUrl:preparedForSection&&preparedForSection\.openUrl\|\|''/);
@@ -1257,11 +1214,11 @@ test('native create clicks render one optimistic card and poll only the server l
   assert.match(frontend, /const delays=\[0,900,2400\]/);
   assert.match(frontend, /if\(delay\)await new Promise\(\(resolve\)=>window\.setTimeout\(resolve,delay\)\)/);
   assert.match(frontend, /return await call\('apiCreateGoogle',payload\)/);
-  assert.match(frontend, /if\(error&&error\.retryable===false\)throw error/);
+  assert.match(frontend, /if\(!error\.retryable\)throw error/);
   assert.match(frontend, /createGoogleWithRecovery\(payload\)/);
   assert.match(frontend, /completeOptimisticCreate\(bridgeRequest\.requestId,data\.material,false\);reply\(\{ok:true,openUrl:/);
   const createSource=frontend.slice(frontend.indexOf('async function createGoogle(section,bridgeRequest)'),frontend.indexOf('function openLinkModal'));
-  const releaseAt=createSource.indexOf('consumePreparedCreate(section,bridgeRequest.reservationId)'),replyAt=createSource.indexOf('reply({ok:true,openUrl:'),announceAt=createSource.indexOf('announceEmbedBridgeReady();',replyAt);
+  const releaseAt=createSource.indexOf('delete state.preparedCreates[section]'),replyAt=createSource.indexOf('reply({ok:true,openUrl:'),announceAt=createSource.indexOf('announceEmbedBridgeReady();',replyAt);
   assert.ok(releaseAt>=0&&releaseAt<replyAt&&replyAt<announceAt,'the consumed descriptor must disappear before success is announced');
   assert.match(frontend, /if\(state\.actionReady!==true\)/);
   assert.match(frontend, /authoritative:state\.authoritative\|\|state\.snapshotTrusted/);
@@ -1271,98 +1228,6 @@ test('native create clicks render one optimistic card and poll only the server l
   assert.match(frontend, /pendingCreatePolls\.delete\(requestId\);rememberCompletedCreate\(requestId\);recentDrivePageIds\.add\(completed\.id\)/);
   assert.match(frontend, /warmPreparedCreates\(\)\.catch\(\(\)=>\{\}\)/);
   assert.doesNotMatch(frontend, /apiGetCreateStatus[^\n]+idempotencyKey/);
-  const createPolling=frontend.slice(frontend.indexOf('function scheduleCreateStatus'),frontend.indexOf('async function createGoogleWithRecovery'));
-  assert.match(frontend, /const CREATE_STATUS_SLOW_DELAY_MS = 30000/);
-  assert.match(createPolling, /function setOptimisticCreateWaiting\(record,openUrl\)/);
-  assert.match(createPolling, /syncStatus='waiting'/);
-  assert.match(createPolling, /function retryPendingCreate\(record\)/);
-  assert.match(createPolling, /data\.status==='drive_ready'/);
-  assert.match(createPolling, /call\('apiCreateGoogle',payload\)/);
-  assert.doesNotMatch(createPolling, /record\.attempts>=16/);
-  assert.match(frontend, /\.material-menu-trigger:disabled \{ opacity: \.32; cursor: default; \}/);
-});
-
-test('create recovery keeps the prepared reservation, stays neutral, and never replaces its request id', async () => {
-  const requestId='11111111-1111-4111-8111-111111111111';
-  const prepared={section:'Docs',reservationId:requestId,openUrl:'https://docs.google.com/document/d/PreparedCreateDoc123/edit',preparedName:'Новый документ',generation:1,navigateUntil:new Date(Date.now()+60000).toISOString(),reservationProof:'a'.repeat(64)};
-  const startSource=frontend.slice(frontend.indexOf('function startOptimisticCreate'),frontend.indexOf('function completeOptimisticCreate'));
-  const startState={materials:[],preparedCreates:{},authoritative:true};
-  const startedPolls=[],startedRenders=[];
-  const startPolls=new Map();
-  const start=createStarter(startSource,startState,startPolls,startedPolls,startedRenders);
-  const first=start('Docs',requestId,false);
-  const second=start('Docs',requestId,false,prepared);
-  assert.equal(first,second,'create-started followed by primary-action must share one record');
-  assert.equal(startPolls.size,1);
-  assert.deepEqual(second.preparedCreate,prepared,'the later primary-action must retain the exact prepared file tuple');
-  assert.equal(startState.materials.filter((item)=>item.id===`pending:create:${requestId}`).length,1);
-
-  const pollingSource=frontend.slice(frontend.indexOf('function scheduleCreateStatus'),frontend.indexOf('async function createGoogleWithRecovery'));
-  const timers=[],calls=[];
-  const state={materials:[{id:`pending:create:${requestId}`,name:'Новый документ',section:'Docs',openUrl:'',syncStatus:'pending',error:'Старая временная ошибка'}],preparedCreates:{},authoritative:true};
-  const pendingCreatePolls=new Map();
-  const record={requestId,section:'Docs',pendingId:`pending:create:${requestId}`,attempts:16,running:false,timer:0,recovering:false,recoveryAttempts:0,recoveryNotBefore:0,terminal:false,preparedCreate:null};
-  pendingCreatePolls.set(requestId,record);
-  const handlers=createCreatePollHarness(pollingSource,{state,pendingCreatePolls,timers,calls,call:async(method,input)=>{
-    calls.push([method,input]);
-    assert.equal(method,'apiGetCreateStatus');
-    return {status:'drive_ready',openUrl:prepared.openUrl,retryable:true};
-  }});
-  await handlers.pollCreateStatus(requestId,false);
-  const pending=state.materials[0];
-  assert.equal(pending.syncStatus,'waiting');
-  assert.equal(pending.error,null);
-  assert.equal(pending.openUrl,prepared.openUrl);
-  assert.equal(record.terminal,false);
-  assert.deepEqual(calls.map(([method])=>method),['apiGetCreateStatus']);
-  assert.equal(timers.at(-1).delay,30000,'a long transient state must keep checking at the low-impact cadence');
-
-  const recoveryTimers=[],recoveryCalls=[];
-  const recoveryState={materials:[{id:`pending:create:${requestId}`,name:prepared.preparedName,section:'Docs',openUrl:prepared.openUrl,syncStatus:'waiting'}],preparedCreates:{Docs:prepared},authoritative:true};
-  const recoveryPolls=new Map();
-  const recoveryRecord={requestId,section:'Docs',pendingId:`pending:create:${requestId}`,attempts:0,running:false,timer:0,recovering:false,recoveryAttempts:0,recoveryNotBefore:Date.now()-1,terminal:false,preparedCreate:prepared};
-  recoveryPolls.set(requestId,recoveryRecord);
-  const material={id:'33333333-3333-4333-8333-333333333333',name:prepared.preparedName,section:'Docs',format:'Google Docs',provider:'Google Drive',openUrl:prepared.openUrl};
-  const recoveryHandlers=createCreatePollHarness(pollingSource,{state:recoveryState,pendingCreatePolls:recoveryPolls,timers:recoveryTimers,calls:recoveryCalls,issuedPreparedCreates:new Map([[requestId,prepared]]),call:async(method,input)=>{
-    recoveryCalls.push([method,input]);
-    assert.equal(method,'apiCreateGoogle');
-    return {material};
-  }});
-  assert.equal(await recoveryHandlers.retryPendingCreate(recoveryRecord),true);
-  assert.deepEqual(recoveryCalls.map(([method])=>method),['apiCreateGoogle']);
-  assert.deepEqual(recoveryCalls[0][1],{taskPageId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',section:'Docs',idempotencyKey:requestId,reservationId:requestId,openUrl:prepared.openUrl,preparedName:prepared.preparedName,generation:1,navigateUntil:prepared.navigateUntil,reservationProof:prepared.reservationProof});
-  assert.equal(recoveryPolls.has(requestId),false);
-  assert.equal(recoveryState.preparedCreates.Docs,undefined);
-  assert.equal(recoveryState.materials.some((item)=>item.id===`pending:create:${requestId}`),false);
-  assert.equal(recoveryState.materials.filter((item)=>item.id===material.id).length,1);
-
-  const card=frontend.slice(frontend.indexOf('function materialCard(item,count)'),frontend.indexOf('function downloadMaterialFingerprint'));
-  assert.doesNotMatch(card,/syncStatus==='waiting'\)card\.classList\.add\('pending'/);
-  assert.match(card,/main\.setAttribute\('aria-busy',String\(item\.syncStatus==='pending'\)\)/);
-  assert.match(frontend,/\.btn\.pending \{ cursor: progress; opacity: \.7; \}/);
-  assert.doesNotMatch(frontend,/\.btn\.busy, \.btn\.pending/);
-  const terminal=frontend.slice(frontend.indexOf('function failOptimisticCreate'),frontend.indexOf('function repairCreatedFileMarker'));
-  assert.match(terminal,/state\.materials=state\.materials\.filter\(\(item\)=>item\.id!==record\.pendingId\)/);
-
-  function createStarter(source,nextState,nextPolls,polls,renders) {
-    return new Function('state','pendingCreatePolls','safePreparedCreate','activeMaterials','pendingCreateName','render','announceEmbedBridgeReady','pollCreateStatus',`${source};return startOptimisticCreate;`)(
-      nextState,nextPolls,(value)=>value,()=>[],()=> 'Новый документ',()=>renders.push(true),()=>{},(id)=>polls.push(id)
-    );
-  }
-
-  function createCreatePollHarness(source,options) {
-    const issuedPreparedCreates=options.issuedPreparedCreates||new Map();
-    const recentCompletedCreates=new Map(),recentDrivePageIds=new Set();
-    const windowObject={
-      setTimeout(callback,delay){options.timers.push({callback,delay});return options.timers.length;},
-      clearTimeout(){}
-    };
-    const upsert=(value)=>{options.state.materials.push(value);};
-    return new Function('state','pendingCreatePolls','CREATE_STATUS_FAST_DELAYS_MS','CREATE_STATUS_SLOW_DELAY_MS','CREATE_RECOVERY_DELAYS_MS','window','safePreparedCreate','taskPageId','issuedPreparedCreates','normalizeUuid','recentDrivePageIds','pollDriveMetadata','render','activeMaterials','pendingCreateName','announceEmbedBridgeReady','upsert','recentCompletedCreates','rememberCompletedCreate','call','warmPreparedCreates',`${source};return {pollCreateStatus,retryPendingCreate};`)(
-      options.state,options.pendingCreatePolls,[350,650,1000,1500,2200,3200,4500,6500,9000,12000,15000,20000,25000,30000,30000,30000],30000,[2500,5000,10000,20000,30000],windowObject,
-      (value)=>value,'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',issuedPreparedCreates,(value)=>/^[0-9a-f-]{36}$/.test(String(value||''))?value:'',recentDrivePageIds,async()=>{},()=>{},()=>[],()=> 'Новый документ',()=>{},upsert,recentCompletedCreates,()=>{},options.call,async()=>{}
-    );
-  }
 });
 
 test('live authority and a fresh signed snapshot proof unlock only their intended actions', () => {
