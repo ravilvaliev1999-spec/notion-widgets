@@ -369,7 +369,48 @@ test('primary cards create Google files and their pencils upload into the matchi
   assert.match(frontend, /preparedName:prepared\.preparedName,generation:prepared\.generation,navigateUntil:prepared\.navigateUntil,reservationProof:prepared\.reservationProof/);
   assert.match(frontend, /createGoogleWithRecovery\(payload\)/);
   assert.match(frontend, /call\('apiUpload',\{taskPageId,name:file\.name,mimeType:file\.type\|\|'application\/octet-stream',section,dataBase64,idempotencyKey:operation\.value\}\)/);
+  assert.match(frontend, /const dataBase64=await readFileBase64Portable\(file\)/);
+  assert.match(frontend, /function readFileBase64Portable\(file\)/);
+  assert.match(frontend, /function uploadWithRecovery\(request\)/);
+  assert.match(frontend, /const delays=\[0,350,900,1800\]/);
+  assert.match(frontend, /if\(error&&error\.retryable===false\)throw error/);
   assert.doesNotMatch(frontend, /seedDownloadFromFile\(data\.material,file\)/);
+});
+
+test('a missing download href repairs its grant instead of showing a dead-end error', async () => {
+  const source=frontend.slice(frontend.indexOf('function openExact'),frontend.indexOf('function openEdit'));
+  const item={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',widgetOwnedBinary:true,canDownload:true};
+  const calls=[],toasts=[];
+  const openExact=new Function('state','snapshotTrusted','toast','canPrepareDownload','primeDownloadGrant','downloadPrimeGeneration','window','retryUpload',`${source};return openExact;`)(
+    {authoritative:true},false,(message)=>toasts.push(message),()=>true,(id,generation)=>{calls.push([id,generation]);return Promise.resolve();},7,{open(){}},new Map()
+  );
+  openExact(item);
+  assert.deepEqual(calls,[[item.id,7]]);
+  assert.deepEqual(toasts,['Обновляю защищённую ссылку…']);
+});
+
+test('portable file reader prefers ArrayBuffer and falls back to FileReader', async () => {
+  const source=frontend.slice(frontend.indexOf('function readFileBase64(file)'),frontend.indexOf('function writeCourier'));
+  const portable=new Function('Uint8Array','btoa','FileReader',`${source};return {readFileBase64Portable};`)(
+    Uint8Array,(binary)=>Buffer.from(binary,'latin1').toString('base64'),class { }
+  );
+  const bytes=new Uint8Array([0,1,2,250,255]);
+  assert.equal(await portable.readFileBase64Portable({arrayBuffer:async()=>bytes.buffer}),'AAEC+v8=');
+});
+
+test('upload recovery retries transient transport failures with one stable request', async () => {
+  const source=frontend.slice(frontend.indexOf('async function uploadWithRecovery'),frontend.indexOf('async function uploadFiles'));
+  const timers=[],attempts=[];
+  const uploadWithRecovery=new Function('window',`${source};return uploadWithRecovery;`)({setTimeout(callback){timers.push(callback);}});
+  const pending=uploadWithRecovery(async()=>{attempts.push(attempts.length+1);if(attempts.length<3){const error=new Error('transient');error.retryable=true;throw error;}return 'ok';});
+  await Promise.resolve();
+  assert.deepEqual(attempts,[1]);
+  await timers.shift()();
+  await Promise.resolve();
+  assert.deepEqual(attempts,[1,2]);
+  await timers.shift()();
+  assert.equal(await pending,'ok');
+  assert.deepEqual(attempts,[1,2,3]);
 });
 
 test('signed prepared files open directly and bind the background claim to the same request', () => {

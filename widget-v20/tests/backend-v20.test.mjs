@@ -528,7 +528,7 @@ test('web app routes download and create requests to dedicated couriers', () => 
   assert.match(doGet, /propertyValues: initialProperties/);
   assert.match(doGet, /issueDrivePollClaims: false/);
   assert.match(doGet, /seedDownloadCache: false/);
-  assert.match(doGet, /includeServiceUrl: false/);
+  assert.match(doGet, /includeServiceUrl: true/);
   assert.match(doGet, /indexTemplate\.initialBootstrapJson = JSON\.stringify\(initialBootstrap\)/);
   assert.doesNotMatch(doGet, /initialBootstrapJson\s*=\s*JSON\.stringify\([^\n]*accessToken/);
   assert.match(doGet, /XFrameOptionsMode\.ALLOWALL/);

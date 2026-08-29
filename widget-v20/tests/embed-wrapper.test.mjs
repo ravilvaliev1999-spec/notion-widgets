@@ -24,8 +24,8 @@ test('public wrapper isolates Apps Script from multi-login cookies', () => {
   assert.match(wrapper, /frame-src https:\/\/script\.google\.com https:\/\/\*\.googleusercontent\.com/);
   assert.match(wrapper, /<link rel="dns-prefetch" href="\/\/script\.google\.com">/);
   assert.match(wrapper, /<link rel="preconnect" href="https:\/\/script\.google\.com" crossorigin>/);
-  assert.match(wrapper, /<link rel="preload" href="apps-script-embed\.js\?v=56" as="script" fetchpriority="high">/);
-  assert.match(wrapper, /j\.src='apps-script-embed\.js\?v=56'/);
+  assert.match(wrapper, /<link rel="preload" href="apps-script-embed\.js\?v=57" as="script" fetchpriority="high">/);
+  assert.match(wrapper, /j\.src='apps-script-embed\.js\?v=57'/);
   assert.doesNotMatch(wrapper, /<script[^>]+src="apps-script-embed\.js/);
   assert.match(wrapper, /class="skeleton"/);
   assert.match(wrapper, /body\.widget-ready iframe\{opacity:1\}/);
@@ -77,7 +77,7 @@ test('wrapper exposes its shell before starting the credentialless Apps Script f
   });
   assert.equal(widget.src, '', 'the nested request cannot hold the outer shell load open');
   assert.equal(scripts.length, 1, 'the preloaded runtime starts immediately after the static shell');
-  assert.equal(scripts[0].src, 'apps-script-embed.js?v=56');
+  assert.equal(scripts[0].src, 'apps-script-embed.js?v=57');
   assert.equal(scripts[0].async, true);
   assert.equal(scripts[0].fetchPriority, 'high');
   assert.equal(timers.length, 1);
