@@ -150,7 +150,7 @@ function doGet(event) {
         propertyValues: initialProperties,
         issueDrivePollClaims: false,
         seedDownloadCache: false,
-        includeServiceUrl: false
+        includeServiceUrl: true
       });
       if (initialBootstrap) indexTemplate.initialBootstrapJson = JSON.stringify(initialBootstrap);
     } catch (_initialBootstrapError) {}

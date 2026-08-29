@@ -1637,6 +1637,16 @@
     }
   }
 
+  async function uploadWithRecovery(request) {
+    const delays=[0,350,900,1800];let lastError=null;
+    for(const delay of delays){
+      if(delay)await new Promise((resolve)=>window.setTimeout(resolve,delay));
+      try{return await request();}
+      catch(error){lastError=error;if(error&&error.retryable===false)throw error;}
+    }
+    throw lastError||new Error('Загрузка не завершилась.');
+  }
+
   async function uploadFiles(files,forcedSection) {
     if(!cachedMutationReady()){toast('Завершаю синхронизацию…');return;}
     for(const file of Array.from(files||[])) {
@@ -1649,8 +1659,8 @@
       const attempt=async()=>{
         pending.syncStatus='pending';pending.error=null;render();
         try {
-          const dataBase64=await readFileBase64(file);
-          const data=await call('apiUpload',{taskPageId,name:file.name,mimeType:file.type||'application/octet-stream',section,dataBase64,idempotencyKey:operation.value});
+          const dataBase64=await readFileBase64Portable(file);
+          const data=await uploadWithRecovery(()=>call('apiUpload',{taskPageId,name:file.name,mimeType:file.type||'application/octet-stream',section,dataBase64,idempotencyKey:operation.value}));
           clearIdempotency(operation);state.materials=state.materials.filter(item=>item.id!==pendingId);retryUpload.delete(pendingId);upsert(data.material);render();primeDownloadGrant(data.material&&data.material.id,downloadPrimeGeneration);if(data.material&&data.material.id)call('apiFinalizeUploadAttachment',{taskPageId,pageId:data.material.id}).catch(()=>{});toast(`«${file.name}» загружен и сохранён как знание`);
         } catch(error) { pending.syncStatus='error';pending.error=error.message;retryUpload.set(pendingId,attempt);render();toast(`Не удалось загрузить «${file.name}». Нажмите карточку, чтобы повторить.`); }
       };
@@ -1660,6 +1670,17 @@
 
   function readFileBase64(file) {
     return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result||'').split(',')[1]||'');reader.onerror=()=>reject(new Error('Файл не удалось прочитать.'));reader.readAsDataURL(file);});
+  }
+
+  async function readFileBase64Portable(file) {
+    if(file&&typeof file.arrayBuffer==='function'){
+      try{
+        const bytes=new Uint8Array(await file.arrayBuffer());let binary='';
+        for(let offset=0;offset<bytes.length;offset+=32768)binary+=String.fromCharCode(...bytes.subarray(offset,offset+32768));
+        return btoa(binary);
+      }catch(_arrayBufferError){}
+    }
+    return readFileBase64(file);
   }
 
   function writeCourier(courier,message) {
@@ -1912,7 +1933,11 @@
   function openExact(item) {
     if(!state.authoritative&&!state.snapshotTrusted){toast('Завершаю синхронизацию…');return;}
     if(item.widgetOwnedBinary&&!item.canDownload){toast('Прямое скачивание этого файла пока недоступно. Обновите виджет и повторите попытку.');return;}
-    if(canPrepareDownload(item)){toast('Сервис скачивания временно недоступен. Обновите виджет.');return;}
+    if(canPrepareDownload(item)){
+      primeDownloadGrant(item.id,downloadPrimeGeneration);
+      toast('Обновляю защищённую ссылку…');
+      return;
+    }
     if(item.openUrl){window.open(item.openUrl,'_blank','noopener,noreferrer');return;}
     if(retryUpload.has(item.id)){retryUpload.get(item.id)();return;}
     toast('Ссылка на файл пока недоступна');
