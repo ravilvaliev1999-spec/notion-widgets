@@ -2353,13 +2353,13 @@
       createRequests.forEach((record, section) => {
         if (record.requestId !== String(data.requestId).toLowerCase()) return;
         if (record.ackTimer) window.clearTimeout(record.ackTimer);
-        removeOptimisticCreate(record.requestId);
-        if (data.retryable === false) { createRequests.delete(section);forgetCreateRequest(section);terminalSections.push(section);return; }
+        if (data.retryable === false) { removeOptimisticCreate(record.requestId);createRequests.delete(section);forgetCreateRequest(section);terminalSections.push(section);return; }
+        addOptimisticCreate(record);
         record.actionStarted = false;record.actionAcknowledged = false;record.lastNavigationAt = 0;record.ackTimer = 0;
       });
       if (terminalSections.length) terminalSections.forEach((section)=>interactionGrid.querySelectorAll(`[data-section="${section}"]`).forEach((control)=>control.removeAttribute('href')));
       else refreshAllControlHrefs();
-      showNotice(String(data.message || 'Файл не удалось создать. Повторите нажатие.').slice(0, 300));
+      showNotice(data.retryable === false?String(data.message || 'Файл не удалось создать. Повторите нажатие.').slice(0, 300):'Документ открыт. Завершаю привязку к Notion…');
       return;
     }
     if (data.type === 'notion-widget-v20-primary-geometry') {

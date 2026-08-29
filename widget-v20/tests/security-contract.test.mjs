@@ -78,8 +78,9 @@ test('create GET rendezvous is noopener, exact-field and status-only', () => {
   assert.match(backend,/function w20WriteCreateDriveReady_\(canonicalKey, attemptId, driveFile, section\)/);
   assert.match(backend,/String\(current\.attemptId \|\| ''\)\.toLowerCase\(\) !== expectedAttemptId/);
   assert.match(backend,/function w20CreateDriveReadyUrl_\(ledger\)/);
-  assert.match(status,/return \{ status: 'drive_ready', openUrl: driveReadyUrl \}/);
+  assert.match(status,/return \{ status: 'drive_ready', openUrl: driveReadyUrl, retryable: true \}/);
   assert.doesNotMatch(status,/canonicalKey|attemptId|driveReadyAt/);
+  assert.doesNotMatch(status,/w19FindMaterialByIdempotency_/);
 });
 
 test('download POST is exact-field and precomputes direct only from a supplied or freshly re-redeemed HMAC grant', () => {

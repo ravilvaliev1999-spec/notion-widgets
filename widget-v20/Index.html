@@ -77,7 +77,7 @@
   }
   .btn:active { transform: scale(.975); transition-duration: 120ms; }
   .btn:focus-visible { outline: 2px solid rgba(255,255,255,.4); outline-offset: 2px; }
-  .btn.busy, .btn.pending { cursor: progress; opacity: .7; }
+  .btn.pending { cursor: progress; opacity: .7; }
   .btn.error { border-color: rgba(255,105,105,.58); }
   .btn.dragging { opacity: .46; transform: scale(.975); }
 
@@ -147,7 +147,7 @@
   }
   .file-add:hover { border-color: rgba(255,255,255,.3); color: rgba(255,255,255,.75); background: rgba(255,255,255,.03); }
   .file-add:focus-visible { outline: 2px solid rgba(255,255,255,.4); outline-offset: 2px; }
-  .file-add:disabled { opacity: .42; cursor: wait; }
+  .file-add:disabled { opacity: .42; cursor: default; }
 
   .gedit {
     position: absolute; top: 6px; right: 6px;
@@ -173,7 +173,7 @@
   .material-menu-trigger:focus-visible { outline: 2px solid rgba(255,255,255,.4); outline-offset: 1px; }
   .material-menu-trigger .chevron { margin: 0; pointer-events: none; }
   .material-menu-trigger[aria-expanded="true"] .chevron { transform: rotate(180deg); }
-  .material-menu-trigger:disabled { opacity: .32; cursor: wait; }
+  .material-menu-trigger:disabled { opacity: .32; cursor: default; }
 
   .material-menu {
     position: fixed; z-index: 140; width: min(250px,calc(100vw - 20px)); padding: 5px;
@@ -413,6 +413,9 @@
   const DOWNLOAD_PRIME_IDLE_MS = 750;
   const ACTION_READY_RENEW_LEAD_MS = 30000;
   const ACTION_READY_RETRY_DELAYS_MS = [750,1500,3000,7000,15000];
+  const CREATE_STATUS_FAST_DELAYS_MS = [350,650,1000,1500,2200,3200,4500,6500,9000,12000,15000,20000,25000,30000,30000,30000];
+  const CREATE_STATUS_SLOW_DELAY_MS = 30000;
+  const CREATE_RECOVERY_DELAYS_MS = [2500,5000,10000,20000,30000];
   const bridgeInstanceId = uid();
   const state = { task:null, folderUrl:null, serviceUrl:null, materials:[], preparedCreates:{}, busy:new Set(), syncing:false, drivePolling:false, urgentDrivePolling:false, lastDrivePollAt:0, claimRefreshNotBefore:0, bootstrapped:false, authoritative:false, snapshotTrusted:false, actionReady:false, fullySynced:false, trustedUntil:0, maxUploadBytes:8388608, dragId:null, mock:false };
   const retryUpload = new Map();
@@ -1151,26 +1154,77 @@
     return section==='Docs'?'Новый документ':section==='Sheets'?'Новая таблица':'Новая презентация';
   }
 
-  function scheduleCreateStatus(record) {
-    if(!record||record.timer||record.attempts>=16)return;
-    const delays=[350,650,1000,1500,2200,3200,4500,6500,9000,12000,15000,20000,25000,30000,30000,30000];
-    record.timer=window.setTimeout(()=>{record.timer=0;pollCreateStatus(record.requestId,false);},delays[Math.min(record.attempts,delays.length-1)]);
+  function scheduleCreateStatus(record,requestedDelay) {
+    if(!record||record.timer||record.running||record.terminal)return;
+    const attempt=Math.max(0,Number(record.attempts)||0);
+    const naturalDelay=attempt<CREATE_STATUS_FAST_DELAYS_MS.length?CREATE_STATUS_FAST_DELAYS_MS[attempt]:CREATE_STATUS_SLOW_DELAY_MS;
+    const requested=Number(requestedDelay),delay=Number.isFinite(requested)?Math.max(0,requested):naturalDelay;
+    record.timer=window.setTimeout(()=>{record.timer=0;pollCreateStatus(record.requestId,false);},delay);
+  }
+
+  function setOptimisticCreateWaiting(record,openUrl) {
+    const pending=record&&state.materials.find((item)=>item.id===record.pendingId);
+    if(!pending)return false;
+    let changed=false;
+    if(openUrl&&pending.openUrl!==openUrl){pending.openUrl=openUrl;changed=true;}
+    if(pending.syncStatus!=='waiting'){pending.syncStatus='waiting';changed=true;}
+    if(pending.error){pending.error=null;changed=true;}
+    if(changed)render();
+    return true;
+  }
+
+  function nextCreateRecoveryDelay(record) {
+    const index=Math.max(0,Math.min(CREATE_RECOVERY_DELAYS_MS.length-1,Number(record&&record.recoveryAttempts)||0));
+    return CREATE_RECOVERY_DELAYS_MS[index];
+  }
+
+  function deferCreateRecovery(record) {
+    if(!record)return false;
+    const now=Date.now();
+    if(!Number.isFinite(record.recoveryNotBefore)||record.recoveryNotBefore<=0){record.recoveryNotBefore=now+nextCreateRecoveryDelay(record);return false;}
+    return now>=record.recoveryNotBefore;
+  }
+
+  function pendingCreatePayload(record) {
+    const prepared=safePreparedCreate(record&&record.preparedCreate);
+    if(!record||!prepared||prepared.section!==record.section||prepared.reservationId!==record.requestId)return null;
+    const payload={taskPageId,section:record.section,idempotencyKey:record.requestId,reservationId:prepared.reservationId};
+    if(Number.isSafeInteger(prepared.generation))Object.assign(payload,{openUrl:prepared.openUrl,preparedName:prepared.preparedName,generation:prepared.generation,navigateUntil:prepared.navigateUntil,reservationProof:prepared.reservationProof});
+    return payload;
+  }
+
+  function consumePreparedCreate(section,reservationId) {
+    const normalized=String(reservationId||'').toLowerCase();
+    if(!normalized)return false;
+    let consumed=false;
+    if(issuedPreparedCreates.delete(normalized))consumed=true;
+    const prepared=state.preparedCreates[section];
+    if(prepared&&prepared.reservationId===normalized){delete state.preparedCreates[section];consumed=true;}
+    return consumed;
+  }
+
+  function scheduleCreatedMaterialMetadata(material) {
+    const pageId=normalizeUuid(material&&material.id);
+    if(!pageId)return;
+    recentDrivePageIds.add(pageId);
+    window.setTimeout(()=>{if(state.authoritative)pollDriveMetadata(true,new Set([pageId])).catch(()=>{});},0);
   }
 
   function startOptimisticCreate(section,requestId,pollLedger,preparedCreate) {
     const normalized=String(requestId||'').toLowerCase();
     if(!['Docs','Sheets','Slides'].includes(section)||!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(normalized))return;
-    if(state.materials.some((item)=>String(item&&item.createRequestId||'').toLowerCase()===normalized)){announceEmbedBridgeReady();return;}
     const prepared=safePreparedCreate(preparedCreate),preparedForSection=prepared&&prepared.section===section?prepared:null;
     let record=pendingCreatePolls.get(normalized);
+    if(!record&&state.materials.some((item)=>String(item&&item.createRequestId||'').toLowerCase()===normalized)){announceEmbedBridgeReady();return;}
     if(!record){
-      record={requestId:normalized,section,pendingId:`pending:create:${normalized}`,attempts:0,running:false,timer:0};pendingCreatePolls.set(normalized,record);
-      state.materials.push({id:record.pendingId,name:preparedForSection&&preparedForSection.preparedName||pendingCreateName(section),section,format:section==='Docs'?'Google Docs':section==='Sheets'?'Google Sheets':'Google Slides',provider:'Google Drive',openUrl:preparedForSection&&preparedForSection.openUrl||'',position:activeMaterials(section).length,syncStatus:'pending',widgetOwned:true,createRequestId:normalized});
+      record={requestId:normalized,section,pendingId:`pending:create:${normalized}`,attempts:0,running:false,timer:0,recovering:false,recoveryAttempts:0,recoveryNotBefore:0,terminal:false,preparedCreate:null};pendingCreatePolls.set(normalized,record);
+      state.materials.push({id:record.pendingId,name:preparedForSection&&preparedForSection.preparedName||pendingCreateName(section),section,format:section==='Docs'?'Google Docs':section==='Sheets'?'Google Sheets':'Google Slides',provider:'Google Drive',openUrl:preparedForSection&&preparedForSection.openUrl||'',position:activeMaterials(section).length,syncStatus:'waiting',widgetOwned:true,createRequestId:normalized});
       render();
     } else if(preparedForSection) {
       const pending=state.materials.find((item)=>item.id===record.pendingId);
-      if(pending&&(pending.openUrl!==preparedForSection.openUrl||pending.name!==preparedForSection.preparedName)){pending.openUrl=preparedForSection.openUrl;pending.name=preparedForSection.preparedName;render();}
+      if(pending&&(pending.openUrl!==preparedForSection.openUrl||pending.name!==preparedForSection.preparedName||pending.syncStatus!=='waiting'||pending.error)){pending.openUrl=preparedForSection.openUrl;pending.name=preparedForSection.preparedName;pending.syncStatus='waiting';pending.error=null;render();}
     }
+    if(preparedForSection)record.preparedCreate=preparedForSection;
     if(pollLedger!==false)pollCreateStatus(normalized,true);
     return record;
   }
@@ -1178,14 +1232,21 @@
   function completeOptimisticCreate(requestId,material,announce) {
     const normalized=String(requestId||'').toLowerCase(),record=pendingCreatePolls.get(normalized);
     if(record){if(record.timer)window.clearTimeout(record.timer);pendingCreatePolls.delete(normalized);state.materials=state.materials.filter((item)=>item.id!==record.pendingId);}
-    upsert(material);if(material){recentCompletedCreates.set(normalized,material);rememberCompletedCreate(normalized);recentDrivePageIds.add(material.id);}
+    upsert(material);if(material){recentCompletedCreates.set(normalized,material);rememberCompletedCreate(normalized);scheduleCreatedMaterialMetadata(material);}
     render();if(announce!==false)announceEmbedBridgeReady();
   }
 
-  function failOptimisticCreate(requestId,message) {
+  function failOptimisticCreate(requestId,message,retryable) {
     const record=pendingCreatePolls.get(String(requestId||'').toLowerCase()),pending=record&&state.materials.find((item)=>item.id===record.pendingId);
-    if(pending){pending.syncStatus='error';pending.error=String(message||'Создание не завершилось. Повторите нажатие.').slice(0,500);render();}
-    if(record)scheduleCreateStatus(record);
+    if(!record)return;
+    if(retryable!==false){
+      setOptimisticCreateWaiting(record);
+      if(!record.recoveryNotBefore)record.recoveryNotBefore=Date.now()+nextCreateRecoveryDelay(record);
+      scheduleCreateStatus(record);
+      return;
+    }
+    record.terminal=true;if(record.timer)window.clearTimeout(record.timer);pendingCreatePolls.delete(record.requestId);
+    if(pending){state.materials=state.materials.filter((item)=>item.id!==record.pendingId);render();}
   }
 
   function repairCreatedFileMarker(record,attempt) {
@@ -1196,9 +1257,30 @@
       .catch(()=>window.setTimeout(()=>repairCreatedFileMarker(record,index+1),delays[index]));
   }
 
+  async function retryPendingCreate(record) {
+    if(!record||record.recovering||record.terminal||!pendingCreatePolls.has(record.requestId)||!deferCreateRecovery(record))return false;
+    const payload=pendingCreatePayload(record);
+    if(!payload)return false;
+    record.recovering=true;record.recoveryAttempts+=1;
+    try {
+      const data=await call('apiCreateGoogle',payload);
+      if(data&&data.material){
+        const consumed=consumePreparedCreate(record.section,record.requestId);
+        completeOptimisticCreate(record.requestId,data.material,true);
+        if(consumed)window.setTimeout(()=>warmPreparedCreates(),0);
+        return true;
+      }
+    } catch(error) {
+      if(error&&error.retryable===false){failOptimisticCreate(record.requestId,error.message,false);return false;}
+      setOptimisticCreateWaiting(record);
+    } finally { record.recovering=false; }
+    record.recoveryNotBefore=Date.now()+nextCreateRecoveryDelay(record);
+    return false;
+  }
+
   async function pollCreateStatus(requestId,urgent) {
     const record=pendingCreatePolls.get(String(requestId||'').toLowerCase());
-    if(!record||record.running)return;
+    if(!record||record.running||record.terminal)return;
     if(record.timer){clearTimeout(record.timer);record.timer=0;}
     record.running=true;record.attempts+=1;
     try {
@@ -1207,11 +1289,16 @@
         completeOptimisticCreate(record.requestId,data.material,true);
         repairCreatedFileMarker(record,0);return;
       }
-      const pending=state.materials.find((item)=>item.id===record.pendingId);
-      if(data.status==='failed'&&pending){pending.syncStatus='error';pending.error='Создание не завершилось. Повторите нажатие.';render();}
-    } catch(_error) {}
+      if(data.status==='failed'&&data.retryable===false){failOptimisticCreate(record.requestId,'Создание не завершилось. Повторите нажатие.',false);return;}
+      if(data.status==='drive_ready')setOptimisticCreateWaiting(record,data.openUrl);
+      else setOptimisticCreateWaiting(record);
+      if(data.status==='failed'||data.status==='missing'||data.status==='drive_ready')await retryPendingCreate(record);
+    } catch(error) {
+      if(error&&error.retryable===false)failOptimisticCreate(record.requestId,error.message,false);
+      else setOptimisticCreateWaiting(record);
+    }
     finally { record.running=false; }
-    if(pendingCreatePolls.has(record.requestId)&&(urgent||record.attempts<16))scheduleCreateStatus(record);
+    if(pendingCreatePolls.has(record.requestId)&&!record.terminal)scheduleCreateStatus(record);
   }
 
   async function pollPendingCreates(urgent) {
@@ -1223,7 +1310,7 @@
     for(const delay of delays){
       if(delay)await new Promise((resolve)=>window.setTimeout(resolve,delay));
       try{return await call('apiCreateGoogle',payload);}
-      catch(error){lastError=error;if(!error.retryable)throw error;}
+      catch(error){lastError=error;if(error&&error.retryable===false)throw error;}
     }
     throw lastError||new Error('Файл не удалось завершить.');
   }
@@ -1244,7 +1331,7 @@
       if(prepared){payload.reservationId=prepared.reservationId;if(Number.isSafeInteger(prepared.generation))Object.assign(payload,{openUrl:prepared.openUrl,preparedName:prepared.preparedName,generation:prepared.generation,navigateUntil:prepared.navigateUntil,reservationProof:prepared.reservationProof});}
       const data=await createGoogleWithRecovery(payload);
       if(bridgeRequest){
-        if(bridgeRequest.reservationId){releaseReservation=true;issuedPreparedCreates.delete(bridgeRequest.reservationId);const prepared=state.preparedCreates[section];if(prepared&&prepared.reservationId===bridgeRequest.reservationId)delete state.preparedCreates[section];}
+        if(bridgeRequest.reservationId){releaseReservation=true;consumePreparedCreate(section,bridgeRequest.reservationId);}
         completeOptimisticCreate(bridgeRequest.requestId,data.material,false);reply({ok:true,openUrl:data.material&&data.material.openUrl||''});announceEmbedBridgeReady();
       }
       else {
@@ -1255,8 +1342,9 @@
       toast(data.duplicate?'Файл уже был создан':'Файл создан и сохранён как знание');
     } catch(error) {
       if(bridgeRequest){
-        if(bridgeRequest.reservationId&&!error.retryable){releaseReservation=true;issuedPreparedCreates.delete(bridgeRequest.reservationId);const prepared=state.preparedCreates[section];if(prepared&&prepared.reservationId===bridgeRequest.reservationId)delete state.preparedCreates[section];}
-        failOptimisticCreate(bridgeRequest.requestId,error.message);reply({ok:false,message:error.message,retryable:Boolean(error.retryable)});if(releaseReservation)announceEmbedBridgeReady();
+        const retryable=!error||error.retryable!==false;
+        if(bridgeRequest.reservationId&&!retryable){releaseReservation=true;consumePreparedCreate(section,bridgeRequest.reservationId);}
+        failOptimisticCreate(bridgeRequest.requestId,error&&error.message,retryable);reply({ok:false,message:error&&error.message,retryable});if(releaseReservation)announceEmbedBridgeReady();
       }
       else {if(popup&&!popup.closed)popup.close();showFatal(error.message,Boolean(error.retryable));}
     }
@@ -1532,9 +1620,16 @@
         if(reservationId&&(!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(reservationId)||reservationId!==String(data.requestId).toLowerCase()||!issued||issued.section!==data.section||!preparedCreateMatches(issued,reservation))){
           replyToEmbedBridge(event.source,event.origin,{type:'notion-widget-v20-primary-result',requestId:data.requestId,ok:false,message:'Резерв файла повреждён.'});return;
         }
-        const requestId=String(data.requestId).toLowerCase();
+        const requestId=String(data.requestId).toLowerCase(),activeRequestId=activeBridgeCreateRequests.get(data.section);
+        if(activeRequestId&&activeRequestId!==requestId){
+          replyToEmbedBridge(event.source,event.origin,{type:'notion-widget-v20-primary-result',requestId,ok:false,retryable:true,message:'Создание этого файла уже выполняется.'});return;
+        }
         replyToEmbedBridge(event.source,event.origin,{type:'notion-widget-v20-primary-started',requestId});
-        if(activeBridgeCreateRequests.get(data.section)===requestId)return;
+        if(activeRequestId===requestId)return;
+        const pendingRecord=pendingCreatePolls.get(requestId);
+        if(pendingRecord&&pendingRecord.recovering){
+          replyToEmbedBridge(event.source,event.origin,{type:'notion-widget-v20-primary-result',requestId,ok:false,retryable:true,message:'Завершаю привязку уже открытого файла.'});return;
+        }
         activeBridgeCreateRequests.set(data.section,requestId);
         Promise.resolve(createGoogle(data.section,{source:event.source,origin:event.origin,requestId,reservationId,reservation})).finally(()=>{if(activeBridgeCreateRequests.get(data.section)===requestId)activeBridgeCreateRequests.delete(data.section);});
       }
