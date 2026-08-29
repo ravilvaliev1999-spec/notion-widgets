@@ -1,0 +1,37 @@
+name: Apply create reconciliation hotfix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-create-reconciliation-hotfix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Apply guarded source patch
+        run: python3 .github/scripts/apply_create_reconciliation_hotfix.py
+      - name: Run v20 regression suite
+        run: cd widget-v20 && npm test
+      - name: Commit tested hotfix
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo 'No changes to commit'
+            exit 0
+          fi
+          git config user.name 'OpenAI Codex'
+          git config user.email 'codex@users.noreply.github.com'
+          git add apps-script-embed.html apps-script-embed.js widget-v20/Index.html widget-v20/tests/embed-wrapper.test.mjs widget-v20/tests/frontend-v20.test.mjs
+          git commit -m 'fix: reconcile Google creates without transient error state'
+          git push origin HEAD:main
