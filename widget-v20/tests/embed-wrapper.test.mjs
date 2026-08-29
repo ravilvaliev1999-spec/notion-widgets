@@ -29,6 +29,7 @@ test('public wrapper isolates Apps Script from multi-login cookies', () => {
   assert.doesNotMatch(wrapper, /<script[^>]+src="apps-script-embed\.js/);
   assert.match(wrapper, /class="skeleton"/);
   assert.match(wrapper, /body\.widget-ready iframe\{opacity:1\}/);
+  assert.match(wrapper, /\.widget-ready\.snapshot-ready:not\(\.widget-action-ready\) iframe\{opacity:0\}/);
   assert.match(wrapper, /\.snapshot-ready \.skeleton,\.widget-action-ready \.skeleton,\.widget-action-ready:not\(\.outer-mutation-pending\):not\(\.outer-menu-open\) \.snapshot-grid\{opacity:0;visibility:hidden\}/);
   assert.match(wrapper, /form-action https:\/\/script\.google\.com https:\/\/\*\.googleusercontent\.com/);
   assert.match(wrapper, /\.snapshot-grid\{[^}]*pointer-events:auto/);
