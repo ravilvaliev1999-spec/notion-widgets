@@ -1250,9 +1250,35 @@ test('a failed Notion finalize preserves the CAS-bound drive_ready document', ()
   }),(error)=>error&&error.code==='NOTION_UNAVAILABLE');
   const failed=JSON.parse(values[backend.w19IdempotencyLedgerKey_(canonical)]);
   assert.equal(failed.status,'failed');
+  assert.equal(failed.retryable,true);
   assert.equal(failed.driveReady.googleFileId,'FailedFinalizeDoc123');
   assert.ok(Number(failed.driveReadyAt)>0);
   assert.equal(backend.w20CreateDriveReadyUrl_(failed),'https://docs.google.com/document/d/FailedFinalizeDoc123/edit');
+});
+
+test('create-status stays local and distinguishes retryable failed bindings', () => {
+  const backend=loadBackend();
+  const taskId='3c62d627-39a1-80a1-aac7-ec19ffc9ef8e';
+  const requestId='22222222-2222-4222-8222-222222222222';
+  const cfg={authorizedTaskPageId:taskId,deniedPageIds:{}};
+  const ledger={status:'failed',at:Date.now(),retryable:false,driveReadyAt:Date.now(),driveReady:{
+    openUrl:'https://docs.google.com/document/d/FailedStatusDoc123/edit',googleFileId:'FailedStatusDoc123',section:'Docs',format:'Google Docs',provider:'Google Drive',archived:false
+  }};
+  backend.w19AuthorizedConfig_=()=>cfg;
+  backend.w20AssertAuthorizedTaskId_=(value)=>{assert.equal(value,taskId);return taskId;};
+  backend.w20RegistryFindCreateRequest_=()=>null;
+  let liveNotionLookups=0;
+  backend.w19FindMaterialByIdempotency_=()=>{liveNotionLookups+=1;throw new Error('status must stay local');};
+  backend.w19ReadIdempotencyStatus_=()=>ledger;
+
+  const terminal=backend.apiGetCreateStatus({taskPageId:taskId,section:'Docs',createRequestId:requestId});
+  assert.deepEqual(JSON.parse(JSON.stringify(terminal)),{ok:true,data:{status:'failed',retryable:false}});
+  assert.equal(liveNotionLookups,0);
+
+  ledger.retryable=true;
+  const recovering=backend.apiGetCreateStatus({taskPageId:taskId,section:'Docs',createRequestId:requestId});
+  assert.deepEqual(JSON.parse(JSON.stringify(recovering)),{ok:true,data:{status:'drive_ready',openUrl:'https://docs.google.com/document/d/FailedStatusDoc123/edit',retryable:true}});
+  assert.equal(liveNotionLookups,0);
 });
 
 test('fresh Google creation uses exactly one Drive CREATE and one Notion CREATE from authoritative registry state', () => {
@@ -1369,14 +1395,14 @@ test('fresh Google creation uses exactly one Drive CREATE and one Notion CREATE 
     id:'DriveReadyDocument123',webViewLink:'https://docs.google.com/document/d/DriveReadyDocument123/edit'
   },'Docs'),true);
   const ready=backend.apiGetCreateStatus({taskPageId:taskId,section:'Docs',createRequestId:readyRequestId});
-  assert.deepEqual(JSON.parse(JSON.stringify(ready.data)),{status:'drive_ready',openUrl:'https://docs.google.com/document/d/DriveReadyDocument123/edit'});
+  assert.deepEqual(JSON.parse(JSON.stringify(ready.data)),{status:'drive_ready',openUrl:'https://docs.google.com/document/d/DriveReadyDocument123/edit',retryable:true});
   assert.doesNotMatch(JSON.stringify(ready),/create-google-Docs|33333333-3333-4333-8333-333333333333|DriveReadyDocument123"\s*,\s*"section/);
   props.setProperty(backend.w19IdempotencyLedgerKey_(readyCanonical),JSON.stringify({
-    status:'failed',at:Date.now(),attemptId:readyAttemptId,driveReadyAt:Date.now(),
+    status:'failed',at:Date.now(),attemptId:readyAttemptId,retryable:true,driveReadyAt:Date.now(),
     driveReady:{openUrl:'https://docs.google.com/document/d/DriveReadyDocument123/edit',googleFileId:'DriveReadyDocument123',section:'Docs',format:'Google Docs',provider:'Google Drive',archived:false}
   }));
   const failedReady=backend.apiGetCreateStatus({taskPageId:taskId,section:'Docs',createRequestId:readyRequestId});
-  assert.deepEqual(JSON.parse(JSON.stringify(failedReady.data)),{status:'drive_ready',openUrl:'https://docs.google.com/document/d/DriveReadyDocument123/edit'});
+  assert.deepEqual(JSON.parse(JSON.stringify(failedReady.data)),{status:'drive_ready',openUrl:'https://docs.google.com/document/d/DriveReadyDocument123/edit',retryable:true});
 });
 
 test('create context warming verifies the task folder once without a Notion request', () => {

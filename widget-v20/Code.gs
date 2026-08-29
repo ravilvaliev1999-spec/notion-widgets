@@ -2197,7 +2197,7 @@ function apiGetCreateStatus(input) {
     if (ledger && ledger.status === 'done' && ledger.data && ledger.data.material) {
       storedMaterial = ledger.data.material;
       material = w20MaterialForClient_(storedMaterial, taskId, cfg);
-    } else if (!ledger || ledger.status === 'done') {
+    } else {
       var registryMaterial = w20RegistryFindCreateRequest_(taskId, section, requestId);
       if (registryMaterial) {
         storedMaterial = registryMaterial;
@@ -2208,21 +2208,24 @@ function apiGetCreateStatus(input) {
       w20ReleaseClaimedCreateReservation_(taskId, section, requestId, idem, storedMaterial);
       return { status: 'done', material: material };
     }
+    if (ledger && ledger.status === 'failed' && ledger.retryable !== true) {
+      return { status: 'failed', retryable: false };
+    }
     var driveReadyUrl = w20CreateDriveReadyUrl_(ledger);
-    if (driveReadyUrl) return { status: 'drive_ready', openUrl: driveReadyUrl };
+    if (driveReadyUrl) return { status: 'drive_ready', openUrl: driveReadyUrl, retryable: true };
     var durableClaim = w20ReadClaimedReservation_(w19Hash_(idem));
     if (durableClaim && durableClaim.taskId === WidgetV19Core.compactUuid(taskId) && durableClaim.section === section &&
         durableClaim.createRequestId === requestId.toLowerCase() && durableClaim.reservationId === requestId.toLowerCase()) {
       var claimedFile = w19GetDriveMetadata_(durableClaim.fileId);
       var expectedPageId = durableClaim.status === 'done' ? durableClaim.notionPageId : undefined;
       var exactClaimed = w20ClaimedCreateFile_(claimedFile, durableClaim, expectedPageId);
-      if (exactClaimed) return { status: 'drive_ready', openUrl: exactClaimed.openUrl };
+      if (exactClaimed) return { status: 'drive_ready', openUrl: exactClaimed.openUrl, retryable: true };
     }
     if (!ledger) return { status: 'missing' };
     if (ledger.status === 'pending') {
       return { status: 'pending', retryable: true };
     }
-    if (ledger.status === 'failed') return { status: 'failed', retryable: true };
+    if (ledger.status === 'failed') return { status: 'failed', retryable: ledger.retryable === true };
     return { status: ledger.status === 'done' ? 'done' : 'missing' };
   });
 }
@@ -5244,7 +5247,7 @@ function w19WithIdempotency_(canonicalKey, fn) {
     try {
       var currentFailed = w19ReadLedger_(props, ledgerKey);
       if (currentFailed && currentFailed.status === 'pending' && currentFailed.attemptId === attemptId) {
-        var failed = { status: 'failed', at: Date.now(), attemptId: attemptId, code: err && err.code || 'UNEXPECTED' };
+        var failed = { status: 'failed', at: Date.now(), attemptId: attemptId, code: err && err.code || 'UNEXPECTED', retryable: Boolean(err && err.retryable) };
         if (currentFailed.driveReady && currentFailed.driveReadyAt) {
           failed.driveReady = currentFailed.driveReady;
           failed.driveReadyAt = currentFailed.driveReadyAt;
