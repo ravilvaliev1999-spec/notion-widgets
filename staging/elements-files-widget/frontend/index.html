@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="ru" data-theme="auto">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <title>Файлы задачи</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/config.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#widget-main">К файлам</a>
+
+  <div class="app-shell" id="app">
+    <header class="app-header">
+      <div class="brand-block">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false">
+            <path d="M4.75 6.75A2.75 2.75 0 0 1 7.5 4h3.05c.73 0 1.43.29 1.94.8l1.21 1.2h2.8a2.75 2.75 0 0 1 2.75 2.75v7.5A2.75 2.75 0 0 1 16.5 19h-9a2.75 2.75 0 0 1-2.75-2.75v-9.5Z"/>
+          </svg>
+        </span>
+        <div>
+          <h1>Файлы задачи</h1>
+          <p id="sync-detail">Безопасный каталог материалов</p>
+        </div>
+      </div>
+
+      <div class="header-actions" aria-label="Действия виджета">
+        <span class="sync-status" id="sync-status" data-tone="neutral" role="status" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="sync-status-text">Подключение</span>
+        </span>
+        <button class="icon-button" id="theme-button" type="button" aria-label="Сменить тему" title="Сменить тему" data-testid="theme-button">
+          <svg class="theme-icon theme-icon-auto" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3.5" y="5" width="17" height="12.5" rx="2.5"/>
+            <path d="M8.5 21h7M12 17.5V21"/>
+          </svg>
+          <svg class="theme-icon theme-icon-light" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="4"/>
+            <path d="M12 2.5v2M12 19.5v2M21.5 12h-2M4.5 12h-2M18.72 5.28l-1.42 1.42M6.7 17.3l-1.42 1.42M18.72 18.72l-1.42-1.42M6.7 6.7 5.28 5.28"/>
+          </svg>
+          <svg class="theme-icon theme-icon-dark" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M19.4 15.35A8 8 0 0 1 8.65 4.6 8 8 0 1 0 19.4 15.35Z"/>
+          </svg>
+        </button>
+        <button class="icon-button" id="refresh-button" type="button" aria-label="Обновить список" title="Обновить список" data-testid="refresh-button">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M19 8.5A7.5 7.5 0 1 0 19.35 15M19 4.5v4h-4"/>
+          </svg>
+        </button>
+        <button class="button button-primary" id="add-button" type="button" data-testid="add-button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          <span>Добавить</span>
+        </button>
+      </div>
+    </header>
+
+    <div class="network-banner" id="network-banner" role="status" hidden>
+      Нет сети. Показана локальная копия; изменения станут доступны после подключения.
+    </div>
+
+    <div class="context-error" id="context-error" role="alert" hidden>
+      <span class="context-error-icon" aria-hidden="true">!</span>
+      <div>
+        <strong id="context-error-title">Не удалось открыть виджет</strong>
+        <p id="context-error-message">Откройте его из страницы задачи Notion.</p>
+      </div>
+    </div>
+
+    <main id="widget-main" tabindex="-1">
+      <div class="section-grid" id="section-grid" aria-label="Файлы по разделам">
+        <section class="file-section" data-section-root="Drive" data-testid="section-drive">
+          <div class="primary-card card-drive">
+            <button class="card-main" type="button" data-primary-section="Drive" aria-label="Открыть папку Drive или добавить файл">
+              <span class="service-icon icon-drive" aria-hidden="true">
+                <svg viewBox="0 0 32 32" focusable="false">
+                  <path class="drive-green" d="M11.1 4.5h7.35L28 21h-7.35L11.1 4.5Z"/>
+                  <path class="drive-yellow" d="M11.1 4.5 2 20.25 5.7 26.5l9.03-15.75-3.63-6.25Z"/>
+                  <path class="drive-blue" d="M5.7 26.5h18.2l4.1-5.5H9.15L5.7 26.5Z"/>
+                </svg>
+              </span>
+              <span class="card-copy"><strong>Drive</strong><small>Папка задачи</small></span>
+            </button>
+            <div class="card-controls">
+              <span class="count-badge" aria-label="Количество файлов"><span data-count="Drive">0</span></span>
+              <button class="card-toggle" type="button" data-toggle-section="Drive" aria-expanded="true" aria-controls="panel-drive" aria-label="Свернуть Drive">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9 5 5 5-5"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="section-panel" id="panel-drive" data-panel="Drive" data-drop-section="Drive">
+            <div class="section-panel-heading">
+              <span>Файлы и ссылки</span>
+              <button class="mini-add" type="button" data-add-section="Drive" aria-label="Добавить в Drive">+</button>
+            </div>
+            <ul class="file-list" data-list="Drive" aria-label="Файлы Drive"></ul>
+            <div class="empty-state" data-empty="Drive" hidden>
+              <span>Перетащите файл сюда</span>
+              <button type="button" data-add-section="Drive">Добавить файл или ссылку</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="file-section" data-section-root="Docs" data-testid="section-docs">
+          <div class="primary-card card-docs">
+            <button class="card-main" type="button" data-primary-section="Docs" aria-label="Создать Google Docs">
+              <span class="service-icon icon-docs" aria-hidden="true">
+                <svg viewBox="0 0 32 32" focusable="false">
+                  <path d="M9 3.5h10l6 6v17A2.5 2.5 0 0 1 22.5 29h-13A2.5 2.5 0 0 1 7 26.5V6a2.5 2.5 0 0 1 2-2.45Z"/>
+                  <path class="service-fold" d="M19 3.5v6h6"/>
+                  <path class="service-lines" d="M11 15h10M11 19h10M11 23h7"/>
+                </svg>
+              </span>
+              <span class="card-copy"><strong>Docs</strong><small>Документы</small></span>
+            </button>
+            <div class="card-controls">
+              <span class="count-badge" aria-label="Количество документов"><span data-count="Docs">0</span></span>
+              <button class="card-toggle" type="button" data-toggle-section="Docs" aria-expanded="true" aria-controls="panel-docs" aria-label="Свернуть Docs">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9 5 5 5-5"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="section-panel" id="panel-docs" data-panel="Docs" data-drop-section="Docs">
+            <div class="section-panel-heading">
+              <span>Документы</span>
+              <button class="mini-add" type="button" data-add-section="Docs" aria-label="Добавить в Docs">+</button>
+            </div>
+            <ul class="file-list" data-list="Docs" aria-label="Документы"></ul>
+            <div class="empty-state" data-empty="Docs" hidden>
+              <span>Создайте документ или загрузите Word</span>
+              <button type="button" data-add-section="Docs">Добавить файл или ссылку</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="file-section" data-section-root="Sheets" data-testid="section-sheets">
+          <div class="primary-card card-sheets">
+            <button class="card-main" type="button" data-primary-section="Sheets" aria-label="Создать Google Sheets">
+              <span class="service-icon icon-sheets" aria-hidden="true">
+                <svg viewBox="0 0 32 32" focusable="false">
+                  <path d="M9 3.5h10l6 6v17A2.5 2.5 0 0 1 22.5 29h-13A2.5 2.5 0 0 1 7 26.5V6a2.5 2.5 0 0 1 2-2.45Z"/>
+                  <path class="service-fold" d="M19 3.5v6h6"/>
+                  <path class="service-lines" d="M11 15h10v8H11zM16 15v8M11 19h10"/>
+                </svg>
+              </span>
+              <span class="card-copy"><strong>Sheets</strong><small>Таблицы</small></span>
+            </button>
+            <div class="card-controls">
+              <span class="count-badge" aria-label="Количество таблиц"><span data-count="Sheets">0</span></span>
+              <button class="card-toggle" type="button" data-toggle-section="Sheets" aria-expanded="true" aria-controls="panel-sheets" aria-label="Свернуть Sheets">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9 5 5 5-5"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="section-panel" id="panel-sheets" data-panel="Sheets" data-drop-section="Sheets">
+            <div class="section-panel-heading">
+              <span>Таблицы</span>
+              <button class="mini-add" type="button" data-add-section="Sheets" aria-label="Добавить в Sheets">+</button>
+            </div>
+            <ul class="file-list" data-list="Sheets" aria-label="Таблицы"></ul>
+            <div class="empty-state" data-empty="Sheets" hidden>
+              <span>Создайте таблицу или загрузите Excel/CSV</span>
+              <button type="button" data-add-section="Sheets">Добавить файл или ссылку</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="file-section" data-section-root="Slides" data-testid="section-slides">
+          <div class="primary-card card-slides">
+            <button class="card-main" type="button" data-primary-section="Slides" aria-label="Создать Google Slides">
+              <span class="service-icon icon-slides" aria-hidden="true">
+                <svg viewBox="0 0 32 32" focusable="false">
+                  <path d="M9 3.5h10l6 6v17A2.5 2.5 0 0 1 22.5 29h-13A2.5 2.5 0 0 1 7 26.5V6a2.5 2.5 0 0 1 2-2.45Z"/>
+                  <path class="service-fold" d="M19 3.5v6h6"/>
+                  <path class="service-lines" d="M11 15h10v7H11z"/>
+                </svg>
+              </span>
+              <span class="card-copy"><strong>Slides</strong><small>Презентации</small></span>
+            </button>
+            <div class="card-controls">
+              <span class="count-badge" aria-label="Количество презентаций"><span data-count="Slides">0</span></span>
+              <button class="card-toggle" type="button" data-toggle-section="Slides" aria-expanded="true" aria-controls="panel-slides" aria-label="Свернуть Slides">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9 5 5 5-5"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="section-panel" id="panel-slides" data-panel="Slides" data-drop-section="Slides">
+            <div class="section-panel-heading">
+              <span>Презентации</span>
+              <button class="mini-add" type="button" data-add-section="Slides" aria-label="Добавить в Slides">+</button>
+            </div>
+            <ul class="file-list" data-list="Slides" aria-label="Презентации"></ul>
+            <div class="empty-state" data-empty="Slides" hidden>
+              <span>Создайте презентацию или загрузите PowerPoint</span>
+              <button type="button" data-add-section="Slides">Добавить файл или ссылку</button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <footer class="app-footer">
+      <span>Источник данных: утверждённая основная DS «Элементы»</span>
+      <span id="cache-age" aria-live="polite"></span>
+    </footer>
+  </div>
+
+  <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+
+  <dialog class="app-dialog" id="add-dialog" aria-labelledby="add-dialog-title">
+    <form class="dialog-card" id="add-form">
+      <div class="dialog-header">
+        <div>
+          <span class="dialog-eyebrow">Новый материал</span>
+          <h2 id="add-dialog-title">Добавить в задачу</h2>
+        </div>
+        <button class="icon-button dialog-close" type="button" data-close-dialog="add-dialog" aria-label="Закрыть">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+
+      <div class="segmented-control" role="tablist" aria-label="Способ добавления">
+        <button type="button" role="tab" data-add-mode="link" aria-selected="true">Ссылка</button>
+        <button type="button" role="tab" data-add-mode="file" aria-selected="false">Файл</button>
+      </div>
+
+      <label class="field">
+        <span>Раздел</span>
+        <select id="add-section" name="section">
+          <option value="Drive">Drive</option>
+          <option value="Docs">Docs</option>
+          <option value="Sheets">Sheets</option>
+          <option value="Slides">Slides</option>
+        </select>
+      </label>
+
+      <div class="dialog-pane" data-add-pane="link">
+        <label class="field">
+          <span>HTTPS-ссылка</span>
+          <input id="link-url" name="url" type="url" inputmode="url" autocomplete="url" placeholder="https://example.com/document" required>
+        </label>
+        <label class="field">
+          <span>Название <em>необязательно</em></span>
+          <input id="link-name" name="name" type="text" maxlength="180" autocomplete="off" placeholder="Название материала">
+        </label>
+      </div>
+
+      <div class="dialog-pane" data-add-pane="file" hidden>
+        <label class="file-picker" for="file-input" data-testid="file-picker">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
+          <strong>Выберите файлы</strong>
+          <span>или перетащите их на карточку раздела · до 512 МБ каждый</span>
+          <input id="file-input" name="files" type="file" multiple>
+        </label>
+        <p class="file-selection" id="file-selection">Файлы не выбраны</p>
+      </div>
+
+      <p class="form-error" id="add-form-error" role="alert" hidden></p>
+
+      <div class="dialog-actions">
+        <button class="button button-secondary" type="button" data-close-dialog="add-dialog">Отмена</button>
+        <button class="button button-primary" id="add-submit" type="submit">Добавить ссылку</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="app-dialog" id="edit-dialog" aria-labelledby="edit-dialog-title">
+    <form class="dialog-card" id="edit-form">
+      <div class="dialog-header">
+        <div>
+          <span class="dialog-eyebrow">Свойства карточки</span>
+          <h2 id="edit-dialog-title">Изменить материал</h2>
+        </div>
+        <button class="icon-button dialog-close" type="button" data-close-dialog="edit-dialog" aria-label="Закрыть">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+
+      <input id="edit-record-id" type="hidden">
+      <label class="field">
+        <span>Название</span>
+        <input id="edit-name" type="text" maxlength="180" required autocomplete="off">
+      </label>
+      <label class="field" id="edit-url-row" hidden>
+        <span>Ссылка</span>
+        <input id="edit-url" type="url" inputmode="url" autocomplete="url" placeholder="https://example.com/document">
+      </label>
+      <div class="field-row">
+        <label class="field">
+          <span>Раздел</span>
+          <select id="edit-section">
+            <option value="Drive">Drive</option>
+            <option value="Docs">Docs</option>
+            <option value="Sheets">Sheets</option>
+            <option value="Slides">Slides</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Формат</span>
+          <select id="edit-format">
+            <option value="Google Docs">Google Docs</option>
+            <option value="Word">Word</option>
+            <option value="Google Sheets">Google Sheets</option>
+            <option value="Excel">Excel</option>
+            <option value="CSV">CSV</option>
+            <option value="Google Slides">Google Slides</option>
+            <option value="PowerPoint">PowerPoint</option>
+            <option value="Link">Link</option>
+            <option value="Other File">Other File</option>
+          </select>
+        </label>
+      </div>
+      <p class="form-hint">Изменение названия Google-файла также переименует его в Drive.</p>
+      <p class="form-error" id="edit-form-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button class="button button-secondary" type="button" data-close-dialog="edit-dialog">Отмена</button>
+        <button class="button button-primary" id="edit-submit" type="submit">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="app-dialog" id="confirm-dialog" aria-labelledby="confirm-dialog-title">
+    <form class="dialog-card dialog-card-compact" id="confirm-form">
+      <div class="confirm-icon" id="confirm-icon" aria-hidden="true">!</div>
+      <h2 id="confirm-dialog-title">Подтвердите действие</h2>
+      <p id="confirm-dialog-message"></p>
+      <label class="field confirm-input-row" id="confirm-input-row" hidden>
+        <span>Введите название файла для подтверждения</span>
+        <input id="confirm-input" type="text" autocomplete="off">
+      </label>
+      <p class="form-error" id="confirm-form-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button class="button button-secondary" type="button" data-close-dialog="confirm-dialog">Отмена</button>
+        <button class="button button-danger" id="confirm-submit" type="submit">Продолжить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <template id="skeleton-template">
+    <li class="file-item skeleton-item" aria-hidden="true">
+      <span class="skeleton-block skeleton-icon"></span>
+      <span class="skeleton-copy"><span class="skeleton-block skeleton-line skeleton-line-wide"></span><span class="skeleton-block skeleton-line"></span></span>
+    </li>
+  </template>
+</body>
+</html>

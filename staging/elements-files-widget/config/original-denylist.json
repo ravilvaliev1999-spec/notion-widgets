@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "purpose": "Hard stop for Legacy containers inside the authorized main workspace. Active Elements/Spheres/Directions/Projects and the approved template/canary are intentionally excluded and validated by an exact allowlist in backend/lib/config.mjs.",
+  "workspaceIds": [],
+  "databasePageIds": [
+    "045802df7e54463bac86f0e02d057231",
+    "79b560c5a3ad48c1a0dd5bc418c83277"
+  ],
+  "dataSourceIds": [
+    "a8e81b3f-5b88-40a3-9e6c-911a6be59d11",
+    "dcc5e9aa-dbe7-4b0b-a4e5-450e0b17263b",
+    "2d90f52d-e637-4648-bfa0-59584a170a07",
+    "c43dbf41-1e73-4e88-9994-a21fabe1529c"
+  ],
+  "templateAndWidgetPageIds": [
+    "3842d62739a18074b000d6477d56768c",
+    "3902d62739a1808689d2f829226f2b7e"
+  ],
+  "deletedDanglingIds": [
+    "3932d627-39a1-8184-9f88-c232b8cc988f",
+    "3992d627-39a1-80ee-bab9-e8dbc7850435"
+  ],
+  "legacyDataSourceIds": [
+    "b3d2d627-39a1-83fd-853a-873936c2f0bb",
+    "ab11ab58-9e9a-4a32-9c9f-c0ff4b9b37b2",
+    "135546ca-af6d-4fc6-9098-eb1bee033a5a",
+    "e2dacccf-b15e-4832-84c4-3a0dabe8096e",
+    "3372d627-39a1-80fd-a15e-000b5c06bcff"
+  ]
+}
